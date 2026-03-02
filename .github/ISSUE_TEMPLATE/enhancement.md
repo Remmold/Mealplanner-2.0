@@ -1,5 +1,5 @@
 ---
-name: Improvement
+name: 💎 Enhancement
 about: Suggest an improvement or optimization for existing functionality in Mealplanner-2.0
 title: "[IMPROVEMENT] "
 labels: improvement
