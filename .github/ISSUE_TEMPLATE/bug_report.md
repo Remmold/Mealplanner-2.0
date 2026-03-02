@@ -7,26 +7,24 @@ assignees: ''
 
 ---
 
-## Description
+## 🎯 What Happened?
 <!-- A clear and concise description of what the bug is. -->
 
-## Steps to Reproduce
-<!-- Steps to reproduce the behavior: -->
+## 📑 Steps to Reproduce
 1. Go to '...'
 2. Click on '....'
-3. Scroll down to '....'
-4. See error
+3. See error
 
-## Expected Behavior
-<!-- A clear and concise description of what you expected to happen. -->
+## 🧪 Expected Behavior
+<!-- What did you expect to happen? -->
 
-## Screenshots
+## 📸 Screenshots
 <!-- If applicable, add screenshots to help explain your problem. -->
 
-## Environment Info
+## 💻 Environment
 - **OS**: [e.g. Windows, MacOS]
 - **Browser**: [e.g. Chrome, Firefox]
-- **Version**: [e.g. 115.0]
+- **Version**: [e.g. 1.0.0]
 
-## Additional Context
+## 💭 Additional Context
 <!-- Add any other context about the problem here. -->

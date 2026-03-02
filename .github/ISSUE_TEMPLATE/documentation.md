@@ -1,20 +1,20 @@
 ---
 name: 📒 Documentation
-about: Suggest a documentation update or fix for Mealplanner-2.0
+about: Suggest a documentation update or fix
 title: "[DOCS] "
 labels: documentation
 assignees: ''
 
 ---
 
-## Documentation Area
+## 🎯 Area
 <!-- e.g. README, Wiki, Code Comments, API Docs -->
 
-## Proposed Changes
-<!-- Describe what needs to be added, removed, or changed in the documentation. -->
+## 📝 Proposed Changes
+<!-- Describe what needs to be added or changed. -->
 
-## Reasoning
+## 🧪 Why?
 <!-- Why is this documentation change necessary? -->
 
-## Additional Context
+## 💭 Additional Context
 <!-- Add any other context or screenshots here. -->

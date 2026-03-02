@@ -1,20 +1,20 @@
 ---
 name: 💎 Enhancement
-about: Suggest an improvement or optimization for existing functionality in Mealplanner-2.0
-title: "[IMPROVEMENT] "
-labels: improvement
+about: Suggest an improvement or optimization for existing functionality
+title: "[ENHANCEMENT] "
+labels: enhancement
 assignees: ''
 
 ---
 
-## Current Situation
-<!-- Describe the current implementation or behavior. -->
+## 🚀 Current Situation
+<!-- Describe how it works right now. -->
 
-## Proposed Improvement
-<!-- Describe the improvement you'd like to see and why. -->
+## 💎 Proposed Enhancement
+<!-- What should be improved and how? -->
 
-## Benefits
-<!-- What are the expected benefits of this improvement? -->
+## ✨ Benefits
+<!-- Why should we do this? What's the impact? -->
 
-## Additional Context
-<!-- Add any other context or screenshots here. -->
+## 💭 Additional Notes
+<!-- Any other context or screenshots. -->
