@@ -1,5 +1,5 @@
 ---
-name: Feature
+name: 🏗️ Feature
 about: Suggest a new feature for Mealplanner-2.0
 title: "[FEATURE] "
 labels: enhancement

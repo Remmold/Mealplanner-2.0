@@ -1,5 +1,5 @@
 ---
-name: Documentation
+name: 📒 Documentation
 about: Suggest a documentation update or fix for Mealplanner-2.0
 title: "[DOCS] "
 labels: documentation

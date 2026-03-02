@@ -1,5 +1,5 @@
 ---
-name: Bug Report
+name: 🪲 Bug Report
 about: Report a bug in Mealplanner-2.0 to help us improve.
 title: "[BUG] "
 labels: bug
