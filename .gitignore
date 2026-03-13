@@ -205,3 +205,16 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# dlt pipeline artifacts
+backend/.dlt/pipelines/
+backend/.dlt/secrets.toml
+
+# DuckDB local databases
+backend/*.duckdb
+backend/*.duckdb.wal
+
+# OFF data dump (large binary, downloaded at runtime)
+backend/*.jsonl.gz
+backend/*.jsonl
+backend/*.meta.json
