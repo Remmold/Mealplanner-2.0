@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.database import get_connection
+from api.recipes import router as recipes_router
 from api.models import (
     AggregatedNutrition,
     Ingredient,
@@ -21,6 +22,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(recipes_router)
 
 
 SUMMARY_COLUMNS = """

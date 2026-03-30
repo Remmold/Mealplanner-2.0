@@ -214,6 +214,11 @@ backend/.dlt/secrets.toml
 backend/*.duckdb
 backend/*.duckdb.wal
 
+# SQLite recipe database (user data)
+backend/recipes.db
+backend/recipes.db-wal
+backend/recipes.db-shm
+
 # OFF data dump (large binary, downloaded at runtime)
 backend/*.jsonl.gz
 backend/*.jsonl

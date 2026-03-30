@@ -159,3 +159,63 @@ export async function aggregateRecipe(
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
+
+// --- Recipe CRUD ---
+
+export interface RecipeIngredient {
+  fdc_id: number;
+  quantity_g: number;
+  ingredient_name: string | null;
+}
+
+export interface Recipe {
+  id: string;
+  household_id: string;
+  name: string;
+  ingredients: RecipeIngredient[];
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchRecipes(): Promise<Recipe[]> {
+  const res = await fetch(`${BASE}/recipes`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchRecipe(id: string): Promise<Recipe> {
+  const res = await fetch(`${BASE}/recipes/${id}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function createRecipe(
+  name: string,
+  ingredients: { fdc_id: number; quantity_g: number }[]
+): Promise<Recipe> {
+  const res = await fetch(`${BASE}/recipes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, ingredients }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateRecipe(
+  id: string,
+  data: { name?: string; ingredients?: { fdc_id: number; quantity_g: number }[] }
+): Promise<Recipe> {
+  const res = await fetch(`${BASE}/recipes/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function deleteRecipe(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/recipes/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+}

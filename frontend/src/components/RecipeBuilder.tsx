@@ -1,9 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   fetchIngredientCategories,
   fetchIngredients,
+  fetchRecipes,
+  createRecipe,
+  updateRecipe,
+  deleteRecipe,
   aggregateRecipe,
   type Ingredient,
+  type Recipe,
   type RecipeNutrition,
 } from "../api";
 
@@ -13,10 +18,18 @@ interface RecipeItem {
 }
 
 export default function RecipeBuilder() {
+  // Saved recipes
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
+
+  // Current recipe state
   const [recipeName, setRecipeName] = useState("Untitled Recipe");
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
 
+  // Ingredient picker
   const [categories, setCategories] = useState<string[]>([]);
   const [allIngredients, setAllIngredients] = useState<Ingredient[]>([]);
   const [selectedCat, setSelectedCat] = useState("");
@@ -26,6 +39,7 @@ export default function RecipeBuilder() {
   useEffect(() => {
     fetchIngredientCategories().then(setCategories).catch(() => {});
     fetchIngredients().then(setAllIngredients).catch((e) => setError(String(e)));
+    loadRecipes();
   }, []);
 
   // Recalculate nutrition whenever items change
@@ -39,7 +53,69 @@ export default function RecipeBuilder() {
       .catch(() => setNutrition(null));
   }, [items]);
 
-  // Client-side filtering (only 86 items, no need for server calls)
+  async function loadRecipes() {
+    try {
+      setRecipes(await fetchRecipes());
+    } catch {}
+  }
+
+  const loadRecipeIntoEditor = useCallback(
+    (recipe: Recipe) => {
+      setActiveRecipeId(recipe.id);
+      setRecipeName(recipe.name);
+      // Map saved ingredients back to full Ingredient objects
+      const loaded: RecipeItem[] = [];
+      for (const ri of recipe.ingredients) {
+        const ing = allIngredients.find((i) => i.fdc_id === ri.fdc_id);
+        if (ing) {
+          loaded.push({ ingredient: ing, quantity_g: ri.quantity_g });
+        }
+      }
+      setItems(loaded);
+      setDirty(false);
+    },
+    [allIngredients]
+  );
+
+  function newRecipe() {
+    setActiveRecipeId(null);
+    setRecipeName("Untitled Recipe");
+    setItems([]);
+    setDirty(false);
+  }
+
+  async function saveRecipe() {
+    setSaving(true);
+    try {
+      const ingredients = items.map((i) => ({ fdc_id: i.ingredient.fdc_id, quantity_g: i.quantity_g }));
+      if (activeRecipeId) {
+        await updateRecipe(activeRecipeId, { name: recipeName, ingredients });
+      } else {
+        const created = await createRecipe(recipeName, ingredients);
+        setActiveRecipeId(created.id);
+      }
+      setDirty(false);
+      await loadRecipes();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      await deleteRecipe(id);
+      if (activeRecipeId === id) newRecipe();
+      await loadRecipes();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function markDirty() { setDirty(true); }
+
+  // Ingredient picker
   const filtered = allIngredients.filter((ing) => {
     if (selectedCat && ing.food_group !== selectedCat) return false;
     if (search && !ing.name.toLowerCase().includes(search.toLowerCase())) return false;
@@ -49,29 +125,84 @@ export default function RecipeBuilder() {
   function addItem(ingredient: Ingredient) {
     if (items.some((i) => i.ingredient.fdc_id === ingredient.fdc_id)) return;
     setItems((prev) => [...prev, { ingredient, quantity_g: 100 }]);
+    markDirty();
   }
 
   function updateQuantity(fdcId: number, qty: number) {
     setItems((prev) =>
       prev.map((i) => (i.ingredient.fdc_id === fdcId ? { ...i, quantity_g: qty } : i))
     );
+    markDirty();
   }
 
   function removeItem(fdcId: number) {
     setItems((prev) => prev.filter((i) => i.ingredient.fdc_id !== fdcId));
+    markDirty();
   }
 
   return (
     <div>
       <h2>Recipe Builder</h2>
-      <input
-        value={recipeName}
-        onChange={(e) => setRecipeName(e.target.value)}
-        style={{
-          fontSize: 18, fontWeight: "bold", border: "none",
-          borderBottom: "2px solid #333", padding: 4, marginBottom: 16, width: "100%",
-        }}
-      />
+
+      {/* Saved recipes bar */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <button
+          onClick={newRecipe}
+          style={{ padding: "6px 14px", fontWeight: 600 }}
+        >
+          + New Recipe
+        </button>
+        {recipes.map((r) => (
+          <div
+            key={r.id}
+            style={{
+              display: "flex", alignItems: "center", gap: 4,
+              padding: "4px 10px", borderRadius: 4,
+              background: r.id === activeRecipeId ? "#333" : "#eee",
+              color: r.id === activeRecipeId ? "#fff" : "#333",
+              cursor: "pointer",
+            }}
+          >
+            <span onClick={() => loadRecipeIntoEditor(r)}>{r.name}</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleDelete(r.id); }}
+              style={{
+                background: "none", border: "none", cursor: "pointer",
+                color: r.id === activeRecipeId ? "#ccc" : "#999",
+                fontSize: 14, padding: "0 2px",
+              }}
+            >
+              x
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Recipe name + save */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
+        <input
+          value={recipeName}
+          onChange={(e) => { setRecipeName(e.target.value); markDirty(); }}
+          style={{
+            fontSize: 18, fontWeight: "bold", border: "none",
+            borderBottom: "2px solid #333", padding: 4, flex: 1,
+          }}
+        />
+        <button
+          onClick={saveRecipe}
+          disabled={saving || (!dirty && activeRecipeId !== null)}
+          style={{
+            padding: "8px 20px", fontWeight: 600,
+            background: dirty ? "#2563eb" : "#ccc",
+            color: dirty ? "#fff" : "#666",
+            border: "none", borderRadius: 4, cursor: dirty ? "pointer" : "default",
+          }}
+        >
+          {saving ? "Saving..." : activeRecipeId ? "Save" : "Create"}
+        </button>
+      </div>
+
+      {error && <p style={{ color: "red" }}>{error}</p>}
 
       <div style={{ display: "flex", gap: 16 }}>
         {/* Left: ingredient picker */}
@@ -95,8 +226,6 @@ export default function RecipeBuilder() {
               style={{ padding: 6, flex: 1 }}
             />
           </div>
-
-          {error && <p style={{ color: "red" }}>{error}</p>}
 
           <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid #ddd", borderRadius: 4 }}>
             {filtered.map((ing) => {
@@ -134,7 +263,7 @@ export default function RecipeBuilder() {
 
         {/* Right: recipe items + nutrition */}
         <div style={{ flex: 1 }}>
-          <h3>Recipe ({items.length} ingredients)</h3>
+          <h3>Ingredients ({items.length})</h3>
           {items.length === 0 && (
             <p style={{ color: "#999" }}>Pick ingredients from the list.</p>
           )}
@@ -147,13 +276,8 @@ export default function RecipeBuilder() {
                 padding: 8, marginBottom: 4, background: "#f9f9f9", borderRadius: 4,
               }}
             >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500, fontSize: 14 }}>{item.ingredient.name}</div>
-                {item.ingredient.subcategory && (
-                  <div style={{ fontSize: 11, color: "#888" }}>
-                    Linked to "{item.ingredient.subcategory}" branded products
-                  </div>
-                )}
+              <div style={{ flex: 1, fontWeight: 500, fontSize: 14 }}>
+                {item.ingredient.name}
               </div>
               <input
                 type="number"

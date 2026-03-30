@@ -116,6 +116,39 @@ class RecipeNutrition(BaseModel):
     items_missing: list[int]
 
 
+# --- Recipe CRUD models ---
+
+
+class RecipeIngredientIn(BaseModel):
+    fdc_id: int
+    quantity_g: float
+
+
+class RecipeCreate(BaseModel):
+    name: str
+    ingredients: list[RecipeIngredientIn] = []
+
+
+class RecipeUpdate(BaseModel):
+    name: str | None = None
+    ingredients: list[RecipeIngredientIn] | None = None
+
+
+class RecipeIngredientOut(BaseModel):
+    fdc_id: int
+    quantity_g: float
+    ingredient_name: str | None = None
+
+
+class RecipeOut(BaseModel):
+    id: str
+    household_id: str
+    name: str
+    ingredients: list[RecipeIngredientOut] = []
+    created_at: str
+    updated_at: str
+
+
 class AggregatedNutrition(BaseModel):
     total_energy_kcal: float
     total_proteins_g: float
