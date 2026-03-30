@@ -21,11 +21,6 @@ PRODUCT_SCHEMA = "main_marts"
 PRODUCT_TABLE = "dim_products"
 
 
-# ---------------------------------------------------------------------------
-# Products
-# ---------------------------------------------------------------------------
-
-
 # READ: List products with optional search, filtering, sorting, and pagination.
 @app.get("/products", response_model=PaginatedProducts)
 def list_products(
@@ -128,11 +123,6 @@ def get_product(code: str):
     return Product(**data)
 
 
-# ---------------------------------------------------------------------------
-# Categories
-# ---------------------------------------------------------------------------
-
-
 # READ: List all distinct product categories available in the database.
 @app.get("/categories", response_model=list[str])
 def list_categories():
@@ -142,11 +132,6 @@ def list_categories():
             "WHERE category_label IS NOT NULL ORDER BY category_label"
         ).fetchall()
     return [row[0] for row in rows]
-
-
-# ---------------------------------------------------------------------------
-# Nutrition aggregation
-# ---------------------------------------------------------------------------
 
 
 # READ: Aggregate nutritional values for a list of products scaled by quantity (in grams).
