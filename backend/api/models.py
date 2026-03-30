@@ -77,9 +77,43 @@ class PaginatedProducts(BaseModel):
     page_size: int
 
 
+class Ingredient(BaseModel):
+    fdc_id: int
+    name: str
+    food_group: str
+    subcategory: str | None = None
+    energy_kcal_100g: float | None = None
+    proteins_100g: float | None = None
+    carbohydrates_100g: float | None = None
+    sugars_100g: float | None = None
+    fat_100g: float | None = None
+    saturated_fat_100g: float | None = None
+    fiber_100g: float | None = None
+    salt_100g: float | None = None
+
+
 class NutritionItem(BaseModel):
     code: str
     quantity_g: float
+
+
+class RecipeItem(BaseModel):
+    fdc_id: int
+    quantity_g: float
+
+
+class RecipeNutrition(BaseModel):
+    total_energy_kcal: float
+    total_proteins_g: float
+    total_carbohydrates_g: float
+    total_sugars_g: float
+    total_fat_g: float
+    total_saturated_fat_g: float
+    total_fiber_g: float
+    total_salt_g: float
+    total_weight_g: float
+    items_found: int
+    items_missing: list[int]
 
 
 class AggregatedNutrition(BaseModel):

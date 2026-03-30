@@ -4,10 +4,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.database import get_connection
 from api.models import (
     AggregatedNutrition,
+    Ingredient,
     NutritionItem,
     PaginatedProducts,
     Product,
     ProductSummary,
+    RecipeItem,
+    RecipeNutrition,
 )
 
 app = FastAPI(title="Mealplanner API", version="0.1.0")
@@ -156,6 +159,109 @@ def list_subcategories():
             "WHERE subcategory IS NOT NULL ORDER BY subcategory"
         ).fetchall()
     return [row[0] for row in rows]
+
+
+INGREDIENT_SCHEMA = "usda"
+INGREDIENT_TABLE = "ingredients"
+
+
+# READ: List ingredient categories from the curated common_ingredients table.
+@app.get("/ingredients/categories", response_model=list[str])
+def list_ingredient_categories():
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT category FROM main.common_ingredients ORDER BY category"
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+# READ: List curated common ingredients with USDA nutrition data.
+@app.get("/ingredients", response_model=list[Ingredient])
+def list_ingredients(
+    search: str | None = Query(None, description="Filter by name"),
+    category: str | None = Query(None, description="Filter by ingredient category"),
+):
+    conditions: list[str] = []
+    params: list = []
+
+    if search:
+        conditions.append("ci.simple_name ILIKE ?")
+        params.append(f"%{search}%")
+    if category:
+        conditions.append("ci.category = ?")
+        params.append(category)
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT ci.fdc_id, ci.simple_name, ci.category, "
+            f"nullif(ci.subcategory, '') as subcategory, "
+            f"u.energy_kcal_100g, u.proteins_100g, u.carbohydrates_100g, u.sugars_100g, "
+            f"u.fat_100g, u.saturated_fat_100g, u.fiber_100g, u.salt_100g "
+            f"FROM main.common_ingredients ci "
+            f"JOIN {INGREDIENT_SCHEMA}.{INGREDIENT_TABLE} u ON u.fdc_id = ci.fdc_id "
+            f"{where} ORDER BY ci.category, ci.simple_name",
+            params,
+        ).fetchall()
+
+        columns = [
+            "fdc_id", "name", "food_group", "subcategory",
+            "energy_kcal_100g", "proteins_100g", "carbohydrates_100g", "sugars_100g",
+            "fat_100g", "saturated_fat_100g", "fiber_100g", "salt_100g",
+        ]
+        return [Ingredient(**dict(zip(columns, row))) for row in rows]
+
+
+# READ: Aggregate nutritional values for generic ingredients scaled by quantity (in grams).
+@app.post("/ingredients/aggregate", response_model=RecipeNutrition)
+def aggregate_recipe(items: list[RecipeItem]):
+    if not items:
+        raise HTTPException(400, "At least one item is required")
+
+    fdc_ids = [item.fdc_id for item in items]
+    qty_map = {item.fdc_id: item.quantity_g for item in items}
+
+    placeholders = ", ".join(["?"] * len(fdc_ids))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT fdc_id, energy_kcal_100g, proteins_100g, carbohydrates_100g, "
+            f"sugars_100g, fat_100g, saturated_fat_100g, fiber_100g, salt_100g "
+            f"FROM {INGREDIENT_SCHEMA}.{INGREDIENT_TABLE} "
+            f"WHERE fdc_id IN ({placeholders})",
+            fdc_ids,
+        ).fetchall()
+
+    found_ids = set()
+    totals = dict(
+        total_energy_kcal=0.0, total_proteins_g=0.0, total_carbohydrates_g=0.0,
+        total_sugars_g=0.0, total_fat_g=0.0, total_saturated_fat_g=0.0,
+        total_fiber_g=0.0, total_salt_g=0.0, total_weight_g=0.0,
+    )
+    nutrient_keys = [
+        "total_energy_kcal", "total_proteins_g", "total_carbohydrates_g",
+        "total_sugars_g", "total_fat_g", "total_saturated_fat_g",
+        "total_fiber_g", "total_salt_g",
+    ]
+
+    for row in rows:
+        fdc_id = row[0]
+        found_ids.add(fdc_id)
+        qty = qty_map[fdc_id]
+        factor = qty / 100.0
+        totals["total_weight_g"] += qty
+        for i, key in enumerate(nutrient_keys):
+            val = row[i + 1]
+            if val is not None:
+                totals[key] += val * factor
+
+    totals = {k: round(v, 1) for k, v in totals.items()}
+
+    return RecipeNutrition(
+        **totals,
+        items_found=len(found_ids),
+        items_missing=[fid for fid in fdc_ids if fid not in found_ids],
+    )
 
 
 # READ: Aggregate nutritional values for a list of products scaled by quantity (in grams).
