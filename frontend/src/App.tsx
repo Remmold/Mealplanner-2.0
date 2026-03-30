@@ -3,18 +3,19 @@ import ProductList from "./components/ProductList";
 import ProductDetail from "./components/ProductDetail";
 import Categories from "./components/Categories";
 import NutritionAggregator from "./components/NutritionAggregator";
+import RecipeBuilder from "./components/RecipeBuilder";
 
-type Tab = "products" | "categories" | "nutrition";
+type Tab = "recipe" | "products" | "categories" | "nutrition";
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("products");
+  const [tab, setTab] = useState<Tab>("recipe");
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 960, margin: "0 auto", padding: 16 }}>
       <h1>Mealplanner API Tester</h1>
       <nav style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {(["products", "categories", "nutrition"] as Tab[]).map((t) => (
+        {(["recipe", "products", "categories", "nutrition"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => { setTab(t); setSelectedCode(null); }}
@@ -32,6 +33,7 @@ export default function App() {
         ))}
       </nav>
 
+      {tab === "recipe" && <RecipeBuilder />}
       {tab === "products" && !selectedCode && (
         <ProductList onSelect={setSelectedCode} />
       )}

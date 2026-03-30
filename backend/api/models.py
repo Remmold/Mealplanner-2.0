@@ -7,6 +7,7 @@ class Product(BaseModel):
     brands: str | None = None
     primary_category: str | None = None
     category_label: str | None = None
+    subcategory: str | None = None
     categories: list[str] = []
     allergens: list[str] = []
     countries: list[str] = []
@@ -61,6 +62,7 @@ class ProductSummary(BaseModel):
     product_name: str
     brands: str | None = None
     category_label: str | None = None
+    subcategory: str | None = None
     nutriscore_grade: str | None = None
     energy_kcal_100g: float | None = None
     proteins_100g: float | None = None

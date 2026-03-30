@@ -21,7 +21,7 @@ app.add_middleware(
 
 
 SUMMARY_COLUMNS = """
-    code, product_name, brands, category_label,
+    code, product_name, brands, category_label, subcategory,
     nutriscore_grade, energy_kcal_100g, proteins_100g,
     image_url, data_completeness
 """
@@ -35,6 +35,7 @@ PRODUCT_TABLE = "dim_products"
 def list_products(
     search: str | None = Query(None, description="Search product name or brand"),
     category: str | None = Query(None, description="Filter by category_label (exact)"),
+    subcategory: str | None = Query(None, description="Filter by subcategory (exact)"),
     nutriscore: str | None = Query(None, description="Filter by nutriscore grade (a-e)"),
     is_high_protein: bool | None = Query(None),
     is_low_calorie: bool | None = Query(None),
@@ -64,6 +65,9 @@ def list_products(
     if category:
         conditions.append("category_label = ?")
         params.append(category)
+    if subcategory:
+        conditions.append("subcategory = ?")
+        params.append(subcategory)
     if nutriscore:
         conditions.append("nutriscore_grade = ?")
         params.append(nutriscore.lower())
@@ -98,7 +102,7 @@ def list_products(
         ).fetchall()
 
         columns = [
-            "code", "product_name", "brands", "category_label",
+            "code", "product_name", "brands", "category_label", "subcategory",
             "nutriscore_grade", "energy_kcal_100g", "proteins_100g",
             "image_url", "data_completeness",
         ]
@@ -139,6 +143,17 @@ def list_categories():
         rows = conn.execute(
             f"SELECT DISTINCT category_label FROM {PRODUCT_SCHEMA}.{PRODUCT_TABLE} "
             "WHERE category_label IS NOT NULL ORDER BY category_label"
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+# READ: List all distinct product subcategories available in the database.
+@app.get("/subcategories", response_model=list[str])
+def list_subcategories():
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT subcategory FROM {PRODUCT_SCHEMA}.{PRODUCT_TABLE} "
+            "WHERE subcategory IS NOT NULL ORDER BY subcategory"
         ).fetchall()
     return [row[0] for row in rows]
 

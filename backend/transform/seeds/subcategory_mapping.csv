@@ -1,0 +1,143 @@
+tag,subcategory,sort_order
+en:pastas,Pasta,1
+en:stuffed-pastas,Pasta,1
+en:cereal-pastas,Pasta,1
+en:dry-pastas,Pasta,1
+en:fresh-pasta,Pasta,1
+en:spaghetti,Pasta,1
+en:noodles,Noodles,2
+en:instant-noodles,Noodles,2
+en:rices,Rice,3
+en:long-grain-rices,Rice,3
+en:aromatic-rices,Rice,3
+en:indica-rices,Rice,3
+en:basmati-rices,Rice,3
+en:rice-dishes,Rice Dishes,4
+en:breads,Bread,5
+en:sliced-breads,Bread,5
+en:special-breads,Bread,5
+en:flatbreads,Bread,5
+en:white-breads,Bread,5
+en:breadsticks,Bread,5
+en:chickens,Chicken,6
+en:chicken-breasts,Chicken,6
+en:chicken-thighs,Chicken,6
+en:cooked-chicken,Chicken,6
+en:breaded-chicken,Chicken,6
+en:chicken-preparations,Chicken,6
+en:beef,Beef,7
+en:beef-steaks,Beef,7
+en:beef-preparations,Beef,7
+en:steaks,Beef,7
+en:pork,Pork,8
+en:bacon,Pork,8
+en:pork-roasts,Pork,8
+en:turkeys,Turkey,9
+en:turkey-cutlets,Turkey,9
+en:ducks,Duck,10
+en:hams,Ham,11
+en:white-hams,Ham,11
+en:cured-hams,Ham,11
+en:dried-hams,Ham,11
+en:serrano-ham,Ham,11
+en:sausages,Sausages,12
+en:cured-sausages,Sausages,12
+en:dry-sausages,Sausages,12
+en:french-sausages,Sausages,12
+en:chipolatas,Sausages,12
+en:salami,Sausages,12
+en:fishes,Fish,13
+en:fish-preparations,Fish,13
+en:seafood,Seafood,14
+en:sushi-and-maki,Sushi,15
+en:pizzas,Pizza,16
+en:frozen-pizzas,Pizza,16
+en:vegetarian-pizzas,Pizza,16
+en:soups,Soups,17
+en:vegetable-soups,Soups,17
+en:cream-soups,Soups,17
+en:canned-soups,Soups,17
+en:dehydrated-soups,Soups,17
+en:salads,Salads,18
+en:prepared-salads,Salads,18
+en:pasta-dishes,Pasta Dishes,19
+en:prepared-lasagne,Pasta Dishes,19
+en:ravioli,Pasta Dishes,19
+en:tortellini,Pasta Dishes,19
+en:stews,Stews,20
+en:beef-dishes,Beef Dishes,21
+en:meals-with-chicken,Chicken Dishes,22
+en:poultry-meals,Poultry Dishes,23
+en:pork-meals,Pork Dishes,24
+en:meals-with-fish,Fish Dishes,25
+en:flours,Flour,26
+en:wheat-flours,Flour,26
+en:cereal-flours,Flour,26
+en:legumes,Legumes,27
+en:quinoa,Quinoa,28
+en:seeds,Seeds & Nuts,29
+en:nuts,Seeds & Nuts,29
+en:salted-nuts,Seeds & Nuts,29
+en:vegetables,Vegetables,30
+en:prepared-vegetables,Vegetables,30
+en:canned-vegetables,Vegetables,30
+en:canned-corn,Vegetables,30
+en:jams,Jams & Preserves,31
+en:berry-jams,Jams & Preserves,31
+en:strawberry-jams,Jams & Preserves,31
+en:apricot-jams,Jams & Preserves,31
+en:marmalades,Jams & Preserves,31
+en:fruit-and-vegetable-preserves,Jams & Preserves,31
+en:honeys,Honey,32
+en:spreads,Spreads,33
+en:chocolate-spreads,Spreads,33
+en:hazelnut-spreads,Spreads,33
+en:salted-spreads,Spreads,33
+en:breakfast-cereals,Breakfast Cereals,34
+en:mueslis,Breakfast Cereals,34
+en:cereal-flakes,Breakfast Cereals,34
+en:corn-flakes,Breakfast Cereals,34
+en:rolled-oats,Breakfast Cereals,34
+en:biscuits,Biscuits,35
+en:chocolate-biscuits,Biscuits,35
+en:shortbread-cookies,Biscuits,35
+en:chocolate-chip-cookies,Biscuits,35
+en:crackers-appetizers,Crackers,36
+en:cakes,Cakes,37
+en:chocolate-cakes,Cakes,37
+en:brownies,Cakes,37
+en:pound-cake,Cakes,37
+en:muffins,Cakes,37
+en:chocolates,Chocolate,38
+en:dark-chocolates,Chocolate,38
+en:milk-chocolates,Chocolate,38
+en:white-chocolates,Chocolate,38
+en:bars,Bars,39
+en:cereal-bars,Bars,39
+en:protein-bars,Bars,39
+en:energy-bars,Bars,39
+en:chips-and-fries,Chips & Crisps,40
+en:crisps,Chips & Crisps,40
+en:potato-crisps,Chips & Crisps,40
+en:corn-chips,Chips & Crisps,40
+en:popcorn,Popcorn,41
+en:candies,Candy,42
+en:bonbons,Candy,42
+en:gummi-candies,Candy,42
+en:chewing-gum,Chewing Gum,43
+en:croissants,Pastries,44
+en:brioches,Pastries,44
+en:doughnuts,Pastries,44
+en:waffles,Pastries,44
+en:desserts,Desserts,45
+en:terrines,Terrines & Pate,46
+en:pate,Terrines & Pate,46
+en:rillettes,Terrines & Pate,46
+en:cooking-helpers,Cooking Helpers,47
+en:pie-dough,Cooking Helpers,47
+en:baking-mixes,Cooking Helpers,47
+en:cake-mixes,Cooking Helpers,47
+en:canned-foods,Canned Foods,48
+en:canned-meals,Canned Meals,49
+en:frozen-foods,Frozen Foods,50
+en:frozen-ready-made-meals,Frozen Meals,51

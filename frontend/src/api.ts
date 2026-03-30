@@ -5,6 +5,7 @@ export interface ProductSummary {
   product_name: string;
   brands: string | null;
   category_label: string | null;
+  subcategory: string | null;
   nutriscore_grade: string | null;
   energy_kcal_100g: number | null;
   proteins_100g: number | null;
@@ -81,6 +82,12 @@ export async function fetchProduct(code: string): Promise<Product> {
 
 export async function fetchCategories(): Promise<string[]> {
   const res = await fetch(`${BASE}/categories`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchSubcategories(): Promise<string[]> {
+  const res = await fetch(`${BASE}/subcategories`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
