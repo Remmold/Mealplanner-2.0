@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.database import get_connection
 from api.models import (
@@ -10,6 +11,14 @@ from api.models import (
 )
 
 app = FastAPI(title="Mealplanner API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 SUMMARY_COLUMNS = """
     code, product_name, brands, category_label,
