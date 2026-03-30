@@ -1,0 +1,55 @@
+version: 2
+
+sources:
+  - name: "off"
+    description: Raw Open Food Facts data ingested via dlt
+    schema: "off"
+    tables:
+      - name: products
+        description: One row per product with nutritional data and metadata
+        columns:
+          - name: code
+            description: Barcode / primary key
+          - name: product_name
+          - name: brands
+          - name: primary_category
+          - name: ingredients_text
+          - name: image_url
+          - name: nutriscore_grade
+          - name: nova_group
+          - name: serving_size
+          - name: serving_quantity_g
+          - name: energy_kcal_100g
+          - name: proteins_100g
+          - name: carbohydrates_100g
+          - name: sugars_100g
+          - name: fat_100g
+          - name: saturated_fat_100g
+          - name: fiber_100g
+          - name: salt_100g
+          - name: sodium_100g
+          - name: last_modified_t
+          - name: _dlt_id
+            description: dlt internal row identifier (used as FK in child tables)
+
+      - name: products__categories_tags
+        description: Exploded categories per product
+        columns:
+          - name: value
+            description: Category tag (e.g. en:meals)
+          - name: _dlt_parent_id
+            description: FK to off.products._dlt_id
+
+      - name: products__allergens_tags
+        description: Exploded allergens per product
+        columns:
+          - name: value
+            description: Allergen tag (e.g. en:gluten)
+          - name: _dlt_parent_id
+
+      - name: products__countries_tags
+        description: Exploded countries per product
+        columns:
+          - name: value
+            description: Country tag (e.g. en:france)
+          - name: _dlt_parent_id

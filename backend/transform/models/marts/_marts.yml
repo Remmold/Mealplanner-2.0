@@ -1,0 +1,98 @@
+version: 2
+
+models:
+  - name: dim_products
+    description: >
+      Clean, enriched product dimension ready for the meal-planning app and AI layer.
+      Filtered to products with a valid name and calorie value. Nutritional outliers
+      are nulled. Derived macro-level labels and boolean flags make AI filtering fast.
+    columns:
+      - name: code
+        description: Barcode — primary key
+        tests:
+          - unique
+          - not_null
+
+      - name: product_name
+        tests:
+          - not_null
+
+      - name: nutriscore_grade
+        description: Nutri-Score grade a–e (null = unknown)
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['a', 'b', 'c', 'd', 'e']
+              where: "nutriscore_grade is not null"
+
+      - name: nova_group
+        description: NOVA processing level 1–4 (null = unknown)
+        tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4]
+              where: "nova_group is not null"
+
+      - name: protein_level
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['low', 'medium', 'high']
+              where: "protein_level is not null"
+
+      - name: fat_level
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['low', 'medium', 'high']
+              where: "fat_level is not null"
+
+      - name: sugar_level
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['low', 'medium', 'high']
+              where: "sugar_level is not null"
+
+      - name: fiber_level
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['low', 'medium', 'high']
+              where: "fiber_level is not null"
+
+      - name: category_label
+        description: Human-readable category (locale prefix and hyphens stripped, title-cased)
+
+      - name: is_high_nutriscore
+        description: True when nutriscore_grade is a or b
+
+      - name: is_minimally_processed
+        description: True when nova_group is 1 or 2
+
+      - name: is_high_protein
+        description: True when proteins_100g >= 20g
+
+      - name: is_low_calorie
+        description: True when energy_kcal_100g <= 100 kcal
+
+      - name: is_gluten_free
+        description: True when allergens are declared and gluten is absent
+
+      - name: is_dairy_free
+        description: True when allergens are declared and milk is absent
+
+      - name: is_egg_free
+        description: True when allergens are declared and eggs are absent
+
+      - name: is_nut_free
+        description: True when allergens are declared and nuts/peanuts are absent
+
+      - name: is_seafood_free
+        description: True when allergens are declared and fish/crustaceans/molluscs are absent
+
+      - name: data_completeness
+        description: >
+          Fraction of the 10 key meal-planning fields that are non-null (0.0 – 1.0).
+          Fields: energy, protein, carbs, fat, fibre, nutriscore, nova, ingredients,
+          serving_quantity, image_url. Use to deprioritise poorly-documented products.

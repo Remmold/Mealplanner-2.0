@@ -1,0 +1,68 @@
+version: 2
+
+models:
+  - name: stg_products
+    description: >
+      Cleaned and filtered Open Food Facts products. One row per product with
+      invalid/outlier nutritional values nulled out, dlt internals removed, and
+      category/allergen/country arrays collapsed back from child tables.
+    columns:
+      - name: code
+        description: Barcode (EAN-13 or similar) — primary key
+        tests:
+          - unique
+          - not_null
+
+      - name: product_name
+        description: Product display name (trimmed, non-empty)
+        tests:
+          - not_null
+
+      - name: brands
+        description: Brand name(s), null when missing
+
+      - name: primary_category
+        description: The most specific OFF category tag for this product
+
+      - name: categories
+        description: All category tags as a list
+
+      - name: allergens
+        description: Allergen tags as a list (e.g. ['en:gluten', 'en:milk'])
+
+      - name: countries
+        description: Countries where the product is sold, as a list
+
+      - name: ingredients_text
+        description: Raw ingredient list string
+
+      - name: image_url
+        description: Front image URL from OFF
+
+      - name: nutriscore_grade
+        description: Nutri-Score grade (a–e), null when unknown or invalid
+
+      - name: nova_group
+        description: NOVA processing level (1–4), null when unknown
+
+      - name: serving_size
+        description: Serving size as a free-text string (e.g. "30g", "1 cup")
+
+      - name: serving_quantity_g
+        description: Serving size in grams when parseable
+
+      - name: energy_kcal_100g
+      - name: proteins_100g
+      - name: carbohydrates_100g
+      - name: sugars_100g
+      - name: fat_100g
+      - name: saturated_fat_100g
+      - name: fiber_100g
+      - name: salt_100g
+      - name: sodium_100g
+
+      - name: last_modified_at
+        description: Timestamp of the last OFF edit
+
+      - name: source_id
+        description: dlt internal row id (retained for lineage tracing)
