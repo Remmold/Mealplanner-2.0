@@ -7,6 +7,7 @@ import {
   updateRecipe,
   deleteRecipe,
   aggregateRecipe,
+  generateRecipe,
   type Ingredient,
   type Recipe,
   type RecipeNutrition,
@@ -28,6 +29,11 @@ export default function RecipeBuilder() {
   const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // AI generation
+  const [genPrompt, setGenPrompt] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [genInstructions, setGenInstructions] = useState<string[]>([]);
 
   // Ingredient picker
   const [categories, setCategories] = useState<string[]>([]);
@@ -81,7 +87,34 @@ export default function RecipeBuilder() {
     setActiveRecipeId(null);
     setRecipeName("Untitled Recipe");
     setItems([]);
+    setGenInstructions([]);
     setDirty(false);
+  }
+
+  async function handleGenerate() {
+    if (!genPrompt.trim()) return;
+    setGenerating(true);
+    setError("");
+    try {
+      const gen = await generateRecipe(genPrompt.trim());
+      // Load generated recipe into editor
+      setActiveRecipeId(null);
+      setRecipeName(gen.name);
+      setGenInstructions(gen.instructions);
+      const loaded: RecipeItem[] = [];
+      for (const gi of gen.ingredients) {
+        const ing = allIngredients.find((i) => i.fdc_id === gi.fdc_id);
+        if (ing) {
+          loaded.push({ ingredient: ing, quantity_g: gi.quantity_g });
+        }
+      }
+      setItems(loaded);
+      setDirty(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setGenerating(false);
+    }
   }
 
   async function saveRecipe() {
@@ -176,6 +209,33 @@ export default function RecipeBuilder() {
             </button>
           </div>
         ))}
+      </div>
+
+      {/* AI recipe generation */}
+      <div style={{
+        display: "flex", gap: 8, marginBottom: 16, padding: 12,
+        background: "#f0f4ff", borderRadius: 6, alignItems: "center",
+      }}>
+        <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>Generate:</span>
+        <input
+          placeholder="e.g. healthy chicken stir fry, quick pasta dinner, vegetarian curry..."
+          value={genPrompt}
+          onChange={(e) => setGenPrompt(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !generating && handleGenerate()}
+          style={{ padding: 6, flex: 1 }}
+          disabled={generating}
+        />
+        <button
+          onClick={handleGenerate}
+          disabled={generating || !genPrompt.trim()}
+          style={{
+            padding: "6px 16px", fontWeight: 600, whiteSpace: "nowrap",
+            background: generating ? "#ccc" : "#7c3aed", color: "#fff",
+            border: "none", borderRadius: 4, cursor: generating ? "wait" : "pointer",
+          }}
+        >
+          {generating ? "Generating..." : "Generate Recipe"}
+        </button>
       </div>
 
       {/* Recipe name + save */}
@@ -327,6 +387,18 @@ export default function RecipeBuilder() {
           )}
         </div>
       </div>
+
+      {/* Generated instructions */}
+      {genInstructions.length > 0 && (
+        <div style={{ marginTop: 16, padding: 12, background: "#f9f9f9", borderRadius: 6 }}>
+          <h4 style={{ margin: "0 0 8px 0" }}>Instructions</h4>
+          <ol style={{ margin: 0, paddingLeft: 20, fontSize: 14, lineHeight: 1.6 }}>
+            {genInstructions.map((step, i) => (
+              <li key={i}>{step}</li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,7 +3,14 @@
 from fastapi import APIRouter, HTTPException
 
 from api.database import get_connection as get_duckdb
-from api.models import RecipeCreate, RecipeIngredientOut, RecipeOut, RecipeUpdate
+from api.models import (
+    GenerateRecipeRequest,
+    GeneratedRecipeOut,
+    RecipeCreate,
+    RecipeIngredientOut,
+    RecipeOut,
+    RecipeUpdate,
+)
 from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db, new_id
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
@@ -77,6 +84,25 @@ def create_recipe(body: RecipeCreate, household_id: str = DEFAULT_HOUSEHOLD_ID):
                 [new_id(), recipe_id, ing.fdc_id, ing.quantity_g],
             )
         return _build_recipe_out(conn, recipe_id)
+
+
+@router.post("/generate", response_model=GeneratedRecipeOut)
+async def generate_recipe_endpoint(body: GenerateRecipeRequest):
+    from api.recipe_gen import generate_recipe
+
+    try:
+        result = await generate_recipe(body.prompt)
+    except Exception as e:
+        raise HTTPException(500, f"Recipe generation failed: {e}")
+
+    return GeneratedRecipeOut(
+        name=result.name,
+        ingredients=[
+            {"fdc_id": ing.fdc_id, "name": ing.name, "quantity_g": ing.quantity_g}
+            for ing in result.ingredients
+        ],
+        instructions=result.instructions,
+    )
 
 
 @router.get("/{recipe_id}", response_model=RecipeOut)

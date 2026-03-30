@@ -10,6 +10,7 @@ dependencies = [
     "dbt-duckdb>=1.8.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
+    "pydantic-ai-slim[openai]>=1.73.0",
 ]
 
 [project.optional-dependencies]

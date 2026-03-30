@@ -219,3 +219,27 @@ export async function deleteRecipe(id: string): Promise<void> {
   const res = await fetch(`${BASE}/recipes/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
+
+// --- Recipe Generation ---
+
+export interface GeneratedIngredient {
+  fdc_id: number;
+  name: string;
+  quantity_g: number;
+}
+
+export interface GeneratedRecipe {
+  name: string;
+  ingredients: GeneratedIngredient[];
+  instructions: string[];
+}
+
+export async function generateRecipe(prompt: string): Promise<GeneratedRecipe> {
+  const res = await fetch(`${BASE}/recipes/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}

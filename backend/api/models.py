@@ -134,6 +134,22 @@ class RecipeUpdate(BaseModel):
     ingredients: list[RecipeIngredientIn] | None = None
 
 
+class GenerateRecipeRequest(BaseModel):
+    prompt: str
+
+
+class GeneratedIngredientOut(BaseModel):
+    fdc_id: int
+    name: str
+    quantity_g: float
+
+
+class GeneratedRecipeOut(BaseModel):
+    name: str
+    ingredients: list[GeneratedIngredientOut]
+    instructions: list[str]
+
+
 class RecipeIngredientOut(BaseModel):
     fdc_id: int
     quantity_g: float
