@@ -103,3 +103,59 @@ export async function aggregateNutrition(
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
+
+// --- USDA Generic Ingredients ---
+
+export interface Ingredient {
+  fdc_id: number;
+  name: string;
+  food_group: string;
+  subcategory: string | null;
+  energy_kcal_100g: number | null;
+  proteins_100g: number | null;
+  carbohydrates_100g: number | null;
+  sugars_100g: number | null;
+  fat_100g: number | null;
+  saturated_fat_100g: number | null;
+  fiber_100g: number | null;
+  salt_100g: number | null;
+}
+
+export interface RecipeNutrition {
+  total_energy_kcal: number;
+  total_proteins_g: number;
+  total_carbohydrates_g: number;
+  total_sugars_g: number;
+  total_fat_g: number;
+  total_saturated_fat_g: number;
+  total_fiber_g: number;
+  total_salt_g: number;
+  total_weight_g: number;
+  items_found: number;
+  items_missing: number[];
+}
+
+export async function fetchIngredientCategories(): Promise<string[]> {
+  const res = await fetch(`${BASE}/ingredients/categories`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchIngredients(params?: Record<string, string>): Promise<Ingredient[]> {
+  const qs = params ? new URLSearchParams(params).toString() : "";
+  const res = await fetch(`${BASE}/ingredients${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function aggregateRecipe(
+  items: { fdc_id: number; quantity_g: number }[]
+): Promise<RecipeNutrition> {
+  const res = await fetch(`${BASE}/ingredients/aggregate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(items),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}

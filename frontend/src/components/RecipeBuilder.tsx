@@ -1,32 +1,31 @@
 import { useEffect, useState } from "react";
 import {
-  fetchSubcategories,
-  fetchProducts,
-  aggregateNutrition,
-  type ProductSummary,
-  type AggregatedNutrition,
+  fetchIngredientCategories,
+  fetchIngredients,
+  aggregateRecipe,
+  type Ingredient,
+  type RecipeNutrition,
 } from "../api";
 
 interface RecipeItem {
-  product: ProductSummary;
+  ingredient: Ingredient;
   quantity_g: number;
 }
 
 export default function RecipeBuilder() {
   const [recipeName, setRecipeName] = useState("Untitled Recipe");
   const [items, setItems] = useState<RecipeItem[]>([]);
-  const [nutrition, setNutrition] = useState<AggregatedNutrition | null>(null);
+  const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
 
-  // Product picker state
-  const [subcategories, setSubcategories] = useState<string[]>([]);
-  const [selectedSub, setSelectedSub] = useState("");
+  const [categories, setCategories] = useState<string[]>([]);
+  const [allIngredients, setAllIngredients] = useState<Ingredient[]>([]);
+  const [selectedCat, setSelectedCat] = useState("");
   const [search, setSearch] = useState("");
-  const [results, setResults] = useState<ProductSummary[]>([]);
-  const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetchSubcategories().then(setSubcategories).catch(() => {});
+    fetchIngredientCategories().then(setCategories).catch(() => {});
+    fetchIngredients().then(setAllIngredients).catch((e) => setError(String(e)));
   }, []);
 
   // Recalculate nutrition whenever items change
@@ -35,39 +34,31 @@ export default function RecipeBuilder() {
       setNutrition(null);
       return;
     }
-    aggregateNutrition(items.map((i) => ({ code: i.product.code, quantity_g: i.quantity_g })))
+    aggregateRecipe(items.map((i) => ({ fdc_id: i.ingredient.fdc_id, quantity_g: i.quantity_g })))
       .then(setNutrition)
       .catch(() => setNutrition(null));
   }, [items]);
 
-  async function searchProducts() {
-    if (!selectedSub && !search) return;
-    setSearching(true);
-    setError("");
-    try {
-      const params: Record<string, string> = { page_size: "20", sort_by: "data_completeness", sort_order: "desc" };
-      if (selectedSub) params.subcategory = selectedSub;
-      if (search) params.search = search;
-      const data = await fetchProducts(params);
-      setResults(data.items);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setSearching(false);
-    }
+  // Client-side filtering (only 86 items, no need for server calls)
+  const filtered = allIngredients.filter((ing) => {
+    if (selectedCat && ing.food_group !== selectedCat) return false;
+    if (search && !ing.name.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  function addItem(ingredient: Ingredient) {
+    if (items.some((i) => i.ingredient.fdc_id === ingredient.fdc_id)) return;
+    setItems((prev) => [...prev, { ingredient, quantity_g: 100 }]);
   }
 
-  function addItem(product: ProductSummary) {
-    if (items.some((i) => i.product.code === product.code)) return;
-    setItems((prev) => [...prev, { product, quantity_g: 100 }]);
+  function updateQuantity(fdcId: number, qty: number) {
+    setItems((prev) =>
+      prev.map((i) => (i.ingredient.fdc_id === fdcId ? { ...i, quantity_g: qty } : i))
+    );
   }
 
-  function updateQuantity(code: string, qty: number) {
-    setItems((prev) => prev.map((i) => (i.product.code === code ? { ...i, quantity_g: qty } : i)));
-  }
-
-  function removeItem(code: string) {
-    setItems((prev) => prev.filter((i) => i.product.code !== code));
+  function removeItem(fdcId: number) {
+    setItems((prev) => prev.filter((i) => i.ingredient.fdc_id !== fdcId));
   }
 
   return (
@@ -76,99 +67,105 @@ export default function RecipeBuilder() {
       <input
         value={recipeName}
         onChange={(e) => setRecipeName(e.target.value)}
-        style={{ fontSize: 18, fontWeight: "bold", border: "none", borderBottom: "2px solid #333", padding: 4, marginBottom: 16, width: "100%" }}
+        style={{
+          fontSize: 18, fontWeight: "bold", border: "none",
+          borderBottom: "2px solid #333", padding: 4, marginBottom: 16, width: "100%",
+        }}
       />
 
       <div style={{ display: "flex", gap: 16 }}>
-        {/* Left: product picker */}
+        {/* Left: ingredient picker */}
         <div style={{ flex: 1 }}>
-          <h3>Find Ingredients</h3>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <h3>Add Ingredients</h3>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
             <select
-              value={selectedSub}
-              onChange={(e) => setSelectedSub(e.target.value)}
+              value={selectedCat}
+              onChange={(e) => setSelectedCat(e.target.value)}
               style={{ padding: 6 }}
             >
-              <option value="">All subcategories</option>
-              {subcategories.map((s) => (
-                <option key={s} value={s}>{s}</option>
+              <option value="">All</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>{c}</option>
               ))}
             </select>
             <input
-              placeholder="Search name/brand..."
+              placeholder="Filter..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && searchProducts()}
-              style={{ padding: 6, flex: 1, minWidth: 150 }}
+              style={{ padding: 6, flex: 1 }}
             />
-            <button onClick={searchProducts} style={{ padding: "6px 12px" }}>Search</button>
           </div>
 
-          {searching && <p>Searching...</p>}
           {error && <p style={{ color: "red" }}>{error}</p>}
 
-          {results.length > 0 && (
-            <div style={{ maxHeight: 350, overflowY: "auto", border: "1px solid #ddd", borderRadius: 4 }}>
-              {results.map((p) => {
-                const alreadyAdded = items.some((i) => i.product.code === p.code);
-                return (
-                  <div
-                    key={p.code}
-                    style={{
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: 8, borderBottom: "1px solid #eee",
-                      opacity: alreadyAdded ? 0.5 : 1,
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 500 }}>{p.product_name}</div>
-                      <div style={{ fontSize: 12, color: "#666" }}>
-                        {p.brands ?? ""} {p.subcategory ? `| ${p.subcategory}` : ""}
-                        {p.energy_kcal_100g != null ? ` | ${p.energy_kcal_100g} kcal/100g` : ""}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => addItem(p)}
-                      disabled={alreadyAdded}
-                      style={{ padding: "4px 10px", marginLeft: 8 }}
-                    >
-                      {alreadyAdded ? "Added" : "+ Add"}
-                    </button>
+          <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid #ddd", borderRadius: 4 }}>
+            {filtered.map((ing) => {
+              const added = items.some((i) => i.ingredient.fdc_id === ing.fdc_id);
+              return (
+                <div
+                  key={ing.fdc_id}
+                  style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "6px 10px", borderBottom: "1px solid #f0f0f0",
+                    opacity: added ? 0.4 : 1,
+                  }}
+                >
+                  <div>
+                    <span style={{ fontWeight: 500 }}>{ing.name}</span>
+                    <span style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>
+                      {ing.energy_kcal_100g} kcal/100g
+                    </span>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                  <button
+                    onClick={() => addItem(ing)}
+                    disabled={added}
+                    style={{ padding: "3px 10px", fontSize: 13 }}
+                  >
+                    {added ? "Added" : "+"}
+                  </button>
+                </div>
+              );
+            })}
+            {filtered.length === 0 && (
+              <p style={{ padding: 12, color: "#999" }}>No ingredients match.</p>
+            )}
+          </div>
         </div>
 
         {/* Right: recipe items + nutrition */}
         <div style={{ flex: 1 }}>
-          <h3>Ingredients ({items.length})</h3>
+          <h3>Recipe ({items.length} ingredients)</h3>
           {items.length === 0 && (
-            <p style={{ color: "#999" }}>Search for products and add them to your recipe.</p>
+            <p style={{ color: "#999" }}>Pick ingredients from the list.</p>
           )}
 
           {items.map((item) => (
             <div
-              key={item.product.code}
+              key={item.ingredient.fdc_id}
               style={{
                 display: "flex", alignItems: "center", gap: 8,
                 padding: 8, marginBottom: 4, background: "#f9f9f9", borderRadius: 4,
               }}
             >
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500, fontSize: 14 }}>{item.product.product_name}</div>
-                <div style={{ fontSize: 12, color: "#666" }}>{item.product.brands ?? ""}</div>
+                <div style={{ fontWeight: 500, fontSize: 14 }}>{item.ingredient.name}</div>
+                {item.ingredient.subcategory && (
+                  <div style={{ fontSize: 11, color: "#888" }}>
+                    Linked to "{item.ingredient.subcategory}" branded products
+                  </div>
+                )}
               </div>
               <input
                 type="number"
                 value={item.quantity_g}
-                onChange={(e) => updateQuantity(item.product.code, Number(e.target.value) || 0)}
+                onChange={(e) => updateQuantity(item.ingredient.fdc_id, Number(e.target.value) || 0)}
                 style={{ width: 70, padding: 4, textAlign: "right" }}
                 min={0}
               />
               <span style={{ fontSize: 13 }}>g</span>
-              <button onClick={() => removeItem(item.product.code)} style={{ padding: "2px 8px" }}>X</button>
+              <button onClick={() => removeItem(item.ingredient.fdc_id)} style={{ padding: "2px 8px" }}>
+                X
+              </button>
             </div>
           ))}
 
@@ -197,9 +194,9 @@ export default function RecipeBuilder() {
                   ))}
                 </tbody>
               </table>
-              {nutrition.products_missing.length > 0 && (
+              {nutrition.items_missing.length > 0 && (
                 <p style={{ color: "orange", fontSize: 12, marginTop: 8 }}>
-                  Missing nutrition data for: {nutrition.products_missing.join(", ")}
+                  Missing data for some items.
                 </p>
               )}
             </div>
