@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.database import get_connection
 from api.recipes import router as recipes_router
+from api.shopping import router as shopping_router
+from api.ingredients import router as ingredients_router, load_all_curated_meta
 from api.models import (
     AggregatedNutrition,
     Ingredient,
@@ -24,6 +26,8 @@ app.add_middleware(
 )
 
 app.include_router(recipes_router)
+app.include_router(shopping_router)
+app.include_router(ingredients_router)
 
 
 SUMMARY_COLUMNS = """
@@ -168,52 +172,56 @@ INGREDIENT_SCHEMA = "usda"
 INGREDIENT_TABLE = "ingredients"
 
 
-# READ: List ingredient categories from the curated common_ingredients table.
+# READ: List ingredient categories (dbt seed ∪ pantry promotions).
 @app.get("/ingredients/categories", response_model=list[str])
 def list_ingredient_categories():
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT category FROM main.common_ingredients ORDER BY category"
-        ).fetchall()
-    return [row[0] for row in rows]
+    meta = load_all_curated_meta()
+    return sorted({m["category"] for m in meta.values()})
 
 
-# READ: List curated common ingredients with USDA nutrition data.
+# READ: List curated common ingredients with USDA nutrition data (dbt seed ∪ pantry).
 @app.get("/ingredients", response_model=list[Ingredient])
 def list_ingredients(
     search: str | None = Query(None, description="Filter by name"),
     category: str | None = Query(None, description="Filter by ingredient category"),
 ):
-    conditions: list[str] = []
-    params: list = []
+    meta = load_all_curated_meta()
+    if not meta:
+        return []
 
-    if search:
-        conditions.append("ci.simple_name ILIKE ?")
-        params.append(f"%{search}%")
-    if category:
-        conditions.append("ci.category = ?")
-        params.append(category)
-
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
+    fdc_ids = list(meta.keys())
+    placeholders = ", ".join(["?"] * len(fdc_ids))
     with get_connection() as conn:
         rows = conn.execute(
-            f"SELECT ci.fdc_id, ci.simple_name, ci.category, "
-            f"nullif(ci.subcategory, '') as subcategory, "
-            f"u.energy_kcal_100g, u.proteins_100g, u.carbohydrates_100g, u.sugars_100g, "
-            f"u.fat_100g, u.saturated_fat_100g, u.fiber_100g, u.salt_100g "
-            f"FROM main.common_ingredients ci "
-            f"JOIN {INGREDIENT_SCHEMA}.{INGREDIENT_TABLE} u ON u.fdc_id = ci.fdc_id "
-            f"{where} ORDER BY ci.category, ci.simple_name",
-            params,
+            f"SELECT fdc_id, energy_kcal_100g, proteins_100g, carbohydrates_100g, sugars_100g, "
+            f"fat_100g, saturated_fat_100g, fiber_100g, salt_100g "
+            f"FROM {INGREDIENT_SCHEMA}.{INGREDIENT_TABLE} "
+            f"WHERE fdc_id IN ({placeholders})",
+            fdc_ids,
         ).fetchall()
+    nutri = {r[0]: r for r in rows}
 
-        columns = [
-            "fdc_id", "name", "food_group", "subcategory",
-            "energy_kcal_100g", "proteins_100g", "carbohydrates_100g", "sugars_100g",
-            "fat_100g", "saturated_fat_100g", "fiber_100g", "salt_100g",
-        ]
-        return [Ingredient(**dict(zip(columns, row))) for row in rows]
+    search_lc = search.lower() if search else None
+    results: list[Ingredient] = []
+    for fdc_id, info in meta.items():
+        if category and info["category"] != category:
+            continue
+        if search_lc and search_lc not in info["simple_name"].lower():
+            continue
+        n = nutri.get(fdc_id)
+        if not n:
+            continue
+        results.append(Ingredient(
+            fdc_id=fdc_id,
+            name=info["simple_name"],
+            food_group=info["category"],
+            subcategory=info["subcategory"] or None,
+            energy_kcal_100g=n[1], proteins_100g=n[2], carbohydrates_100g=n[3],
+            sugars_100g=n[4], fat_100g=n[5], saturated_fat_100g=n[6],
+            fiber_100g=n[7], salt_100g=n[8],
+        ))
+    results.sort(key=lambda i: (i.food_group, i.name.lower()))
+    return results
 
 
 # READ: Aggregate nutritional values for generic ingredients scaled by quantity (in grams).

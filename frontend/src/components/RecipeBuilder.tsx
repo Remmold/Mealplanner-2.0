@@ -8,9 +8,12 @@ import {
   deleteRecipe,
   aggregateRecipe,
   generateRecipe,
+  searchUsda,
+  addToPantry,
   type Ingredient,
   type Recipe,
   type RecipeNutrition,
+  type UsdaSearchResult,
 } from "../api";
 
 interface RecipeItem {
@@ -25,6 +28,7 @@ export default function RecipeBuilder() {
 
   // Current recipe state
   const [recipeName, setRecipeName] = useState("Untitled Recipe");
+  const [servings, setServings] = useState(4);
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -42,6 +46,43 @@ export default function RecipeBuilder() {
   const [selectedCat, setSelectedCat] = useState("");
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
+
+  // USDA search / pantry promotion
+  const [usdaOpen, setUsdaOpen] = useState(false);
+  const [usdaQuery, setUsdaQuery] = useState("");
+  const [usdaResults, setUsdaResults] = useState<UsdaSearchResult[]>([]);
+  const [usdaLoading, setUsdaLoading] = useState(false);
+
+  async function reloadPantry() {
+    const ings = await fetchIngredients();
+    setAllIngredients(ings);
+    const cats = await fetchIngredientCategories();
+    setCategories(cats);
+  }
+
+  async function handleUsdaSearch() {
+    if (usdaQuery.trim().length < 2) return;
+    setUsdaLoading(true);
+    try {
+      setUsdaResults(await searchUsda(usdaQuery.trim()));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setUsdaLoading(false);
+    }
+  }
+
+  async function promoteToPantry(r: UsdaSearchResult) {
+    try {
+      await addToPantry(r.fdc_id, undefined, r.mapped_category);
+      await reloadPantry();
+      setUsdaResults((prev) =>
+        prev.map((x) => (x.fdc_id === r.fdc_id ? { ...x, in_pantry: true } : x))
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
   useEffect(() => {
     fetchIngredientCategories().then(setCategories).catch(() => {});
@@ -80,6 +121,7 @@ export default function RecipeBuilder() {
       }
       setItems(loaded);
       setInstructions(recipe.instructions ?? []);
+      setServings(recipe.servings ?? 4);
       setDirty(false);
     },
     [allIngredients]
@@ -90,6 +132,7 @@ export default function RecipeBuilder() {
     setRecipeName("Untitled Recipe");
     setItems([]);
     setInstructions([]);
+    setServings(4);
     setDirty(false);
   }
 
@@ -124,9 +167,9 @@ export default function RecipeBuilder() {
     try {
       const ingredients = items.map((i) => ({ fdc_id: i.ingredient.fdc_id, quantity_g: i.quantity_g }));
       if (activeRecipeId) {
-        await updateRecipe(activeRecipeId, { name: recipeName, ingredients, instructions });
+        await updateRecipe(activeRecipeId, { name: recipeName, ingredients, instructions, servings });
       } else {
-        const created = await createRecipe(recipeName, ingredients, instructions);
+        const created = await createRecipe(recipeName, ingredients, instructions, servings);
         setActiveRecipeId(created.id);
       }
       setDirty(false);
@@ -250,6 +293,16 @@ export default function RecipeBuilder() {
             borderBottom: "2px solid #333", padding: 4, flex: 1,
           }}
         />
+        <label style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 4 }}>
+          Servings:
+          <input
+            type="number"
+            min={1}
+            value={servings}
+            onChange={(e) => { setServings(Math.max(1, Number(e.target.value) || 1)); markDirty(); }}
+            style={{ width: 60, padding: 4 }}
+          />
+        </label>
         <button
           onClick={saveRecipe}
           disabled={saving || (!dirty && activeRecipeId !== null)}
@@ -269,8 +322,62 @@ export default function RecipeBuilder() {
       <div style={{ display: "flex", gap: 16 }}>
         {/* Left: ingredient picker */}
         <div style={{ flex: 1 }}>
-          <h3>Add Ingredients</h3>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>Add Ingredients</h3>
+            <button
+              onClick={() => setUsdaOpen(!usdaOpen)}
+              style={{ padding: "4px 10px", fontSize: 13 }}
+            >
+              {usdaOpen ? "Close USDA search" : "+ Find more (USDA)"}
+            </button>
+          </div>
+
+          {usdaOpen && (
+            <div style={{ marginTop: 8, padding: 10, background: "#fff8e1", borderRadius: 6 }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  placeholder="Search USDA (e.g. cod, feta, tahini)..."
+                  value={usdaQuery}
+                  onChange={(e) => setUsdaQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleUsdaSearch()}
+                  style={{ flex: 1, padding: 6 }}
+                />
+                <button onClick={handleUsdaSearch} disabled={usdaLoading} style={{ padding: "6px 14px" }}>
+                  {usdaLoading ? "..." : "Search"}
+                </button>
+              </div>
+              <div style={{ maxHeight: 240, overflowY: "auto", marginTop: 8 }}>
+                {usdaResults.map((r) => (
+                  <div
+                    key={r.fdc_id}
+                    style={{
+                      display: "flex", gap: 8, alignItems: "center",
+                      padding: 4, borderBottom: "1px solid #eee", fontSize: 13,
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div>{r.name}</div>
+                      <div style={{ color: "#888", fontSize: 11 }}>
+                        → {r.mapped_category} {r.food_group ? `· ${r.food_group}` : ""}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => promoteToPantry(r)}
+                      disabled={r.in_pantry}
+                      style={{ padding: "2px 10px", fontSize: 12 }}
+                    >
+                      {r.in_pantry ? "✓ In pantry" : "+ Add"}
+                    </button>
+                  </div>
+                ))}
+                {usdaResults.length === 0 && usdaQuery && !usdaLoading && (
+                  <p style={{ color: "#999", fontSize: 13, margin: "8px 0 0 0" }}>No results yet — press Search.</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, margin: "8px 0" }}>
             <select
               value={selectedCat}
               onChange={(e) => setSelectedCat(e.target.value)}

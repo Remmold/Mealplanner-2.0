@@ -19,16 +19,25 @@ router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
 def _load_ingredient_names(fdc_ids: list[int]) -> dict[int, str]:
-    """Look up simple_name from DuckDB common_ingredients."""
+    """Look up simple_name from curated union (dbt seed ∪ pantry), falling back to USDA name."""
     if not fdc_ids:
         return {}
-    placeholders = ", ".join(["?"] * len(fdc_ids))
-    with get_duckdb() as conn:
-        rows = conn.execute(
-            f"SELECT fdc_id, simple_name FROM main.common_ingredients WHERE fdc_id IN ({placeholders})",
-            fdc_ids,
-        ).fetchall()
-    return {row[0]: row[1] for row in rows}
+    from api.ingredients import load_all_curated_meta
+    meta = load_all_curated_meta()
+    result = {fid: meta[fid]["simple_name"] for fid in fdc_ids if fid in meta}
+
+    # Fall back to raw USDA name for ids not in curated (e.g. used by LLM gen before promotion)
+    missing = [fid for fid in fdc_ids if fid not in result]
+    if missing:
+        placeholders = ", ".join(["?"] * len(missing))
+        with get_duckdb() as conn:
+            rows = conn.execute(
+                f"SELECT fdc_id, name FROM usda.ingredients WHERE fdc_id IN ({placeholders})",
+                missing,
+            ).fetchall()
+        for r in rows:
+            result[r[0]] = r[1]
+    return result
 
 
 def _build_recipe_out(conn, recipe_id: str) -> RecipeOut:
@@ -62,6 +71,7 @@ def _build_recipe_out(conn, recipe_id: str) -> RecipeOut:
             for ing in db_ingredients
         ],
         instructions=instructions,
+        servings=row["servings"] if "servings" in row.keys() else 4,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -83,8 +93,9 @@ def create_recipe(body: RecipeCreate, household_id: str = DEFAULT_HOUSEHOLD_ID):
 
     with get_recipe_db() as conn:
         conn.execute(
-            "INSERT INTO recipes (id, household_id, name, instructions) VALUES (?, ?, ?, ?)",
-            [recipe_id, household_id, body.name, json.dumps(body.instructions)],
+            "INSERT INTO recipes (id, household_id, name, instructions, servings) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [recipe_id, household_id, body.name, json.dumps(body.instructions), body.servings],
         )
         for ing in body.ingredients:
             conn.execute(
@@ -136,6 +147,12 @@ def update_recipe(recipe_id: str, body: RecipeUpdate):
             conn.execute(
                 "UPDATE recipes SET instructions = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 [json.dumps(body.instructions), recipe_id],
+            )
+
+        if body.servings is not None:
+            conn.execute(
+                "UPDATE recipes SET servings = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                [body.servings, recipe_id],
             )
 
         if body.ingredients is not None:

@@ -128,12 +128,14 @@ class RecipeCreate(BaseModel):
     name: str
     ingredients: list[RecipeIngredientIn] = []
     instructions: list[str] = []
+    servings: int = 4
 
 
 class RecipeUpdate(BaseModel):
     name: str | None = None
     ingredients: list[RecipeIngredientIn] | None = None
     instructions: list[str] | None = None
+    servings: int | None = None
 
 
 class GenerateRecipeRequest(BaseModel):
@@ -164,8 +166,37 @@ class RecipeOut(BaseModel):
     name: str
     ingredients: list[RecipeIngredientOut] = []
     instructions: list[str] = []
+    servings: int = 4
     created_at: str
     updated_at: str
+
+
+# --- Shopping list models ---
+
+
+class ShoppingRecipeSelection(BaseModel):
+    recipe_id: str
+    portions: float
+
+
+class ShoppingListItem(BaseModel):
+    fdc_id: int
+    name: str
+    category: str
+    quantity_g: float
+    display_quantity: float
+    display_unit: str
+
+
+class ShoppingListCategory(BaseModel):
+    category: str
+    sort_index: int
+    items: list[ShoppingListItem]
+
+
+class ShoppingListOut(BaseModel):
+    categories: list[ShoppingListCategory]
+    missing_recipes: list[str] = []
 
 
 class AggregatedNutrition(BaseModel):

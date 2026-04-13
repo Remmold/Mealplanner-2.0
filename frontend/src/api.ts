@@ -174,6 +174,7 @@ export interface Recipe {
   name: string;
   ingredients: RecipeIngredient[];
   instructions: string[];
+  servings: number;
   created_at: string;
   updated_at: string;
 }
@@ -193,12 +194,13 @@ export async function fetchRecipe(id: string): Promise<Recipe> {
 export async function createRecipe(
   name: string,
   ingredients: { fdc_id: number; quantity_g: number }[],
-  instructions: string[] = []
+  instructions: string[] = [],
+  servings: number = 4
 ): Promise<Recipe> {
   const res = await fetch(`${BASE}/recipes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, ingredients, instructions }),
+    body: JSON.stringify({ name, ingredients, instructions, servings }),
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
@@ -206,7 +208,12 @@ export async function createRecipe(
 
 export async function updateRecipe(
   id: string,
-  data: { name?: string; ingredients?: { fdc_id: number; quantity_g: number }[]; instructions?: string[] }
+  data: {
+    name?: string;
+    ingredients?: { fdc_id: number; quantity_g: number }[];
+    instructions?: string[];
+    servings?: number;
+  }
 ): Promise<Recipe> {
   const res = await fetch(`${BASE}/recipes/${id}`, {
     method: "PUT",
@@ -241,6 +248,96 @@ export async function generateRecipe(prompt: string): Promise<GeneratedRecipe> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+// --- Shopping list ---
+
+export interface ShoppingListItem {
+  fdc_id: number;
+  name: string;
+  category: string;
+  quantity_g: number;
+  display_quantity: number;
+  display_unit: string;
+}
+
+export interface ShoppingListCategory {
+  category: string;
+  sort_index: number;
+  items: ShoppingListItem[];
+}
+
+export interface ShoppingList {
+  categories: ShoppingListCategory[];
+  missing_recipes: string[];
+}
+
+export async function generateShoppingList(
+  selections: { recipe_id: string; portions: number }[]
+): Promise<ShoppingList> {
+  const res = await fetch(`${BASE}/shopping-lists/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(selections),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchStoreLayout(): Promise<string[]> {
+  const res = await fetch(`${BASE}/shopping-lists/store-layout`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+// --- USDA search & pantry ---
+
+export interface UsdaSearchResult {
+  fdc_id: number;
+  name: string;
+  food_group: string | null;
+  mapped_category: string;
+  energy_kcal_100g: number | null;
+  proteins_100g: number | null;
+  in_pantry: boolean;
+}
+
+export interface PantryEntry {
+  fdc_id: number;
+  simple_name: string;
+  category: string;
+  subcategory: string | null;
+}
+
+export async function searchUsda(query: string, limit = 50): Promise<UsdaSearchResult[]> {
+  const qs = new URLSearchParams({ q: query, limit: String(limit) }).toString();
+  const res = await fetch(`${BASE}/ingredients/usda-search?${qs}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function addToPantry(
+  fdc_id: number,
+  simple_name?: string,
+  category?: string
+): Promise<PantryEntry> {
+  const res = await fetch(`${BASE}/pantry`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fdc_id, simple_name, category }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateStoreLayout(categories: string[]): Promise<string[]> {
+  const res = await fetch(`${BASE}/shopping-lists/store-layout`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(categories),
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();

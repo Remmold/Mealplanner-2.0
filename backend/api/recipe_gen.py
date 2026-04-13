@@ -26,18 +26,48 @@ class GeneratedRecipe(BaseModel):
 
 
 def _load_all_ingredients() -> list[dict]:
-    """Load the curated ingredient list from DuckDB."""
+    """Load curated ingredients (dbt seed ∪ pantry) joined with USDA nutrition."""
+    from api.ingredients import load_all_curated_meta
+    meta = load_all_curated_meta()
+    if not meta:
+        return []
+    fdc_ids = list(meta.keys())
+    placeholders = ", ".join(["?"] * len(fdc_ids))
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT ci.fdc_id, ci.simple_name, ci.category, "
-            "u.energy_kcal_100g, u.proteins_100g, u.carbohydrates_100g, u.fat_100g "
-            "FROM main.common_ingredients ci "
-            "JOIN usda.ingredients u ON u.fdc_id = ci.fdc_id "
-            "ORDER BY ci.category, ci.simple_name"
+            f"SELECT fdc_id, energy_kcal_100g, proteins_100g, carbohydrates_100g, fat_100g "
+            f"FROM usda.ingredients WHERE fdc_id IN ({placeholders})",
+            fdc_ids,
         ).fetchall()
+    nutri = {r[0]: r for r in rows}
     return [
         {
-            "fdc_id": r[0], "name": r[1], "category": r[2],
+            "fdc_id": fid,
+            "name": info["simple_name"],
+            "category": info["category"],
+            "kcal": (nutri.get(fid) or [None, None])[1],
+            "protein": (nutri.get(fid) or [None, None, None])[2],
+            "carbs": (nutri.get(fid) or [None, None, None, None])[3],
+            "fat": (nutri.get(fid) or [None, None, None, None, None])[4],
+        }
+        for fid, info in meta.items()
+    ]
+
+
+def _search_usda_fallback(query: str, limit: int = 25) -> list[dict]:
+    """Search the full USDA table when curated has no hits."""
+    like = f"%{query.lower()}%"
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT fdc_id, name, food_group, energy_kcal_100g, proteins_100g, "
+            "carbohydrates_100g, fat_100g FROM usda.ingredients "
+            "WHERE lower(name) LIKE ? ORDER BY length(name), name LIMIT ?",
+            [like, limit],
+        ).fetchall()
+    from api.ingredients import map_food_group
+    return [
+        {
+            "fdc_id": r[0], "name": r[1], "category": map_food_group(r[2]),
             "kcal": r[3], "protein": r[4], "carbs": r[5], "fat": r[6],
         }
         for r in rows
@@ -78,9 +108,9 @@ agent = Agent(
 def search_ingredients(query: str) -> str:
     """Search available ingredients by name or category.
 
-    Use this to find ingredients and their fdc_id values.
-    You can search by name (e.g. 'chicken') or category (e.g. 'Vegetables').
-    Returns fdc_id, name, category, and basic nutrition per 100g.
+    Searches the curated pantry first (preferred). If no hits, falls back
+    to the full USDA database (~8000 items). Returns fdc_id, name, category,
+    and basic nutrition per 100g.
     """
     all_ingredients = _load_all_ingredients()
     query_lower = query.lower()
@@ -88,10 +118,14 @@ def search_ingredients(query: str) -> str:
         ing for ing in all_ingredients
         if query_lower in ing["name"].lower() or query_lower in ing["category"].lower()
     ]
+    source = "curated"
+    if not matches:
+        matches = _search_usda_fallback(query)
+        source = "usda"
     if not matches:
         return f"No ingredients found for '{query}'. Try a broader search."
 
-    lines = []
+    lines = [f"Source: {source}"]
     for ing in matches:
         lines.append(
             f"fdc_id={ing['fdc_id']} | {ing['name']} | {ing['category']} | "
