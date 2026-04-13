@@ -431,12 +431,18 @@ export async function deleteMealPlan(id: string): Promise<void> {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
+export interface SlotConfig {
+  slot: string;                         // "breakfast" | "lunch" | "dinner"
+  portions: number;                     // servings-sets per meal (>1 for batch cook)
+  distinct_meals?: number | null;       // cap distinct dishes in this slot across the week
+}
+
 export interface GenerateMealPlanInput {
   prompt: string;
   start_date: string;
   days?: number;
   servings?: number;
-  slots?: string[];
+  slot_configs: SlotConfig[];
 }
 
 export async function generateMealPlan(input: GenerateMealPlanInput): Promise<MealPlan> {

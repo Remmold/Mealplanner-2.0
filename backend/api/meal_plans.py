@@ -145,12 +145,18 @@ def delete_meal_plan(plan_id: str):
 # ============================================================
 
 
+class SlotConfig(BaseModel):
+    slot: str                              # "breakfast" | "lunch" | "dinner"
+    portions: float = 1                    # how many servings-sets per meal; >1 for batch cook
+    distinct_meals: int | None = None      # cap distinct dishes in this slot across the week
+
+
 class GenerateMealPlanRequest(BaseModel):
     prompt: str
-    start_date: str  # ISO YYYY-MM-DD
+    start_date: str                        # ISO YYYY-MM-DD
     days: int = 7
-    servings: int = 4
-    slots: list[str] = ["dinner"]  # which slots to fill
+    servings: int = 4                      # base servings when creating new recipes
+    slot_configs: list[SlotConfig] = [SlotConfig(slot="dinner")]
 
 
 class _PlannedMeal(BaseModel):
@@ -199,29 +205,64 @@ async def generate_meal_plan(
 
     if body.days < 1 or body.days > 14:
         raise HTTPException(400, "days must be 1..14")
-    if not body.slots:
-        raise HTTPException(400, "slots must not be empty")
+    if not body.slot_configs:
+        raise HTTPException(400, "slot_configs must not be empty")
+
+    slot_by_name: dict[str, SlotConfig] = {sc.slot: sc for sc in body.slot_configs}
 
     existing_recipes_listing = _list_existing_recipes_for_planner(household_id)
+
+    # Build per-slot rules for the planner prompt.
+    slot_rules_lines: list[str] = []
+    for sc in body.slot_configs:
+        line = f"  * {sc.slot}: portions={sc.portions}"
+        if sc.distinct_meals is not None and sc.distinct_meals > 0:
+            line += (
+                f", HARD CAP of {sc.distinct_meals} distinct dishes across all "
+                f"{body.days} days (batch-cook / matlåda style — each dish repeats)"
+            )
+        slot_rules_lines.append(line)
+    slot_rules = "\n".join(slot_rules_lines)
+
+    matlada_hint = ""
+    brief_lc = body.prompt.lower()
+    if any(w in brief_lc for w in ["matlåd", "matlad", "batch", "meal prep", "work hard", "busy"]):
+        matlada_hint = (
+            "\n- The user wants a matlåda / batch-cooking style week. Default to "
+            "2–3 distinct dishes per slot cooked in bigger portions, each eaten "
+            "across 2–4 days. Don't design 7 unique dinners for a busy household."
+        )
 
     planner_system_prompt = (
         "You are a weekly meal planner. Given a user brief and the household's "
         "existing saved recipes, design a coherent meal plan for the requested "
         "days and slots.\n\n"
+        "Slots to fill (one _PlannedMeal per slot per day):\n"
+        f"{slot_rules}\n\n"
         "Rules:\n"
         "- For each slot you fill, EITHER set use_recipe_id to one of the listed "
         "  saved recipes (use the exact id), OR set new_recipe_prompt to a short "
         "  description for a new recipe to be generated. Never both, never neither.\n"
+        "- NEVER reuse the same recipe across different slots. Breakfast, lunch "
+        "  and dinner must be disjoint sets of dishes — a dinner recipe is not a "
+        "  breakfast recipe. Within one slot, reusing a recipe across days is "
+        "  encouraged for batch cooking.\n"
+        "- To batch-cook a dish across multiple days in the same slot: emit one "
+        "  _PlannedMeal per day with the SAME use_recipe_id (or an IDENTICAL "
+        "  new_recipe_prompt string — identical prompts dedup into one recipe).\n"
         "- Reuse existing recipes when they fit the brief — don't generate "
-        "  duplicates. Variety matters: avoid the same protein two days in a row.\n"
+        "  duplicates. Variety matters: avoid the same protein two days in a row "
+        "  UNLESS the user asked for batch cooking / matlåda / meal prep.\n"
         "- Honour dietary constraints (vegetarian, gluten-free, etc.) the user "
         "  states in the brief.\n"
         "- new_recipe_prompt should be evocative and specific: 'Lemon-garlic cod "
-        "  with crushed potatoes' beats 'fish dinner'.\n"
+        "  with crushed potatoes' beats 'fish dinner'. Match the meal to the slot — "
+        "  breakfast prompts should be breakfast food, not dinner entrees.\n"
         "- day_offset is 0-indexed (0 = first day).\n"
-        "- portions defaults to 1 = one portion-set for the household; usually "
-        "  leave at 1 unless the user wants leftovers.\n"
-        "- plan_name should be evocative: 'Spring Mediterranean Week', not 'Plan'.\n"
+        "- In the planner output, the `portions` field on _PlannedMeal is advisory; "
+        "  the server overrides it with the slot's configured portions anyway.\n"
+        "- plan_name should be evocative: 'Spring Mediterranean Week', not 'Plan'."
+        + matlada_hint
     )
 
     planner = Agent(_PLAN_MODEL, output_type=_PlannedWeek, system_prompt=planner_system_prompt)
@@ -229,8 +270,8 @@ async def generate_meal_plan(
     user_brief = (
         f"Brief: {body.prompt}\n\n"
         f"Days: {body.days}\n"
-        f"Slots to fill each day: {', '.join(body.slots)}\n"
-        f"Default portions per slot: {body.servings}\n\n"
+        f"Base servings per generated recipe: {body.servings}\n"
+        f"Slots are listed in the system prompt above.\n\n"
         f"Existing saved recipes:\n{existing_recipes_listing}"
     )
 
@@ -257,16 +298,37 @@ async def generate_meal_plan(
         }
 
     # Filter to meals we'll actually use, dedup identical prompts, keep order.
+    # Also enforce "recipes are disjoint across slots" as a server-side safety net
+    # in case the planner ignores the instruction.
     valid_meals: list[_PlannedMeal] = []
-    unique_prompts: list[str] = []  # preserves order
+    unique_prompts: list[str] = []              # preserves order
     seen_prompts: set[str] = set()
+    prompt_to_slot: dict[str, str] = {}          # dedup prompt ↔ slot
+    recipe_id_to_slot: dict[str, str] = {}       # dedup existing-recipe ↔ slot
     for meal in planned.meals:
         if meal.day_offset < 0 or meal.day_offset >= body.days:
             continue
-        if meal.slot not in body.slots:
+        if meal.slot not in slot_by_name:
             continue
         if not meal.use_recipe_id and not meal.new_recipe_prompt:
             continue
+
+        # Enforce slot-disjointness: a recipe used for dinner can't show up in lunch.
+        if meal.use_recipe_id:
+            prior = recipe_id_to_slot.get(meal.use_recipe_id)
+            if prior and prior != meal.slot:
+                log.warning("[plan-gen] dropping cross-slot reuse of %s (was %s, now %s)",
+                            meal.use_recipe_id, prior, meal.slot)
+                continue
+            recipe_id_to_slot[meal.use_recipe_id] = meal.slot
+        if meal.new_recipe_prompt:
+            prior = prompt_to_slot.get(meal.new_recipe_prompt)
+            if prior and prior != meal.slot:
+                log.warning("[plan-gen] dropping cross-slot reuse of prompt %r (was %s, now %s)",
+                            meal.new_recipe_prompt[:40], prior, meal.slot)
+                continue
+            prompt_to_slot[meal.new_recipe_prompt] = meal.slot
+
         valid_meals.append(meal)
         if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen_prompts:
             seen_prompts.add(meal.new_recipe_prompt)
@@ -348,10 +410,13 @@ async def generate_meal_plan(
                 datetime.fromisoformat(body.start_date) + timedelta(days=meal.day_offset)
             ).strftime("%Y-%m-%d")
 
+            # Per-slot portions override the planner's advisory value.
+            slot_cfg = slot_by_name.get(meal.slot)
+            portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
             conn.execute(
                 "INSERT INTO meal_plan_entries (id, meal_plan_id, recipe_id, plan_date, slot, portions) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                [new_id(), plan_id, recipe_id, plan_date, meal.slot, max(1.0, float(meal.portions))],
+                [new_id(), plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions)],
             )
 
         out = _build_plan_out(conn, plan_id)

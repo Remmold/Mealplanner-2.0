@@ -49,8 +49,11 @@ export default function MealPlan() {
   const [genStart, setGenStart] = useState(isoDate(new Date()));
   const [genDays, setGenDays] = useState(7);
   const [genServings, setGenServings] = useState(4);
-  const [genSlots, setGenSlots] = useState<Record<Slot, boolean>>({
-    breakfast: false, lunch: false, dinner: true,
+  interface SlotSetting { enabled: boolean; portions: number; distinct: number | ""; }
+  const [slotSettings, setSlotSettings] = useState<Record<Slot, SlotSetting>>({
+    breakfast: { enabled: false, portions: 1, distinct: "" },
+    lunch:     { enabled: false, portions: 1, distinct: "" },
+    dinner:    { enabled: true,  portions: 1, distinct: "" },
   });
   const [generating, setGenerating] = useState(false);
   const [genElapsed, setGenElapsed] = useState(0);
@@ -145,8 +148,14 @@ export default function MealPlan() {
   }
 
   async function runWeeklyGenerator() {
-    const slots = (Object.keys(genSlots) as Slot[]).filter((s) => genSlots[s]);
-    if (slots.length === 0) { setError("Pick at least one slot"); return; }
+    const slot_configs = (Object.keys(slotSettings) as Slot[])
+      .filter((s) => slotSettings[s].enabled)
+      .map((s) => ({
+        slot: s,
+        portions: Math.max(0.25, slotSettings[s].portions) || 1,
+        distinct_meals: slotSettings[s].distinct === "" ? null : Number(slotSettings[s].distinct),
+      }));
+    if (slot_configs.length === 0) { setError("Enable at least one slot"); return; }
     if (!genPrompt.trim()) { setError("Describe what kind of week you want"); return; }
     setGenerating(true); setError(""); setGenElapsed(0);
     const t0 = Date.now();
@@ -157,7 +166,7 @@ export default function MealPlan() {
         start_date: genStart,
         days: genDays,
         servings: genServings,
-        slots,
+        slot_configs,
       });
       await reloadPlans();
       // Load the generated plan into the editor
@@ -349,19 +358,59 @@ export default function MealPlan() {
                 </label>
               </div>
 
-              <div className="row gap-3">
-                <span className="small muted">Slots:</span>
-                {(["breakfast", "lunch", "dinner"] as Slot[]).map((s) => (
-                  <label key={s} className="field" style={{ textTransform: "capitalize" }}>
-                    <input
-                      type="checkbox"
-                      checked={genSlots[s]}
-                      onChange={() => setGenSlots((prev) => ({ ...prev, [s]: !prev[s] }))}
-                      disabled={generating}
-                    />
-                    {s}
-                  </label>
-                ))}
+              <div className="card-soft" style={{ padding: 12 }}>
+                <div className="small muted mb-2">Per-slot settings</div>
+                <div className="col-2">
+                  {(["breakfast", "lunch", "dinner"] as Slot[]).map((s) => {
+                    const cfg = slotSettings[s];
+                    return (
+                      <div key={s} className="row gap-3 wrap" style={{ alignItems: "center" }}>
+                        <label className="field" style={{ minWidth: 100, textTransform: "capitalize" }}>
+                          <input
+                            type="checkbox"
+                            checked={cfg.enabled}
+                            onChange={() => setSlotSettings((prev) => ({
+                              ...prev, [s]: { ...prev[s], enabled: !prev[s].enabled },
+                            }))}
+                            disabled={generating}
+                          />
+                          {s}
+                        </label>
+                        <label className="field" title="Servings-sets per meal. >1 means batch cook this much per sitting.">
+                          Portions
+                          <input
+                            type="number" min={0.25} step={0.25}
+                            className="input input-num"
+                            value={cfg.portions}
+                            onChange={(e) => setSlotSettings((prev) => ({
+                              ...prev, [s]: { ...prev[s], portions: Number(e.target.value) || 1 },
+                            }))}
+                            disabled={generating || !cfg.enabled}
+                          />
+                        </label>
+                        <label className="field" title="Cap on distinct dishes in this slot across the whole week. Lower = more batch cooking.">
+                          Distinct
+                          <input
+                            type="number" min={1} max={14} placeholder="auto"
+                            className="input input-num"
+                            value={cfg.distinct}
+                            onChange={(e) => setSlotSettings((prev) => ({
+                              ...prev, [s]: { ...prev[s], distinct: e.target.value === "" ? "" : Math.max(1, Number(e.target.value)) },
+                            }))}
+                            disabled={generating || !cfg.enabled}
+                          />
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="tiny muted mt-2" style={{ margin: 0 }}>
+                  <strong>Portions</strong>: meals per sitting (use 1 for regular, 2–3 for batch).
+                  <br />
+                  <strong>Distinct</strong>: how many different dishes in this slot across the week.
+                  E.g. dinner: distinct=3 on 7 days means 3 recipes × 2-3 days each (matlåda).
+                  Each slot gets its own recipes — breakfast and dinner won't share dishes.
+                </p>
               </div>
             </div>
 

@@ -299,6 +299,16 @@ Key design choices:
 > Newest entries on top. Keep each entry short — one or two lines on *what
 > changed* and *why*. Leave dates approximate when unsure.
 
+### 2026-04 — Per-slot meal plan controls (portions, distinct, disjoint)
+Reworked the weekly plan generator input from `{slots, distinct_meals, servings}`
+to `{slot_configs: [{slot, portions, distinct_meals}]}`. Each slot now has its
+own portions (batch-cook dinners at 2–3x while breakfast stays 1x) and its own
+distinct-meals cap. Critically, the planner is instructed — and the server
+enforces — that a recipe used in one slot never appears in another (breakfast
+and dinner get disjoint recipe sets). Per-slot portions override the planner's
+advisory `portions` field at insert time. Frontend modal swaps slot-checkbox
+row for a per-slot settings card.
+
 ### 2026-04 — Pantry dedup via LLM + alias system
 The 819-item pantry (after the bootstrap) contained many near-duplicates:
 "Butter" + "Butter, Unsalted", "Milk (whole)" + "Whole Milk", "Flour
