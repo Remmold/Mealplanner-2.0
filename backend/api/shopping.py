@@ -31,6 +31,11 @@ def generate_shopping_list(
     if not selections:
         return ShoppingListOut(categories=[], missing_recipes=[])
 
+    # Load alias map up-front so ingredient ids collapse to their canonical form
+    # *before* we sum. This is what merges "Butter" + "Butter, Unsalted" on the list.
+    from api.ingredients import load_aliases, resolve_fdc_id
+    aliases = load_aliases()
+
     # 1. Load recipes + ingredients from SQLite, scale by portions/servings, sum by fdc_id
     totals_g: dict[int, float] = defaultdict(float)
     missing: list[str] = []
@@ -53,7 +58,8 @@ def generate_shopping_list(
                 [sel.recipe_id],
             ).fetchall()
             for ing in ingredients:
-                totals_g[ing["fdc_id"]] += ing["quantity_g"] * scale
+                canonical = resolve_fdc_id(ing["fdc_id"], aliases)
+                totals_g[canonical] += ing["quantity_g"] * scale
 
         # 2. Load unit overrides + layout
         unit_rows = conn.execute(

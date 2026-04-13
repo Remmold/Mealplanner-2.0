@@ -19,24 +19,37 @@ router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
 def _load_ingredient_names(fdc_ids: list[int]) -> dict[int, str]:
-    """Look up simple_name from curated union (dbt seed ∪ pantry), falling back to USDA name."""
+    """Look up simple_name from curated union (dbt seed ∪ pantry), falling back to USDA name.
+
+    Aliases are dereferenced: if a recipe stores an alias fdc_id, the user still
+    sees the canonical display name.
+    """
     if not fdc_ids:
         return {}
-    from api.ingredients import load_all_curated_meta
+    from api.ingredients import load_all_curated_meta, load_aliases, resolve_fdc_id
     meta = load_all_curated_meta()
-    result = {fid: meta[fid]["simple_name"] for fid in fdc_ids if fid in meta}
+    aliases = load_aliases()
+
+    result: dict[int, str] = {}
+    for fid in fdc_ids:
+        canonical = resolve_fdc_id(fid, aliases)
+        if canonical in meta:
+            result[fid] = meta[canonical]["simple_name"]
 
     # Fall back to raw USDA name for ids not in curated (e.g. used by LLM gen before promotion)
     missing = [fid for fid in fdc_ids if fid not in result]
     if missing:
-        placeholders = ", ".join(["?"] * len(missing))
+        canonical_missing = [resolve_fdc_id(f, aliases) for f in missing]
+        placeholders = ", ".join(["?"] * len(canonical_missing))
         with get_duckdb() as conn:
             rows = conn.execute(
                 f"SELECT fdc_id, name FROM usda.ingredients WHERE fdc_id IN ({placeholders})",
-                missing,
+                canonical_missing,
             ).fetchall()
-        for r in rows:
-            result[r[0]] = r[1]
+        usda_names = {r[0]: r[1] for r in rows}
+        for orig, canonical in zip(missing, canonical_missing):
+            if canonical in usda_names:
+                result[orig] = usda_names[canonical]
     return result
 
 

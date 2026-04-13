@@ -112,6 +112,8 @@ chat_sessions (id PK, household_id FK, title, message_history JSON,
 
 chat_messages (id PK, session_id FK ON DELETE CASCADE, role, content,
                tool_calls JSON, created_at)
+
+ingredient_aliases (alias_fdc_id PK, canonical_fdc_id, created_at)
 ```
 
 Key design choices:
@@ -159,7 +161,7 @@ Key design choices:
   temperature, timing, sensory cues.
 - Returns structured `{name, ingredients[{fdc_id, name, quantity_g}], instructions[]}`.
 
-### 4.5 Pantry expansion
+### 4.5 Pantry expansion & deduplication
 - `POST /pantry` promotes any USDA row into the curated pantry with a clean
   display name and category.
 - `GET /ingredients/usda-search?q=` — fuzzy search the full USDA database.
@@ -167,6 +169,12 @@ Key design choices:
   interleaves across food groups, asks the LLM to pick good pantry candidates
   and produce clean names. Grew the curated set from **86 → 819 ingredients**
   in one run. Idempotent (uses `ON CONFLICT DO NOTHING`).
+- **LLM dedup script** (`scripts/dedup_pantry.py`): batches the pantry by
+  category, asks the LLM to group equivalent ids (e.g. "Butter" + "Butter,
+  Unsalted") and pick a canonical. Writes to `ingredient_aliases`. Hidden
+  from the picker/search, dereferenced at consolidation — so recipes that
+  stored different-but-equivalent ids collapse into one shopping-list line.
+  First run: 167 aliases → 819 effective pantry shrank to 652.
 
 ### 4.6 AI weekly plan generator
 - `POST /meal-plans/generate` takes a free-text brief + start_date + slots
@@ -290,6 +298,20 @@ Key design choices:
 
 > Newest entries on top. Keep each entry short — one or two lines on *what
 > changed* and *why*. Leave dates approximate when unsure.
+
+### 2026-04 — Pantry dedup via LLM + alias system
+The 819-item pantry (after the bootstrap) contained many near-duplicates:
+"Butter" + "Butter, Unsalted", "Milk (whole)" + "Whole Milk", "Flour
+(all-purpose)" + "White Flour", etc. New `ingredient_aliases` SQLite table
+maps `alias_fdc_id → canonical_fdc_id`; aliases are hidden from the picker
+and dereferenced on shopping-list consolidation + recipe name lookup, so
+duplicate ids on existing recipes collapse into one shopping-list line
+without data loss. `scripts/dedup_pantry.py` batches the pantry by category
+to a PydanticAI agent that returns groups of equivalent ids; the canonical
+is the lowest id (dbt-seed items). First run found 167 aliases across 92
+groups (819 → 652 effective ingredients). Two obviously-wrong groups that
+slipped past the LLM (Flank Steak → Pork Chop, Turkey Breast → Chicken
+Breast) were removed manually; future runs should get a tighter prompt.
 
 ### 2026-04 — Conversational agent + AI weekly plan generator
 Two big AI features ship together. (1) `POST /meal-plans/generate` — a

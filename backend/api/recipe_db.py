@@ -73,6 +73,15 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS ingredient_aliases (
+                alias_fdc_id INTEGER PRIMARY KEY,
+                canonical_fdc_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ingredient_aliases_canonical
+                ON ingredient_aliases(canonical_fdc_id);
+
             CREATE TABLE IF NOT EXISTS meal_plans (
                 id TEXT PRIMARY KEY,
                 household_id TEXT NOT NULL REFERENCES households(id),

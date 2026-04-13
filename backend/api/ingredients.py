@@ -53,8 +53,33 @@ def load_pantry_fdc_ids() -> set[int]:
         return {r["fdc_id"] for r in conn.execute("SELECT fdc_id FROM pantry_ingredients").fetchall()}
 
 
+def load_aliases() -> dict[int, int]:
+    """Return {alias_fdc_id → canonical_fdc_id} mapping.
+
+    Use `resolve_fdc_id(fid)` to dereference a possibly-aliased id to its canonical.
+    """
+    with get_recipe_db() as conn:
+        rows = conn.execute(
+            "SELECT alias_fdc_id, canonical_fdc_id FROM ingredient_aliases"
+        ).fetchall()
+    return {r["alias_fdc_id"]: r["canonical_fdc_id"] for r in rows}
+
+
+def resolve_fdc_id(fdc_id: int, aliases: dict[int, int] | None = None) -> int:
+    """Dereference an fdc_id through the alias chain. Safe against cycles."""
+    if aliases is None:
+        aliases = load_aliases()
+    seen: set[int] = set()
+    current = fdc_id
+    while current in aliases and current not in seen:
+        seen.add(current)
+        current = aliases[current]
+    return current
+
+
 def load_all_curated_meta() -> dict[int, dict]:
-    """Return {fdc_id: {simple_name, category, subcategory}} for dbt seed ∪ pantry.
+    """Return {fdc_id: {simple_name, category, subcategory}} for dbt seed ∪ pantry,
+    with aliased ids excluded (they resolve to their canonical at lookup time).
 
     Pantry entries override dbt seed entries on conflict.
     """
@@ -76,6 +101,11 @@ def load_all_curated_meta() -> dict[int, dict]:
             "category": r["category"],
             "subcategory": r["subcategory"],
         }
+
+    # Remove aliased ids — they shouldn't appear in the picker or search results.
+    aliases = load_aliases()
+    for alias_id in aliases:
+        result.pop(alias_id, None)
     return result
 
 
