@@ -342,3 +342,75 @@ export async function updateStoreLayout(categories: string[]): Promise<string[]>
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
+
+// --- Meal plans ---
+
+export interface MealPlanEntry {
+  id: string;
+  recipe_id: string;
+  recipe_name: string | null;
+  plan_date: string;
+  slot: string | null;
+  portions: number;
+}
+
+export interface MealPlan {
+  id: string;
+  household_id: string;
+  name: string;
+  start_date: string;
+  entries: MealPlanEntry[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MealPlanEntryInput {
+  recipe_id: string;
+  plan_date: string;
+  slot?: string | null;
+  portions: number;
+}
+
+export async function fetchMealPlans(): Promise<MealPlan[]> {
+  const res = await fetch(`${BASE}/meal-plans`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function createMealPlan(
+  name: string,
+  start_date: string,
+  entries: MealPlanEntryInput[] = []
+): Promise<MealPlan> {
+  const res = await fetch(`${BASE}/meal-plans`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, start_date, entries }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateMealPlan(
+  id: string,
+  data: { name?: string; start_date?: string; entries?: MealPlanEntryInput[] }
+): Promise<MealPlan> {
+  const res = await fetch(`${BASE}/meal-plans/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function deleteMealPlan(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/meal-plans/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+}
+
+export async function mealPlanShoppingList(id: string): Promise<ShoppingList> {
+  const res = await fetch(`${BASE}/meal-plans/${id}/shopping-list`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}

@@ -73,6 +73,27 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS meal_plans (
+                id TEXT PRIMARY KEY,
+                household_id TEXT NOT NULL REFERENCES households(id),
+                name TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS meal_plan_entries (
+                id TEXT PRIMARY KEY,
+                meal_plan_id TEXT NOT NULL REFERENCES meal_plans(id) ON DELETE CASCADE,
+                recipe_id TEXT NOT NULL REFERENCES recipes(id),
+                plan_date TEXT NOT NULL,
+                slot TEXT,
+                portions REAL NOT NULL DEFAULT 1
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_meal_plans_household ON meal_plans(household_id);
+            CREATE INDEX IF NOT EXISTS idx_meal_plan_entries_plan ON meal_plan_entries(meal_plan_id);
+
             CREATE TABLE IF NOT EXISTS recipe_ingredients (
                 id TEXT PRIMARY KEY,
                 recipe_id TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,

@@ -93,6 +93,12 @@ ingredient_units (fdc_id PK, display_unit, grams_per_unit, round_step)
 
 store_layout (household_id FK, category, sort_index,
               PRIMARY KEY (household_id, category))
+
+meal_plans (id PK, household_id FK, name, start_date,
+            created_at, updated_at)
+
+meal_plan_entries (id PK, meal_plan_id FK ON DELETE CASCADE,
+                   recipe_id FK, plan_date, slot, portions)
 ```
 
 Key design choices:
@@ -213,8 +219,6 @@ Key design choices:
 - [ ] Expand `ingredient_units` seed list to cover the full 819-item pantry.
 
 ### Feature expansion
-- [ ] Meal plan (week-level): a named collection of recipes with a target day
-      and portion count. Shopping list generates from a meal plan directly.
 - [ ] Multi-household: schema already supports it; wire a household picker UI
       + auth.
 - [ ] Named store layouts per household ("Home ICA", "Weekend Lidl") and a
@@ -238,6 +242,15 @@ Key design choices:
 
 > Newest entries on top. Keep each entry short — one or two lines on *what
 > changed* and *why*. Leave dates approximate when unsure.
+
+### 2026-04 — Meal plan (week view) + one-click shopping list
+New `meal_plans` + `meal_plan_entries` tables and full CRUD. Frontend week
+grid: 7 days × breakfast/lunch/dinner cells, click "+" to drop in any saved
+recipe with its default servings, edit portions per entry. Plans list across
+the top (create / switch / delete). "Shopping List" button on a saved plan
+calls `POST /meal-plans/{id}/shopping-list` which sums portions per recipe
+and reuses the existing consolidator — entries for the same recipe across
+multiple days collapse into one shopping-list line.
 
 ### 2026-04 — LLM pantry bootstrap (86 → 819)
 Built `scripts/expand_pantry.py`: pre-filters USDA for branded/prepared junk,

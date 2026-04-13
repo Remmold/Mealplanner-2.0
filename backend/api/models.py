@@ -199,6 +199,47 @@ class ShoppingListOut(BaseModel):
     missing_recipes: list[str] = []
 
 
+# --- Meal plan models ---
+
+
+class MealPlanEntryIn(BaseModel):
+    recipe_id: str
+    plan_date: str  # ISO date, e.g. "2026-04-14"
+    slot: str | None = None  # "breakfast" | "lunch" | "dinner" | None
+    portions: float = 1
+
+
+class MealPlanCreate(BaseModel):
+    name: str
+    start_date: str  # ISO date
+    entries: list[MealPlanEntryIn] = []
+
+
+class MealPlanUpdate(BaseModel):
+    name: str | None = None
+    start_date: str | None = None
+    entries: list[MealPlanEntryIn] | None = None
+
+
+class MealPlanEntryOut(BaseModel):
+    id: str
+    recipe_id: str
+    recipe_name: str | None = None
+    plan_date: str
+    slot: str | None = None
+    portions: float
+
+
+class MealPlanOut(BaseModel):
+    id: str
+    household_id: str
+    name: str
+    start_date: str
+    entries: list[MealPlanEntryOut] = []
+    created_at: str
+    updated_at: str
+
+
 class AggregatedNutrition(BaseModel):
     total_energy_kcal: float
     total_proteins_g: float
