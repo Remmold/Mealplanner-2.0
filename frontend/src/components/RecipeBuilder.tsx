@@ -10,6 +10,7 @@ import {
   generateRecipe,
   searchUsda,
   addToPantry,
+  onDataChanged,
   type Ingredient,
   type Recipe,
   type RecipeNutrition,
@@ -22,11 +23,9 @@ interface RecipeItem {
 }
 
 export default function RecipeBuilder() {
-  // Saved recipes
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
 
-  // Current recipe state
   const [recipeName, setRecipeName] = useState("Untitled Recipe");
   const [servings, setServings] = useState(4);
   const [items, setItems] = useState<RecipeItem[]>([]);
@@ -36,53 +35,19 @@ export default function RecipeBuilder() {
 
   const [instructions, setInstructions] = useState<string[]>([]);
 
-  // AI generation
   const [genPrompt, setGenPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
 
-  // Ingredient picker
   const [categories, setCategories] = useState<string[]>([]);
   const [allIngredients, setAllIngredients] = useState<Ingredient[]>([]);
   const [selectedCat, setSelectedCat] = useState("");
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
 
-  // USDA search / pantry promotion
   const [usdaOpen, setUsdaOpen] = useState(false);
   const [usdaQuery, setUsdaQuery] = useState("");
   const [usdaResults, setUsdaResults] = useState<UsdaSearchResult[]>([]);
   const [usdaLoading, setUsdaLoading] = useState(false);
-
-  async function reloadPantry() {
-    const ings = await fetchIngredients();
-    setAllIngredients(ings);
-    const cats = await fetchIngredientCategories();
-    setCategories(cats);
-  }
-
-  async function handleUsdaSearch() {
-    if (usdaQuery.trim().length < 2) return;
-    setUsdaLoading(true);
-    try {
-      setUsdaResults(await searchUsda(usdaQuery.trim()));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setUsdaLoading(false);
-    }
-  }
-
-  async function promoteToPantry(r: UsdaSearchResult) {
-    try {
-      await addToPantry(r.fdc_id, undefined, r.mapped_category);
-      await reloadPantry();
-      setUsdaResults((prev) =>
-        prev.map((x) => (x.fdc_id === r.fdc_id ? { ...x, in_pantry: true } : x))
-      );
-    } catch (e) {
-      setError(String(e));
-    }
-  }
 
   useEffect(() => {
     fetchIngredientCategories().then(setCategories).catch(() => {});
@@ -90,42 +55,45 @@ export default function RecipeBuilder() {
     loadRecipes();
   }, []);
 
-  // Recalculate nutrition whenever items change
   useEffect(() => {
-    if (items.length === 0) {
-      setNutrition(null);
-      return;
-    }
+    return onDataChanged((kind) => {
+      if (kind === "*" || kind === "recipes") loadRecipes();
+      if (kind === "*" || kind === "pantry") {
+        fetchIngredients().then(setAllIngredients).catch(() => {});
+        fetchIngredientCategories().then(setCategories).catch(() => {});
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (items.length === 0) { setNutrition(null); return; }
     aggregateRecipe(items.map((i) => ({ fdc_id: i.ingredient.fdc_id, quantity_g: i.quantity_g })))
       .then(setNutrition)
       .catch(() => setNutrition(null));
   }, [items]);
 
   async function loadRecipes() {
-    try {
-      setRecipes(await fetchRecipes());
-    } catch {}
+    try { setRecipes(await fetchRecipes()); } catch {}
   }
 
-  const loadRecipeIntoEditor = useCallback(
-    (recipe: Recipe) => {
-      setActiveRecipeId(recipe.id);
-      setRecipeName(recipe.name);
-      // Map saved ingredients back to full Ingredient objects
-      const loaded: RecipeItem[] = [];
-      for (const ri of recipe.ingredients) {
-        const ing = allIngredients.find((i) => i.fdc_id === ri.fdc_id);
-        if (ing) {
-          loaded.push({ ingredient: ing, quantity_g: ri.quantity_g });
-        }
-      }
-      setItems(loaded);
-      setInstructions(recipe.instructions ?? []);
-      setServings(recipe.servings ?? 4);
-      setDirty(false);
-    },
-    [allIngredients]
-  );
+  async function reloadPantry() {
+    setAllIngredients(await fetchIngredients());
+    setCategories(await fetchIngredientCategories());
+  }
+
+  const loadRecipeIntoEditor = useCallback((recipe: Recipe) => {
+    setActiveRecipeId(recipe.id);
+    setRecipeName(recipe.name);
+    const loaded: RecipeItem[] = [];
+    for (const ri of recipe.ingredients) {
+      const ing = allIngredients.find((i) => i.fdc_id === ri.fdc_id);
+      if (ing) loaded.push({ ingredient: ing, quantity_g: ri.quantity_g });
+    }
+    setItems(loaded);
+    setInstructions(recipe.instructions ?? []);
+    setServings(recipe.servings ?? 4);
+    setDirty(false);
+  }, [allIngredients]);
 
   function newRecipe() {
     setActiveRecipeId(null);
@@ -142,16 +110,13 @@ export default function RecipeBuilder() {
     setError("");
     try {
       const gen = await generateRecipe(genPrompt.trim());
-      // Load generated recipe into editor
       setActiveRecipeId(null);
       setRecipeName(gen.name);
       setInstructions(gen.instructions);
       const loaded: RecipeItem[] = [];
       for (const gi of gen.ingredients) {
         const ing = allIngredients.find((i) => i.fdc_id === gi.fdc_id);
-        if (ing) {
-          loaded.push({ ingredient: ing, quantity_g: gi.quantity_g });
-        }
+        if (ing) loaded.push({ ingredient: ing, quantity_g: gi.quantity_g });
       }
       setItems(loaded);
       setDirty(true);
@@ -186,14 +151,29 @@ export default function RecipeBuilder() {
       await deleteRecipe(id);
       if (activeRecipeId === id) newRecipe();
       await loadRecipes();
-    } catch (e) {
-      setError(String(e));
-    }
+    } catch (e) { setError(String(e)); }
+  }
+
+  async function handleUsdaSearch() {
+    if (usdaQuery.trim().length < 2) return;
+    setUsdaLoading(true);
+    try { setUsdaResults(await searchUsda(usdaQuery.trim())); }
+    catch (e) { setError(String(e)); }
+    finally { setUsdaLoading(false); }
+  }
+
+  async function promoteToPantry(r: UsdaSearchResult) {
+    try {
+      await addToPantry(r.fdc_id, undefined, r.mapped_category);
+      await reloadPantry();
+      setUsdaResults((prev) =>
+        prev.map((x) => (x.fdc_id === r.fdc_id ? { ...x, in_pantry: true } : x))
+      );
+    } catch (e) { setError(String(e)); }
   }
 
   function markDirty() { setDirty(true); }
 
-  // Ingredient picker
   const filtered = allIngredients.filter((ing) => {
     if (selectedCat && ing.food_group !== selectedCat) return false;
     if (search && !ing.name.toLowerCase().includes(search.toLowerCase())) return false;
@@ -219,326 +199,266 @@ export default function RecipeBuilder() {
   }
 
   return (
-    <div>
-      <h2>Recipe Builder</h2>
+    <div className="col gap-5">
+      <div className="hero">
+        <h1>Build a recipe</h1>
+        <p>Pick ingredients from your pantry, or describe a dish and let the kitchen think it up for you.</p>
+      </div>
 
-      {/* Saved recipes bar */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <button
-          onClick={newRecipe}
-          style={{ padding: "6px 14px", fontWeight: 600 }}
-        >
-          + New Recipe
-        </button>
-        {recipes.map((r) => (
-          <div
-            key={r.id}
-            style={{
-              display: "flex", alignItems: "center", gap: 4,
-              padding: "4px 10px", borderRadius: 4,
-              background: r.id === activeRecipeId ? "#333" : "#eee",
-              color: r.id === activeRecipeId ? "#fff" : "#333",
-              cursor: "pointer",
-            }}
-          >
-            <span onClick={() => loadRecipeIntoEditor(r)}>{r.name}</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); handleDelete(r.id); }}
-              style={{
-                background: "none", border: "none", cursor: "pointer",
-                color: r.id === activeRecipeId ? "#ccc" : "#999",
-                fontSize: 14, padding: "0 2px",
-              }}
-            >
-              x
-            </button>
+      {error && <div className="error">{error}</div>}
+
+      {/* Saved recipes */}
+      <div className="col gap-2">
+        <h3 className="muted small" style={{ textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>
+          Your recipes
+        </h3>
+        <div className="row wrap gap-2">
+          <button onClick={newRecipe} className="btn btn-primary btn-sm">+ New recipe</button>
+          {recipes.map((r) => (
+            <span key={r.id} className={`chip ${r.id === activeRecipeId ? "chip-active" : ""}`}>
+              <span onClick={() => loadRecipeIntoEditor(r)}>{r.name}</span>
+              <span className="chip-x" onClick={(e) => { e.stopPropagation(); handleDelete(r.id); }}>×</span>
+            </span>
+          ))}
+          {recipes.length === 0 && <span className="muted small">No saved recipes yet.</span>}
+        </div>
+      </div>
+
+      {/* AI generation */}
+      <div className="card-warm">
+        <div className="row gap-3">
+          <div style={{ fontSize: 22 }}>✦</div>
+          <div className="flex-1 col-2">
+            <strong style={{ fontFamily: "var(--font-serif)", fontSize: 16 }}>Generate a recipe</strong>
+            <span className="small muted">Try "Thai red curry for 4" or "quick weeknight pasta with what's in season"</span>
           </div>
-        ))}
-      </div>
-
-      {/* AI recipe generation */}
-      <div style={{
-        display: "flex", gap: 8, marginBottom: 16, padding: 12,
-        background: "#f0f4ff", borderRadius: 6, alignItems: "center",
-      }}>
-        <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>Generate:</span>
-        <input
-          placeholder="e.g. healthy chicken stir fry, quick pasta dinner, vegetarian curry..."
-          value={genPrompt}
-          onChange={(e) => setGenPrompt(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !generating && handleGenerate()}
-          style={{ padding: 6, flex: 1 }}
-          disabled={generating}
-        />
-        <button
-          onClick={handleGenerate}
-          disabled={generating || !genPrompt.trim()}
-          style={{
-            padding: "6px 16px", fontWeight: 600, whiteSpace: "nowrap",
-            background: generating ? "#ccc" : "#7c3aed", color: "#fff",
-            border: "none", borderRadius: 4, cursor: generating ? "wait" : "pointer",
-          }}
-        >
-          {generating ? "Generating..." : "Generate Recipe"}
-        </button>
-      </div>
-
-      {/* Recipe name + save */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
-        <input
-          value={recipeName}
-          onChange={(e) => { setRecipeName(e.target.value); markDirty(); }}
-          style={{
-            fontSize: 18, fontWeight: "bold", border: "none",
-            borderBottom: "2px solid #333", padding: 4, flex: 1,
-          }}
-        />
-        <label style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 4 }}>
-          Servings:
+        </div>
+        <div className="row gap-2 mt-3">
           <input
-            type="number"
-            min={1}
-            value={servings}
-            onChange={(e) => { setServings(Math.max(1, Number(e.target.value) || 1)); markDirty(); }}
-            style={{ width: 60, padding: 4 }}
+            className="input"
+            placeholder="What are we cooking?"
+            value={genPrompt}
+            onChange={(e) => setGenPrompt(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !generating && handleGenerate()}
+            disabled={generating}
           />
-        </label>
-        <button
-          onClick={saveRecipe}
-          disabled={saving || (!dirty && activeRecipeId !== null)}
-          style={{
-            padding: "8px 20px", fontWeight: 600,
-            background: dirty ? "#2563eb" : "#ccc",
-            color: dirty ? "#fff" : "#666",
-            border: "none", borderRadius: 4, cursor: dirty ? "pointer" : "default",
-          }}
-        >
-          {saving ? "Saving..." : activeRecipeId ? "Save" : "Create"}
-        </button>
+          <button
+            onClick={handleGenerate}
+            disabled={generating || !genPrompt.trim()}
+            className="btn btn-accent"
+          >
+            {generating ? "Thinking..." : "Generate"}
+          </button>
+        </div>
       </div>
 
-      {error && <p style={{ color: "red" }}>{error}</p>}
-
-      <div style={{ display: "flex", gap: 16 }}>
-        {/* Left: ingredient picker */}
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h3 style={{ margin: 0 }}>Add Ingredients</h3>
-            <button
-              onClick={() => setUsdaOpen(!usdaOpen)}
-              style={{ padding: "4px 10px", fontSize: 13 }}
-            >
-              {usdaOpen ? "Close USDA search" : "+ Find more (USDA)"}
-            </button>
-          </div>
-
-          {usdaOpen && (
-            <div style={{ marginTop: 8, padding: 10, background: "#fff8e1", borderRadius: 6 }}>
-              <div style={{ display: "flex", gap: 6 }}>
-                <input
-                  placeholder="Search USDA (e.g. cod, feta, tahini)..."
-                  value={usdaQuery}
-                  onChange={(e) => setUsdaQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleUsdaSearch()}
-                  style={{ flex: 1, padding: 6 }}
-                />
-                <button onClick={handleUsdaSearch} disabled={usdaLoading} style={{ padding: "6px 14px" }}>
-                  {usdaLoading ? "..." : "Search"}
-                </button>
-              </div>
-              <div style={{ maxHeight: 240, overflowY: "auto", marginTop: 8 }}>
-                {usdaResults.map((r) => (
-                  <div
-                    key={r.fdc_id}
-                    style={{
-                      display: "flex", gap: 8, alignItems: "center",
-                      padding: 4, borderBottom: "1px solid #eee", fontSize: 13,
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div>{r.name}</div>
-                      <div style={{ color: "#888", fontSize: 11 }}>
-                        → {r.mapped_category} {r.food_group ? `· ${r.food_group}` : ""}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => promoteToPantry(r)}
-                      disabled={r.in_pantry}
-                      style={{ padding: "2px 10px", fontSize: 12 }}
-                    >
-                      {r.in_pantry ? "✓ In pantry" : "+ Add"}
-                    </button>
-                  </div>
-                ))}
-                {usdaResults.length === 0 && usdaQuery && !usdaLoading && (
-                  <p style={{ color: "#999", fontSize: 13, margin: "8px 0 0 0" }}>No results yet — press Search.</p>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div style={{ display: "flex", gap: 8, margin: "8px 0" }}>
-            <select
-              value={selectedCat}
-              onChange={(e) => setSelectedCat(e.target.value)}
-              style={{ padding: 6 }}
-            >
-              <option value="">All</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+      {/* Editor: name, servings, save */}
+      <div className="card">
+        <div className="row gap-3 wrap">
+          <input
+            className="input-title flex-1"
+            value={recipeName}
+            onChange={(e) => { setRecipeName(e.target.value); markDirty(); }}
+          />
+          <label className="field">
+            Servings
             <input
-              placeholder="Filter..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{ padding: 6, flex: 1 }}
+              type="number"
+              min={1}
+              className="input input-num"
+              value={servings}
+              onChange={(e) => { setServings(Math.max(1, Number(e.target.value) || 1)); markDirty(); }}
             />
-          </div>
+          </label>
+          <button
+            onClick={saveRecipe}
+            disabled={saving || (!dirty && activeRecipeId !== null)}
+            className="btn btn-primary"
+          >
+            {saving ? "Saving..." : activeRecipeId ? "Save" : "Create"}
+          </button>
+        </div>
 
-          <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid #ddd", borderRadius: 4 }}>
-            {filtered.map((ing) => {
-              const added = items.some((i) => i.ingredient.fdc_id === ing.fdc_id);
-              return (
-                <div
-                  key={ing.fdc_id}
-                  style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                    padding: "6px 10px", borderBottom: "1px solid #f0f0f0",
-                    opacity: added ? 0.4 : 1,
-                  }}
-                >
-                  <div>
-                    <span style={{ fontWeight: 500 }}>{ing.name}</span>
-                    <span style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>
-                      {ing.energy_kcal_100g} kcal/100g
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => addItem(ing)}
-                    disabled={added}
-                    style={{ padding: "3px 10px", fontSize: 13 }}
-                  >
-                    {added ? "Added" : "+"}
+        <div className="divider" />
+
+        <div className="row gap-5" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
+          {/* Left: pantry picker */}
+          <div className="flex-1" style={{ minWidth: 320 }}>
+            <div className="row between mb-2">
+              <h3 style={{ margin: 0 }}>Pantry</h3>
+              <button onClick={() => setUsdaOpen(!usdaOpen)} className="btn btn-ghost btn-sm">
+                {usdaOpen ? "Close USDA" : "+ Find more"}
+              </button>
+            </div>
+
+            {usdaOpen && (
+              <div className="card-soft mb-3">
+                <div className="row gap-2 mb-2">
+                  <input
+                    className="input"
+                    placeholder="Search USDA — cod, feta, tahini..."
+                    value={usdaQuery}
+                    onChange={(e) => setUsdaQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleUsdaSearch()}
+                  />
+                  <button onClick={handleUsdaSearch} disabled={usdaLoading} className="btn btn-sm">
+                    {usdaLoading ? "..." : "Search"}
                   </button>
                 </div>
-              );
-            })}
-            {filtered.length === 0 && (
-              <p style={{ padding: 12, color: "#999" }}>No ingredients match.</p>
+                <div className="scroll-y maxh-360">
+                  {usdaResults.map((r) => (
+                    <div key={r.fdc_id} className="list-row">
+                      <div className="flex-1">
+                        <div>{r.name}</div>
+                        <div className="tiny muted">→ {r.mapped_category}{r.food_group ? ` · ${r.food_group}` : ""}</div>
+                      </div>
+                      <button
+                        onClick={() => promoteToPantry(r)}
+                        disabled={r.in_pantry}
+                        className="btn btn-xs"
+                      >
+                        {r.in_pantry ? "✓ In pantry" : "+ Add"}
+                      </button>
+                    </div>
+                  ))}
+                  {usdaResults.length === 0 && usdaQuery && !usdaLoading && (
+                    <p className="muted small mt-2">No results — press Search.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="row gap-2 mb-3">
+              <select
+                className="select"
+                value={selectedCat}
+                onChange={(e) => setSelectedCat(e.target.value)}
+                style={{ width: "auto" }}
+              >
+                <option value="">All categories</option>
+                {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <input
+                className="input flex-1"
+                placeholder="Filter by name..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+
+            <div className="list scroll-y maxh-480">
+              {filtered.map((ing) => {
+                const added = items.some((i) => i.ingredient.fdc_id === ing.fdc_id);
+                return (
+                  <div key={ing.fdc_id} className={`list-row ${added ? "disabled" : ""}`}>
+                    <div className="flex-1">
+                      <div style={{ fontWeight: 500 }}>{ing.name}</div>
+                      <div className="tiny muted">{ing.energy_kcal_100g ?? "?"} kcal · {ing.proteins_100g ?? "?"}g protein /100g</div>
+                    </div>
+                    <button onClick={() => addItem(ing)} disabled={added} className="btn btn-xs">
+                      {added ? "Added" : "+"}
+                    </button>
+                  </div>
+                );
+              })}
+              {filtered.length === 0 && <div className="empty">No ingredients match.</div>}
+            </div>
+          </div>
+
+          {/* Right: current recipe */}
+          <div className="flex-1" style={{ minWidth: 320 }}>
+            <h3>Ingredients <span className="muted small">({items.length})</span></h3>
+            {items.length === 0 && (
+              <div className="empty">Pick ingredients from your pantry.</div>
+            )}
+
+            <div className="col-2">
+              {items.map((item) => (
+                <div key={item.ingredient.fdc_id} className="row gap-2" style={{
+                  background: "var(--cream-2)", padding: "8px 12px", borderRadius: "var(--r-sm)",
+                }}>
+                  <div className="flex-1" style={{ fontWeight: 500 }}>{item.ingredient.name}</div>
+                  <input
+                    type="number"
+                    className="input input-num"
+                    value={item.quantity_g}
+                    onChange={(e) => updateQuantity(item.ingredient.fdc_id, Number(e.target.value) || 0)}
+                    min={0}
+                  />
+                  <span className="small muted">g</span>
+                  <button onClick={() => removeItem(item.ingredient.fdc_id)} className="icon-btn">×</button>
+                </div>
+              ))}
+            </div>
+
+            {nutrition && (
+              <div className="card-accent mt-4">
+                <h4>Nutrition</h4>
+                <table className="table" style={{ background: "transparent" }}>
+                  <tbody>
+                    {[
+                      ["Weight", nutrition.total_weight_g, "g"],
+                      ["Energy", nutrition.total_energy_kcal, "kcal"],
+                      ["Protein", nutrition.total_proteins_g, "g"],
+                      ["Carbs", nutrition.total_carbohydrates_g, "g"],
+                      ["Sugars", nutrition.total_sugars_g, "g"],
+                      ["Fat", nutrition.total_fat_g, "g"],
+                      ["Saturated Fat", nutrition.total_saturated_fat_g, "g"],
+                      ["Fiber", nutrition.total_fiber_g, "g"],
+                      ["Salt", nutrition.total_salt_g, "g"],
+                    ].map(([label, val, unit]) => (
+                      <tr key={String(label)}>
+                        <td>{label}</td>
+                        <td className="right" style={{ fontWeight: 600 }}>{val} {unit}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {nutrition.items_missing.length > 0 && (
+                  <p className="small mt-2" style={{ color: "var(--terracotta-dark)" }}>
+                    Missing data for some items.
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </div>
 
-        {/* Right: recipe items + nutrition */}
-        <div style={{ flex: 1 }}>
-          <h3>Ingredients ({items.length})</h3>
-          {items.length === 0 && (
-            <p style={{ color: "#999" }}>Pick ingredients from the list.</p>
-          )}
-
-          {items.map((item) => (
-            <div
-              key={item.ingredient.fdc_id}
-              style={{
-                display: "flex", alignItems: "center", gap: 8,
-                padding: 8, marginBottom: 4, background: "#f9f9f9", borderRadius: 4,
-              }}
+        {/* Instructions */}
+        <div className="divider" />
+        <div className="col-2">
+          <div className="row between">
+            <h3 style={{ margin: 0 }}>Instructions</h3>
+            <button
+              onClick={() => { setInstructions((prev) => [...prev, ""]); markDirty(); }}
+              className="btn btn-sm"
             >
-              <div style={{ flex: 1, fontWeight: 500, fontSize: 14 }}>
-                {item.ingredient.name}
-              </div>
-              <input
-                type="number"
-                value={item.quantity_g}
-                onChange={(e) => updateQuantity(item.ingredient.fdc_id, Number(e.target.value) || 0)}
-                style={{ width: 70, padding: 4, textAlign: "right" }}
-                min={0}
-              />
-              <span style={{ fontSize: 13 }}>g</span>
-              <button onClick={() => removeItem(item.ingredient.fdc_id)} style={{ padding: "2px 8px" }}>
-                X
-              </button>
-            </div>
-          ))}
-
-          {nutrition && (
-            <div style={{ marginTop: 16, padding: 12, background: "#f0f7f0", borderRadius: 6 }}>
-              <h4 style={{ margin: "0 0 8px 0" }}>Total Nutrition</h4>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-                <tbody>
-                  {[
-                    ["Weight", nutrition.total_weight_g, "g"],
-                    ["Energy", nutrition.total_energy_kcal, "kcal"],
-                    ["Protein", nutrition.total_proteins_g, "g"],
-                    ["Carbs", nutrition.total_carbohydrates_g, "g"],
-                    ["Sugars", nutrition.total_sugars_g, "g"],
-                    ["Fat", nutrition.total_fat_g, "g"],
-                    ["Saturated Fat", nutrition.total_saturated_fat_g, "g"],
-                    ["Fiber", nutrition.total_fiber_g, "g"],
-                    ["Salt", nutrition.total_salt_g, "g"],
-                  ].map(([label, val, unit]) => (
-                    <tr key={String(label)} style={{ borderBottom: "1px solid #ddd" }}>
-                      <td style={{ padding: 3 }}>{label}</td>
-                      <td style={{ padding: 3, textAlign: "right", fontWeight: 500 }}>
-                        {val} {unit}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {nutrition.items_missing.length > 0 && (
-                <p style={{ color: "orange", fontSize: 12, marginTop: 8 }}>
-                  Missing data for some items.
-                </p>
-              )}
-            </div>
+              + Step
+            </button>
+          </div>
+          {instructions.length === 0 && (
+            <div className="empty">No steps yet — add one or generate a recipe.</div>
           )}
-        </div>
-      </div>
-
-      {/* Instructions (editable) */}
-      <div style={{ marginTop: 16, padding: 12, background: "#f9f9f9", borderRadius: 6 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <h4 style={{ margin: 0 }}>Instructions</h4>
-          <button
-            onClick={() => { setInstructions((prev) => [...prev, ""]); markDirty(); }}
-            style={{ padding: "3px 10px", fontSize: 13 }}
-          >
-            + Step
-          </button>
-        </div>
-        {instructions.length === 0 && (
-          <p style={{ color: "#999", margin: 0, fontSize: 14 }}>No steps yet. Add one or generate a recipe.</p>
-        )}
-        <ol style={{ margin: 0, paddingLeft: 20, fontSize: 14, lineHeight: 1.6 }}>
-          {instructions.map((step, i) => (
-            <li key={i} style={{ marginBottom: 4 }}>
-              <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+          <ol className="col-2" style={{ paddingLeft: 24, margin: 0 }}>
+            {instructions.map((step, i) => (
+              <li key={i} className="row gap-2" style={{ alignItems: "flex-start" }}>
                 <textarea
+                  className="textarea flex-1"
                   value={step}
                   onChange={(e) => {
-                    const next = [...instructions];
-                    next[i] = e.target.value;
-                    setInstructions(next);
-                    markDirty();
+                    const next = [...instructions]; next[i] = e.target.value;
+                    setInstructions(next); markDirty();
                   }}
                   rows={1}
-                  style={{ flex: 1, padding: 4, fontFamily: "inherit", fontSize: 14, resize: "vertical" }}
                 />
                 <button
-                  onClick={() => {
-                    setInstructions((prev) => prev.filter((_, j) => j !== i));
-                    markDirty();
-                  }}
-                  style={{ padding: "2px 8px" }}
-                >
-                  X
-                </button>
-              </div>
-            </li>
-          ))}
-        </ol>
+                  onClick={() => { setInstructions((prev) => prev.filter((_, j) => j !== i)); markDirty(); }}
+                  className="icon-btn"
+                >×</button>
+              </li>
+            ))}
+          </ol>
+        </div>
       </div>
     </div>
   );

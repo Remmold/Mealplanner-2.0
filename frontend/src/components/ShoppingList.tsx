@@ -8,10 +8,7 @@ import {
   type ShoppingList as ShoppingListType,
 } from "../api";
 
-interface Selection {
-  recipe: Recipe;
-  portions: number;
-}
+interface Selection { recipe: Recipe; portions: number; }
 
 export default function ShoppingList() {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
@@ -32,38 +29,29 @@ export default function ShoppingList() {
   function toggleRecipe(recipe: Recipe) {
     setSelections((prev) => {
       const next = { ...prev };
-      if (next[recipe.id]) {
-        delete next[recipe.id];
-      } else {
-        next[recipe.id] = { recipe, portions: recipe.servings };
-      }
+      if (next[recipe.id]) delete next[recipe.id];
+      else next[recipe.id] = { recipe, portions: recipe.servings };
       return next;
     });
   }
 
   function updatePortions(recipeId: string, portions: number) {
     setSelections((prev) => ({
-      ...prev,
-      [recipeId]: { ...prev[recipeId], portions: Math.max(1, portions) },
+      ...prev, [recipeId]: { ...prev[recipeId], portions: Math.max(1, portions) },
     }));
   }
 
   async function handleGenerate() {
     const picks = Object.values(selections);
     if (picks.length === 0) return;
-    setLoading(true);
-    setError("");
-    setChecked(new Set());
+    setLoading(true); setError(""); setChecked(new Set());
     try {
       const result = await generateShoppingList(
         picks.map((s) => ({ recipe_id: s.recipe.id, portions: s.portions }))
       );
       setList(result);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { setError(String(e)); }
+    finally { setLoading(false); }
   }
 
   function toggleChecked(fdcId: number) {
@@ -86,155 +74,146 @@ export default function ShoppingList() {
   async function saveLayout() {
     try {
       const saved = await updateStoreLayout(layout);
-      setLayout(saved);
-      setEditLayout(false);
-    } catch (e) {
-      setError(String(e));
-    }
+      setLayout(saved); setEditLayout(false);
+    } catch (e) { setError(String(e)); }
   }
 
+  const totalItems = list?.categories.reduce((sum, c) => sum + c.items.length, 0) ?? 0;
+  const checkedCount = checked.size;
+
   return (
-    <div>
-      <h2>Shopping List</h2>
-
-      {error && <p style={{ color: "red" }}>{error}</p>}
-
-      {/* Recipe picker */}
-      <div style={{ marginBottom: 16 }}>
-        <h3 style={{ marginBottom: 8 }}>Pick recipes</h3>
-        {recipes.length === 0 && <p style={{ color: "#999" }}>No recipes saved yet.</p>}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {recipes.map((r) => {
-            const sel = selections[r.id];
-            return (
-              <div
-                key={r.id}
-                style={{
-                  display: "flex", alignItems: "center", gap: 8,
-                  padding: 8, background: sel ? "#eef6ff" : "#f9f9f9",
-                  borderRadius: 4,
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={!!sel}
-                  onChange={() => toggleRecipe(r)}
-                />
-                <span style={{ flex: 1, fontWeight: 500 }}>{r.name}</span>
-                <span style={{ fontSize: 13, color: "#666" }}>
-                  base: {r.servings} servings
-                </span>
-                {sel && (
-                  <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 4 }}>
-                    Portions:
-                    <input
-                      type="number"
-                      min={1}
-                      value={sel.portions}
-                      onChange={(e) => updatePortions(r.id, Number(e.target.value) || 1)}
-                      style={{ width: 60, padding: 3 }}
-                    />
-                  </label>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <button
-          onClick={handleGenerate}
-          disabled={loading || Object.keys(selections).length === 0}
-          style={{
-            marginTop: 12, padding: "8px 20px", fontWeight: 600,
-            background: "#2563eb", color: "#fff", border: "none",
-            borderRadius: 4, cursor: "pointer",
-          }}
-        >
-          {loading ? "Generating..." : "Generate Shopping List"}
-        </button>
+    <div className="col gap-5">
+      <div className="hero">
+        <h1>Shopping list</h1>
+        <p>Pick recipes and portions. We'll consolidate ingredients, convert to friendly units, and order everything in your store's aisle layout.</p>
       </div>
 
-      {/* Store layout editor */}
-      <div style={{ marginBottom: 16, padding: 12, background: "#f5f5f5", borderRadius: 6 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h4 style={{ margin: 0 }}>Store Layout (purchase order)</h4>
-          <button onClick={() => setEditLayout(!editLayout)} style={{ padding: "3px 10px" }}>
-            {editLayout ? "Close" : "Edit"}
-          </button>
-        </div>
-        {editLayout && (
-          <div style={{ marginTop: 8 }}>
-            {layout.map((cat, i) => (
-              <div key={cat} style={{ display: "flex", gap: 6, alignItems: "center", padding: 3 }}>
-                <span style={{ width: 24, color: "#999", fontSize: 13 }}>{i + 1}.</span>
-                <span style={{ flex: 1 }}>{cat}</span>
-                <button onClick={() => moveCategory(i, -1)} disabled={i === 0} style={{ padding: "2px 8px" }}>↑</button>
-                <button onClick={() => moveCategory(i, 1)} disabled={i === layout.length - 1} style={{ padding: "2px 8px" }}>↓</button>
-              </div>
-            ))}
+      {error && <div className="error">{error}</div>}
+
+      <div className="row gap-5" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
+        {/* Left: pick recipes */}
+        <div className="flex-1" style={{ minWidth: 320 }}>
+          <div className="card">
+            <h3>Pick recipes</h3>
+            {recipes.length === 0 && <div className="empty">No recipes saved yet.</div>}
+            <div className="col-2">
+              {recipes.map((r) => {
+                const sel = selections[r.id];
+                return (
+                  <div key={r.id} className="row gap-3" style={{
+                    padding: 10,
+                    background: sel ? "var(--sage-soft)" : "var(--cream-2)",
+                    borderRadius: "var(--r-sm)",
+                    border: sel ? "1px solid #cddec6" : "1px solid var(--line)",
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={!!sel}
+                      onChange={() => toggleRecipe(r)}
+                    />
+                    <div className="flex-1">
+                      <div style={{ fontWeight: 500 }}>{r.name}</div>
+                      <div className="tiny muted">base: {r.servings} servings</div>
+                    </div>
+                    {sel && (
+                      <label className="field">
+                        <input
+                          type="number"
+                          min={1}
+                          className="input input-num"
+                          value={sel.portions}
+                          onChange={(e) => updatePortions(r.id, Number(e.target.value) || 1)}
+                        />
+                        <span className="tiny">portions</span>
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
             <button
-              onClick={saveLayout}
-              style={{
-                marginTop: 8, padding: "6px 14px", background: "#16a34a",
-                color: "#fff", border: "none", borderRadius: 4, cursor: "pointer",
-              }}
+              onClick={handleGenerate}
+              disabled={loading || Object.keys(selections).length === 0}
+              className="btn btn-primary btn-block mt-4"
             >
-              Save layout
+              {loading ? "Generating..." : "Generate shopping list"}
             </button>
           </div>
-        )}
-      </div>
 
-      {/* Generated list */}
-      {list && (
-        <div>
-          <h3>Shopping List</h3>
-          {list.categories.length === 0 && (
-            <p style={{ color: "#999" }}>No items.</p>
-          )}
-          {list.categories.map((cat) => (
-            <div key={cat.category} style={{ marginBottom: 16 }}>
-              <h4 style={{
-                margin: "0 0 6px 0", padding: "4px 8px",
-                background: "#333", color: "#fff", borderRadius: 4,
-              }}>
-                {cat.category}
-              </h4>
-              {cat.items.map((item) => (
-                <label
-                  key={item.fdc_id}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 8,
-                    padding: "4px 8px", borderBottom: "1px solid #f0f0f0",
-                    textDecoration: checked.has(item.fdc_id) ? "line-through" : "none",
-                    opacity: checked.has(item.fdc_id) ? 0.5 : 1,
-                    cursor: "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked.has(item.fdc_id)}
-                    onChange={() => toggleChecked(item.fdc_id)}
-                  />
-                  <span style={{ flex: 1 }}>{item.name}</span>
-                  <span style={{ fontWeight: 600 }}>
-                    {item.display_quantity} {item.display_unit}
-                  </span>
-                  {item.display_unit !== "g" && (
-                    <span style={{ fontSize: 12, color: "#999" }}>
-                      ({Math.round(item.quantity_g)} g)
-                    </span>
-                  )}
-                </label>
-              ))}
+          <div className="card-soft mt-4">
+            <div className="row between mb-2">
+              <h4 style={{ margin: 0 }}>Store layout</h4>
+              <button onClick={() => setEditLayout(!editLayout)} className="btn btn-ghost btn-sm">
+                {editLayout ? "Close" : "Edit"}
+              </button>
             </div>
-          ))}
-          {list.missing_recipes.length > 0 && (
-            <p style={{ color: "orange", fontSize: 13 }}>
-              Some recipes not found: {list.missing_recipes.join(", ")}
-            </p>
+            {!editLayout && (
+              <p className="small muted" style={{ margin: 0 }}>
+                Items appear in this order on your list. Edit to match your store's aisle flow.
+              </p>
+            )}
+            {editLayout && (
+              <div className="col-2">
+                {layout.map((cat, i) => (
+                  <div key={cat} className="row gap-2" style={{ padding: 4 }}>
+                    <span className="muted small" style={{ width: 24 }}>{i + 1}.</span>
+                    <span className="flex-1">{cat}</span>
+                    <button onClick={() => moveCategory(i, -1)} disabled={i === 0} className="btn btn-xs">↑</button>
+                    <button onClick={() => moveCategory(i, 1)} disabled={i === layout.length - 1} className="btn btn-xs">↓</button>
+                  </div>
+                ))}
+                <button onClick={saveLayout} className="btn btn-primary btn-sm mt-2">Save layout</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: generated list */}
+        <div className="flex-1" style={{ minWidth: 320 }}>
+          {!list && <div className="card empty">No list yet — pick some recipes.</div>}
+          {list && (
+            <div className="card">
+              <div className="row between mb-3">
+                <h3 style={{ margin: 0 }}>Your list</h3>
+                <span className="pill">{checkedCount} / {totalItems} done</span>
+              </div>
+              {list.categories.length === 0 && <div className="empty">No items.</div>}
+              {list.categories.map((cat) => (
+                <div key={cat.category} className="mb-4">
+                  <div className="shop-cat-header">
+                    <span>{cat.category}</span>
+                    <span className="shop-cat-count">{cat.items.length}</span>
+                  </div>
+                  {cat.items.map((item) => {
+                    const isChecked = checked.has(item.fdc_id);
+                    return (
+                      <label key={item.fdc_id} className={`shop-row ${isChecked ? "checked" : ""}`}>
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleChecked(item.fdc_id)}
+                        />
+                        <span className="flex-1">{item.name}</span>
+                        <span className={`shop-qty ${isChecked ? "checked" : ""}`}>
+                          {item.display_quantity} {item.display_unit}
+                        </span>
+                        {item.display_unit !== "g" && (
+                          <span className="tiny muted">({Math.round(item.quantity_g)} g)</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              ))}
+              {list.missing_recipes.length > 0 && (
+                <p className="small" style={{ color: "var(--terracotta-dark)" }}>
+                  Some recipes not found: {list.missing_recipes.join(", ")}
+                </p>
+              )}
+            </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

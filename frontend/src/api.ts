@@ -1,5 +1,27 @@
 const BASE = "/api";
 
+// ------------------------------------------------------------------
+// Cross-component refresh signal
+// ------------------------------------------------------------------
+// The chat agent can mutate recipes / meal plans / pantry behind the user's
+// back. Components subscribe to this so they refetch after agent turns or
+// other writes. Dispatch with `dataChanged()` after any mutation that other
+// views might care about.
+type DataKind = "recipes" | "meal_plans" | "pantry" | "*";
+
+const listeners = new Set<(kind: DataKind) => void>();
+
+export function dataChanged(kind: DataKind = "*") {
+  for (const l of listeners) {
+    try { l(kind); } catch {}
+  }
+}
+
+export function onDataChanged(handler: (kind: DataKind) => void): () => void {
+  listeners.add(handler);
+  return () => listeners.delete(handler);
+}
+
 export interface ProductSummary {
   code: string;
   product_name: string;
@@ -409,8 +431,94 @@ export async function deleteMealPlan(id: string): Promise<void> {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
+export interface GenerateMealPlanInput {
+  prompt: string;
+  start_date: string;
+  days?: number;
+  servings?: number;
+  slots?: string[];
+}
+
+export async function generateMealPlan(input: GenerateMealPlanInput): Promise<MealPlan> {
+  const res = await fetch(`${BASE}/meal-plans/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
 export async function mealPlanShoppingList(id: string): Promise<ShoppingList> {
   const res = await fetch(`${BASE}/meal-plans/${id}/shopping-list`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+// --- Chat ---
+
+export interface ChatSessionSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+}
+
+export interface ChatSessionDetail {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: ChatMessage[];
+}
+
+export interface ChatAuditEvent {
+  kind: string;
+  summary: string;
+  meta: Record<string, unknown>;
+}
+
+export interface SendMessageResponse {
+  reply: string;
+  audit: ChatAuditEvent[];
+  session_id: string;
+}
+
+export async function listChatSessions(): Promise<ChatSessionSummary[]> {
+  const res = await fetch(`${BASE}/chat/sessions`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function createChatSession(): Promise<ChatSessionDetail> {
+  const res = await fetch(`${BASE}/chat/sessions`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function getChatSession(id: string): Promise<ChatSessionDetail> {
+  const res = await fetch(`${BASE}/chat/sessions/${id}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function deleteChatSession(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/chat/sessions/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+}
+
+export async function sendChatMessage(id: string, content: string): Promise<SendMessageResponse> {
+  const res = await fetch(`${BASE}/chat/sessions/${id}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }

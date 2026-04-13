@@ -94,6 +94,27 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_meal_plans_household ON meal_plans(household_id);
             CREATE INDEX IF NOT EXISTS idx_meal_plan_entries_plan ON meal_plan_entries(meal_plan_id);
 
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                household_id TEXT NOT NULL REFERENCES households(id),
+                title TEXT NOT NULL DEFAULT 'New chat',
+                message_history TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tool_calls TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_sessions_household ON chat_sessions(household_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+
             CREATE TABLE IF NOT EXISTS recipe_ingredients (
                 id TEXT PRIMARY KEY,
                 recipe_id TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,

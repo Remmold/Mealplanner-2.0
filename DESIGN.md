@@ -67,8 +67,15 @@ conflict (so users can override naming/categorisation).
 
 ### 2.3 Frontend (TypeScript)
 
-- **React 19** + **Vite**.
-- Single-page tabbed UI: Recipe, Shopping, Products, Categories, Nutrition.
+- **React 19** + **Vite**, branded as **Hearth**.
+- **Warm-kitchen design system** — custom CSS in `src/styles.css` with design
+  tokens (cream `#faf6f1`, sage `#4a6b46`, terracotta `#c8633e`, warm taupe
+  ink). Fraunces serif headlines + Inter body, soft shadows, rounded cards.
+  No CSS framework — keeps the bundle lean and styling consistent across
+  components via semantic classes (`.card`, `.btn-primary`, `.chip`,
+  `.shop-cat-header`, etc.).
+- Sticky header with brand mark + tab nav; max-width content well; subtle
+  gradient backdrop. Each view leads with a hero strip explaining what it does.
 - No state manager — `useState` + fetch. Simple and fast to demo.
 
 ---
@@ -99,6 +106,12 @@ meal_plans (id PK, household_id FK, name, start_date,
 
 meal_plan_entries (id PK, meal_plan_id FK ON DELETE CASCADE,
                    recipe_id FK, plan_date, slot, portions)
+
+chat_sessions (id PK, household_id FK, title, message_history JSON,
+               created_at, updated_at)
+
+chat_messages (id PK, session_id FK ON DELETE CASCADE, role, content,
+               tool_calls JSON, created_at)
 ```
 
 Key design choices:
@@ -155,7 +168,39 @@ Key design choices:
   and produce clean names. Grew the curated set from **86 → 819 ingredients**
   in one run. Idempotent (uses `ON CONFLICT DO NOTHING`).
 
-### 4.6 Shopping list generation
+### 4.6 AI weekly plan generator
+- `POST /meal-plans/generate` takes a free-text brief + start_date + slots
+  (any combination of breakfast/lunch/dinner) + days (1–14) + servings.
+- **Two-stage pipeline:** a "planner" PydanticAI agent receives the brief and
+  the household's existing recipe list; it returns structured `_PlannedMeal`
+  decisions per slot, choosing between `use_recipe_id` (pick an existing
+  recipe) or `new_recipe_prompt` (a description for a fresh recipe). For every
+  "new" decision, the existing `generate_recipe()` is invoked to actually
+  create and persist the recipe. Identical prompts within a single plan are
+  cached so the same dish doesn't get generated twice.
+- Result is a fully-saved meal plan; the editor loads it immediately.
+- Trade-off: stage-1 + N stage-2 calls is many round-trips and 30–60s typical.
+  Worth it for the demo since the output looks magical.
+
+### 4.7 Conversational agent (chat)
+- `POST /chat/sessions/{id}/messages` runs a tool-equipped PydanticAI agent.
+  Tools live in `api/agent_tools.py` and wrap every meaningful operation:
+  list/get/update/delete recipe, generate-and-save recipe, list/get/create/
+  update/delete meal plan and entries, search pantry, search USDA, household
+  summary. Each tool returns a compact human-readable string for the LLM and
+  pushes an `AuditEvent` for the UI.
+- **Persistence:** PydanticAI's `ModelMessagesTypeAdapter` serialises the full
+  message history (including tool calls and returns) as JSON on
+  `chat_sessions.message_history`. Sessions resume across page reloads.
+- **Audit-driven UI feedback:** the API returns `audit: AuditEvent[]` along
+  with the assistant reply. The chat panel shows them as honey-tinted cards
+  ("Renamed 'Pasta' → 'Lemon-Garlic Spaghetti'"), and dispatches a global
+  `dataChanged()` event so other views refetch their data automatically.
+- **System prompt** instructs the agent to: always look things up before
+  claiming facts, never invent IDs, actually do what the user asks (don't
+  just describe), confirm destructive ops.
+
+### 4.8 Shopping list generation
 - `POST /shopping-lists/generate` takes `[{recipe_id, portions}]`, scales by
   `portions / recipe.servings`, consolidates ingredients by `fdc_id`, applies
   unit conversions (eggs → pcs, milk/cream/oil/soy → dl, flour/rice/sugar →
@@ -235,6 +280,9 @@ Key design choices:
 - [ ] Mobile-friendly shopping list (big tap targets, swipe-to-check).
 - [ ] Print / PDF export of a generated shopping list.
 - [ ] Recipe image via DALL·E or a stock fallback.
+- [ ] Dashboard / landing view on first open (today's meals, this week
+      at a glance).
+- [ ] Empty-state illustrations (instead of italic "No X yet" text).
 
 ---
 
@@ -242,6 +290,32 @@ Key design choices:
 
 > Newest entries on top. Keep each entry short — one or two lines on *what
 > changed* and *why*. Leave dates approximate when unsure.
+
+### 2026-04 — Conversational agent + AI weekly plan generator
+Two big AI features ship together. (1) `POST /meal-plans/generate` — a
+two-stage pipeline: planner agent decides what to cook each day (reusing
+saved recipes when sensible, prompting for new ones otherwise), then we
+sequentially call the recipe generator for each missing dish and assemble
+the plan. New "✦ Generate week with AI" button on the meal plan tab
+opens a modal: brief, start date, days, servings, slot pickers. (2) Global
+chat assistant with full tool access — `api/agent_tools.py` exposes
+recipe/plan/pantry CRUD as PydanticAI tools; `api/chat.py` persists
+conversation history per session via `ModelMessagesTypeAdapter` so chats
+resume across reloads. Each turn returns an audit log of mutations; the chat
+panel renders them as honey-tinted action cards and dispatches a global
+`dataChanged()` event so MealPlan and RecipeBuilder auto-refresh. Floating
+terracotta launcher in the bottom-right opens the slide-out drawer with
+typing indicator, suggestion chips, session list.
+
+### 2026-04 — Frontend rebrand: "Hearth" warm-kitchen design system
+Full visual overhaul. App rebranded "Hearth — your kitchen, planned". New
+`styles.css` design system with cream/sage/terracotta palette, Fraunces serif
+headlines + Inter body, semantic component classes (cards, pills, chips,
+buttons, week-grid, shop-row, modal). Sticky header with brand mark + pill
+nav, hero strip on each view, soft shadows and rounded cards throughout.
+Every component (RecipeBuilder, MealPlan, ShoppingList, ProductList,
+ProductDetail, Categories, NutritionAggregator) rewritten to use the system —
+no more inline styles.
 
 ### 2026-04 — Meal plan (week view) + one-click shopping list
 New `meal_plans` + `meal_plan_entries` tables and full CRUD. Frontend week
