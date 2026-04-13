@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from api.database import get_connection  # noqa: E402
-from api.ingredients import VALID_CATEGORIES, map_food_group  # noqa: E402
+from api.ingredients import VALID_CATEGORIES  # noqa: E402
 from api.recipe_db import get_recipe_db  # noqa: E402
 
 
@@ -96,7 +96,9 @@ def fetch_candidates(limit: int | None) -> list[dict]:
         ).fetchall()
 
     excluded_ids = curated_ids | pantry_ids
-    out = []
+
+    # Bucket by food_group so we can interleave
+    buckets: dict[str, list[dict]] = {g: [] for g in INCLUDE_FOOD_GROUPS}
     for fdc_id, name, food_group in rows:
         if fdc_id in excluded_ids:
             continue
@@ -104,9 +106,19 @@ def fetch_candidates(limit: int | None) -> list[dict]:
             continue
         if any(p.search(name) for p in EXCLUDE_PATTERNS):
             continue
-        out.append({"fdc_id": fdc_id, "name": name, "food_group": food_group})
-        if limit and len(out) >= limit:
-            break
+        buckets[food_group].append({"fdc_id": fdc_id, "name": name, "food_group": food_group})
+
+    # Round-robin interleave so each batch sees variety across food groups
+    out: list[dict] = []
+    iters = {g: iter(items) for g, items in buckets.items()}
+    while iters:
+        for g in list(iters):
+            try:
+                out.append(next(iters[g]))
+                if limit and len(out) >= limit:
+                    return out
+            except StopIteration:
+                del iters[g]
     return out
 
 
