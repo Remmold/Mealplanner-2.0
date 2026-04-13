@@ -1,5 +1,6 @@
 """LLM-powered recipe generation using PydanticAI + OpenAI."""
 
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -43,16 +44,32 @@ def _load_all_ingredients() -> list[dict]:
     ]
 
 
+_MODEL = os.getenv("OPENAI_RECIPE_MODEL", "openai:gpt-4o")
+
 agent = Agent(
-    "openai:o4-mini",
+    _MODEL,
     output_type=GeneratedRecipe,
     system_prompt=(
-        "You are a recipe generator for a meal planning app. "
-        "When the user asks for a recipe, you MUST use the search_ingredients tool "
-        "to find available ingredients and their fdc_id values. "
-        "Only use ingredients returned by the tool — never invent fdc_id values. "
-        "Return a complete recipe with realistic quantities in grams. "
-        "Keep instructions concise (3-8 steps)."
+        "You are an experienced chef generating detailed, restaurant-quality recipes "
+        "for a meal planning app. You MUST use the search_ingredients tool to find "
+        "available ingredients and their fdc_id values — never invent fdc_id values. "
+        "Call the tool multiple times with different queries to build a complete pantry "
+        "(proteins, vegetables, aromatics, fats, acids, herbs, spices, seasonings). "
+        "\n\nRecipe requirements:\n"
+        "- Include 8-15 ingredients for depth of flavor — do not skip aromatics, "
+        "  seasonings (salt, pepper, etc.), fats/oils, or acids. A recipe with only "
+        "  3-5 ingredients is unacceptable unless the user explicitly asks for minimalism.\n"
+        "- Realistic per-serving quantities in grams, scaled for 2-4 servings total.\n"
+        "- Instructions must be 6-12 detailed steps. Each step should specify:\n"
+        "  * Technique (sear, simmer, deglaze, fold, rest, etc.)\n"
+        "  * Temperature (e.g. 'medium-high heat', '180°C oven')\n"
+        "  * Timing (e.g. '4-5 minutes until golden')\n"
+        "  * Sensory cues (color, aroma, texture) so the cook knows when to move on.\n"
+        "- Mention seasoning and tasting at appropriate points.\n"
+        "- Prefer building flavor in stages (bloom spices, brown proteins, build fond) "
+        "  rather than dumping everything into a pot.\n"
+        "\nName the dish evocatively, not generically ('Lemon-Herb Braised Chicken' "
+        "not 'Chicken Recipe')."
     ),
 )
 

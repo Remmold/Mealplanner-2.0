@@ -45,6 +45,7 @@ def init_db():
                 id TEXT PRIMARY KEY,
                 household_id TEXT NOT NULL REFERENCES households(id),
                 name TEXT NOT NULL,
+                instructions TEXT NOT NULL DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -63,6 +64,11 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe
                 ON recipe_ingredients(recipe_id);
         """)
+
+        # Lightweight migration: add instructions column if missing
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(recipes)").fetchall()}
+        if "instructions" not in cols:
+            conn.execute("ALTER TABLE recipes ADD COLUMN instructions TEXT NOT NULL DEFAULT '[]'")
 
         # Ensure default household exists
         existing = conn.execute(

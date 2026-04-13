@@ -1,5 +1,7 @@
 """Recipe CRUD endpoints."""
 
+import json
+
 from fastapi import APIRouter, HTTPException
 
 from api.database import get_connection as get_duckdb
@@ -42,6 +44,11 @@ def _build_recipe_out(conn, recipe_id: str) -> RecipeOut:
     fdc_ids = [ing["fdc_id"] for ing in db_ingredients]
     names = _load_ingredient_names(fdc_ids)
 
+    try:
+        instructions = json.loads(row["instructions"]) if row["instructions"] else []
+    except (json.JSONDecodeError, TypeError):
+        instructions = []
+
     return RecipeOut(
         id=row["id"],
         household_id=row["household_id"],
@@ -54,6 +61,7 @@ def _build_recipe_out(conn, recipe_id: str) -> RecipeOut:
             )
             for ing in db_ingredients
         ],
+        instructions=instructions,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -75,8 +83,8 @@ def create_recipe(body: RecipeCreate, household_id: str = DEFAULT_HOUSEHOLD_ID):
 
     with get_recipe_db() as conn:
         conn.execute(
-            "INSERT INTO recipes (id, household_id, name) VALUES (?, ?, ?)",
-            [recipe_id, household_id, body.name],
+            "INSERT INTO recipes (id, household_id, name, instructions) VALUES (?, ?, ?, ?)",
+            [recipe_id, household_id, body.name, json.dumps(body.instructions)],
         )
         for ing in body.ingredients:
             conn.execute(
@@ -122,6 +130,12 @@ def update_recipe(recipe_id: str, body: RecipeUpdate):
             conn.execute(
                 "UPDATE recipes SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 [body.name, recipe_id],
+            )
+
+        if body.instructions is not None:
+            conn.execute(
+                "UPDATE recipes SET instructions = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                [json.dumps(body.instructions), recipe_id],
             )
 
         if body.ingredients is not None:

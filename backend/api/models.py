@@ -127,11 +127,13 @@ class RecipeIngredientIn(BaseModel):
 class RecipeCreate(BaseModel):
     name: str
     ingredients: list[RecipeIngredientIn] = []
+    instructions: list[str] = []
 
 
 class RecipeUpdate(BaseModel):
     name: str | None = None
     ingredients: list[RecipeIngredientIn] | None = None
+    instructions: list[str] | None = None
 
 
 class GenerateRecipeRequest(BaseModel):
@@ -161,6 +163,7 @@ class RecipeOut(BaseModel):
     household_id: str
     name: str
     ingredients: list[RecipeIngredientOut] = []
+    instructions: list[str] = []
     created_at: str
     updated_at: str
 

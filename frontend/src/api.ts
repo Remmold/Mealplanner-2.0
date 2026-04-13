@@ -173,6 +173,7 @@ export interface Recipe {
   household_id: string;
   name: string;
   ingredients: RecipeIngredient[];
+  instructions: string[];
   created_at: string;
   updated_at: string;
 }
@@ -191,12 +192,13 @@ export async function fetchRecipe(id: string): Promise<Recipe> {
 
 export async function createRecipe(
   name: string,
-  ingredients: { fdc_id: number; quantity_g: number }[]
+  ingredients: { fdc_id: number; quantity_g: number }[],
+  instructions: string[] = []
 ): Promise<Recipe> {
   const res = await fetch(`${BASE}/recipes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, ingredients }),
+    body: JSON.stringify({ name, ingredients, instructions }),
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
@@ -204,7 +206,7 @@ export async function createRecipe(
 
 export async function updateRecipe(
   id: string,
-  data: { name?: string; ingredients?: { fdc_id: number; quantity_g: number }[] }
+  data: { name?: string; ingredients?: { fdc_id: number; quantity_g: number }[]; instructions?: string[] }
 ): Promise<Recipe> {
   const res = await fetch(`${BASE}/recipes/${id}`, {
     method: "PUT",

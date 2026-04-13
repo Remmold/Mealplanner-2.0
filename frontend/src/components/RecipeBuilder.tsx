@@ -30,10 +30,11 @@ export default function RecipeBuilder() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const [instructions, setInstructions] = useState<string[]>([]);
+
   // AI generation
   const [genPrompt, setGenPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [genInstructions, setGenInstructions] = useState<string[]>([]);
 
   // Ingredient picker
   const [categories, setCategories] = useState<string[]>([]);
@@ -78,6 +79,7 @@ export default function RecipeBuilder() {
         }
       }
       setItems(loaded);
+      setInstructions(recipe.instructions ?? []);
       setDirty(false);
     },
     [allIngredients]
@@ -87,7 +89,7 @@ export default function RecipeBuilder() {
     setActiveRecipeId(null);
     setRecipeName("Untitled Recipe");
     setItems([]);
-    setGenInstructions([]);
+    setInstructions([]);
     setDirty(false);
   }
 
@@ -100,7 +102,7 @@ export default function RecipeBuilder() {
       // Load generated recipe into editor
       setActiveRecipeId(null);
       setRecipeName(gen.name);
-      setGenInstructions(gen.instructions);
+      setInstructions(gen.instructions);
       const loaded: RecipeItem[] = [];
       for (const gi of gen.ingredients) {
         const ing = allIngredients.find((i) => i.fdc_id === gi.fdc_id);
@@ -122,9 +124,9 @@ export default function RecipeBuilder() {
     try {
       const ingredients = items.map((i) => ({ fdc_id: i.ingredient.fdc_id, quantity_g: i.quantity_g }));
       if (activeRecipeId) {
-        await updateRecipe(activeRecipeId, { name: recipeName, ingredients });
+        await updateRecipe(activeRecipeId, { name: recipeName, ingredients, instructions });
       } else {
-        const created = await createRecipe(recipeName, ingredients);
+        const created = await createRecipe(recipeName, ingredients, instructions);
         setActiveRecipeId(created.id);
       }
       setDirty(false);
@@ -388,17 +390,49 @@ export default function RecipeBuilder() {
         </div>
       </div>
 
-      {/* Generated instructions */}
-      {genInstructions.length > 0 && (
-        <div style={{ marginTop: 16, padding: 12, background: "#f9f9f9", borderRadius: 6 }}>
-          <h4 style={{ margin: "0 0 8px 0" }}>Instructions</h4>
-          <ol style={{ margin: 0, paddingLeft: 20, fontSize: 14, lineHeight: 1.6 }}>
-            {genInstructions.map((step, i) => (
-              <li key={i}>{step}</li>
-            ))}
-          </ol>
+      {/* Instructions (editable) */}
+      <div style={{ marginTop: 16, padding: 12, background: "#f9f9f9", borderRadius: 6 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <h4 style={{ margin: 0 }}>Instructions</h4>
+          <button
+            onClick={() => { setInstructions((prev) => [...prev, ""]); markDirty(); }}
+            style={{ padding: "3px 10px", fontSize: 13 }}
+          >
+            + Step
+          </button>
         </div>
-      )}
+        {instructions.length === 0 && (
+          <p style={{ color: "#999", margin: 0, fontSize: 14 }}>No steps yet. Add one or generate a recipe.</p>
+        )}
+        <ol style={{ margin: 0, paddingLeft: 20, fontSize: 14, lineHeight: 1.6 }}>
+          {instructions.map((step, i) => (
+            <li key={i} style={{ marginBottom: 4 }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+                <textarea
+                  value={step}
+                  onChange={(e) => {
+                    const next = [...instructions];
+                    next[i] = e.target.value;
+                    setInstructions(next);
+                    markDirty();
+                  }}
+                  rows={1}
+                  style={{ flex: 1, padding: 4, fontFamily: "inherit", fontSize: 14, resize: "vertical" }}
+                />
+                <button
+                  onClick={() => {
+                    setInstructions((prev) => prev.filter((_, j) => j !== i));
+                    markDirty();
+                  }}
+                  style={{ padding: "2px 8px" }}
+                >
+                  X
+                </button>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
     </div>
   );
 }
