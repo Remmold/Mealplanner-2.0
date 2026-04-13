@@ -231,3 +231,6 @@ backend/usda_sr_legacy.zip
 # Frontend build artifacts
 frontend/dist/
 frontend/node_modules/
+
+# Claude Code working notes (not part of the project)
+CLAUDE.md
