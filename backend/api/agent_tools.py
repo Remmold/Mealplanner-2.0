@@ -1,45 +1,35 @@
 """Tool functions exposed to the chat agent.
 
-Each function performs a real DB operation and returns a compact human-readable
-string describing the outcome. Tools should be defensive (gracefully handle
-missing IDs, invalid dates, etc.) so the LLM can recover from mistakes.
+Design: read tools run inline. Write tools do NOT mutate directly — they call
+`PendingProposer.propose(...)` so the user can Accept or Reject each action
+from the UI. This is the human-in-the-loop safety net: the agent can suggest
+as freely as it wants; nothing changes until the user agrees.
 
-Usage: register tools on a PydanticAI Agent via `register_all(agent, household_id)`.
-The household_id is a closure capture so the LLM never has to pass it around.
+Tools still return human-readable strings so the LLM has something to reason
+over for subsequent turns (e.g. "I proposed creating recipe X; it's pending
+your approval").
 """
 
 from __future__ import annotations
 
 import json
-from typing import Callable
 
 from api.database import get_connection
 from api.ingredients import load_all_curated_meta
-from api.recipe_db import get_recipe_db, new_id
+from api.pending_actions import PendingProposer
+from api.profile import PROFILE_FIELDS
+from api.recipe_db import get_recipe_db
 
 
-# ============================================================
-# Audit log
-# ============================================================
-# Track mutations performed during a single chat turn so the API can return them
-# to the client (so the UI can show "Updated 'Tuesday dinner' to ...").
+def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
+    """Register all tools on a PydanticAI agent.
 
-class AuditLog:
-    def __init__(self):
-        self.events: list[dict] = []
+    Mutating tools route through `proposer.propose(...)` instead of writing.
+    Read tools run inline."""
 
-    def record(self, kind: str, summary: str, meta: dict | None = None):
-        self.events.append({"kind": kind, "summary": summary, "meta": meta or {}})
-
-
-# ============================================================
-# Tool registration
-# ============================================================
-
-def register_all(agent, household_id: str, audit: AuditLog) -> None:
-    """Register all tools on a PydanticAI agent for the given household."""
-
-    # ---- Recipes (read) ----
+    # =========================================================
+    # READ — run inline
+    # =========================================================
 
     @agent.tool_plain
     def list_recipes() -> str:
@@ -106,94 +96,6 @@ def register_all(agent, household_id: str, audit: AuditLog) -> None:
             f"Instructions:\n" + ("\n".join(instr_lines) or "  (none)")
         )
 
-    # ---- Recipes (write) ----
-
-    @agent.tool_plain
-    def update_recipe_name(recipe_id: str, new_name: str) -> str:
-        """Rename a saved recipe."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-            if not row:
-                return f"Recipe {recipe_id} not found."
-            old = row["name"]
-            conn.execute(
-                "UPDATE recipes SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [new_name, recipe_id],
-            )
-        audit.record("recipe.rename", f"Renamed '{old}' → '{new_name}'", {"recipe_id": recipe_id})
-        return f"Renamed recipe {recipe_id}: '{old}' → '{new_name}'."
-
-    @agent.tool_plain
-    def update_recipe_servings(recipe_id: str, servings: int) -> str:
-        """Change a recipe's base serving count (rescales nothing — quantities stay as stored)."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-            if not row:
-                return f"Recipe {recipe_id} not found."
-            conn.execute(
-                "UPDATE recipes SET servings = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [max(1, servings), recipe_id],
-            )
-        audit.record("recipe.servings", f"Set '{row['name']}' to {servings} servings", {"recipe_id": recipe_id})
-        return f"Updated '{row['name']}' to {servings} servings."
-
-    @agent.tool_plain
-    def delete_recipe(recipe_id: str) -> str:
-        """Delete a saved recipe permanently."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-            if not row:
-                return f"Recipe {recipe_id} not found."
-            conn.execute("DELETE FROM recipes WHERE id = ?", [recipe_id])
-        audit.record("recipe.delete", f"Deleted recipe '{row['name']}'", {"recipe_id": recipe_id})
-        return f"Deleted recipe '{row['name']}'."
-
-    @agent.tool_plain
-    async def generate_and_save_recipe(prompt: str, servings: int = 4) -> str:
-        """Generate a new recipe via LLM from a prompt and save it.
-
-        Use when the user asks to create a recipe from scratch or when populating
-        a meal plan with a dish that doesn't exist yet."""
-        from api.recipe_gen import generate_recipe
-
-        try:
-            gen = await generate_recipe(prompt)
-        except Exception as e:
-            return f"Recipe generation failed: {e}"
-
-        recipe_id = new_id()
-        with get_recipe_db() as conn:
-            conn.execute(
-                "INSERT INTO recipes (id, household_id, name, instructions, servings) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [recipe_id, household_id, gen.name, json.dumps(gen.instructions), servings],
-            )
-            for ing in gen.ingredients:
-                conn.execute(
-                    "INSERT INTO recipe_ingredients (id, recipe_id, fdc_id, quantity_g) "
-                    "VALUES (?, ?, ?, ?)",
-                    [new_id(), recipe_id, ing.fdc_id, ing.quantity_g],
-                )
-        audit.record(
-            "recipe.create", f"Generated and saved recipe '{gen.name}'",
-            {"recipe_id": recipe_id, "name": gen.name},
-        )
-        return (
-            f"Created recipe id={recipe_id} | '{gen.name}' "
-            f"with {len(gen.ingredients)} ingredients and {len(gen.instructions)} steps."
-        )
-
-    # ---- Meal plans ----
-
     @agent.tool_plain
     def list_meal_plans() -> str:
         """List all meal plans for the household."""
@@ -230,7 +132,7 @@ def register_all(agent, household_id: str, audit: AuditLog) -> None:
         if not entries:
             lines.append("  (no entries yet)")
         for e in entries:
-            slot = e["slot"] or "—"
+            slot = e["slot"] or "-"
             lines.append(
                 f"  entry_id={e['id']} | {e['plan_date']} {slot}: {e['recipe_name'] or '???'} "
                 f"(recipe_id={e['recipe_id']}, portions={e['portions']})"
@@ -238,131 +140,8 @@ def register_all(agent, household_id: str, audit: AuditLog) -> None:
         return "\n".join(lines)
 
     @agent.tool_plain
-    def create_meal_plan(name: str, start_date: str) -> str:
-        """Create an empty meal plan. start_date is an ISO date like 2026-04-14."""
-        plan_id = new_id()
-        with get_recipe_db() as conn:
-            conn.execute(
-                "INSERT INTO meal_plans (id, household_id, name, start_date) VALUES (?, ?, ?, ?)",
-                [plan_id, household_id, name, start_date],
-            )
-        audit.record(
-            "plan.create", f"Created meal plan '{name}' starting {start_date}",
-            {"plan_id": plan_id, "name": name},
-        )
-        return f"Created meal plan id={plan_id} | '{name}' starting {start_date}."
-
-    @agent.tool_plain
-    def add_meal_to_plan(
-        plan_id: str, recipe_id: str, plan_date: str,
-        slot: str = "dinner", portions: float = 1,
-    ) -> str:
-        """Add a recipe to a meal plan on a specific date and slot.
-
-        slot: 'breakfast', 'lunch', or 'dinner'. plan_date: ISO date."""
-        with get_recipe_db() as conn:
-            plan = conn.execute(
-                "SELECT name FROM meal_plans WHERE id = ? AND household_id = ?",
-                [plan_id, household_id],
-            ).fetchone()
-            if not plan:
-                return f"Meal plan {plan_id} not found."
-            recipe = conn.execute(
-                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-            if not recipe:
-                return f"Recipe {recipe_id} not found."
-            entry_id = new_id()
-            conn.execute(
-                "INSERT INTO meal_plan_entries (id, meal_plan_id, recipe_id, plan_date, slot, portions) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [entry_id, plan_id, recipe_id, plan_date, slot, portions],
-            )
-            conn.execute(
-                "UPDATE meal_plans SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [plan_id],
-            )
-        audit.record(
-            "plan.add_entry",
-            f"Added '{recipe['name']}' to {plan_date} {slot} (×{portions})",
-            {"plan_id": plan_id, "entry_id": entry_id},
-        )
-        return (
-            f"Added '{recipe['name']}' to '{plan['name']}' on {plan_date} {slot} "
-            f"(portions={portions}, entry_id={entry_id})."
-        )
-
-    @agent.tool_plain
-    def remove_meal_from_plan(entry_id: str) -> str:
-        """Remove a single entry from a meal plan."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT e.plan_date, e.slot, r.name AS recipe_name, e.meal_plan_id "
-                "FROM meal_plan_entries e LEFT JOIN recipes r ON r.id = e.recipe_id "
-                "WHERE e.id = ?",
-                [entry_id],
-            ).fetchone()
-            if not row:
-                return f"Entry {entry_id} not found."
-            conn.execute("DELETE FROM meal_plan_entries WHERE id = ?", [entry_id])
-            conn.execute(
-                "UPDATE meal_plans SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [row["meal_plan_id"]],
-            )
-        audit.record(
-            "plan.remove_entry",
-            f"Removed '{row['recipe_name']}' from {row['plan_date']} {row['slot']}",
-            {"entry_id": entry_id},
-        )
-        return f"Removed '{row['recipe_name']}' from {row['plan_date']} {row['slot']}."
-
-    @agent.tool_plain
-    def update_entry_portions(entry_id: str, portions: float) -> str:
-        """Change the portions for one entry in a meal plan."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT e.plan_date, e.slot, r.name AS recipe_name, e.meal_plan_id "
-                "FROM meal_plan_entries e LEFT JOIN recipes r ON r.id = e.recipe_id "
-                "WHERE e.id = ?",
-                [entry_id],
-            ).fetchone()
-            if not row:
-                return f"Entry {entry_id} not found."
-            conn.execute(
-                "UPDATE meal_plan_entries SET portions = ? WHERE id = ?",
-                [max(1, float(portions)), entry_id],
-            )
-            conn.execute(
-                "UPDATE meal_plans SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [row["meal_plan_id"]],
-            )
-        audit.record(
-            "plan.update_portions",
-            f"Set '{row['recipe_name']}' on {row['plan_date']} to {portions} portions",
-            {"entry_id": entry_id},
-        )
-        return f"Updated portions for '{row['recipe_name']}' to {portions}."
-
-    @agent.tool_plain
-    def delete_meal_plan(plan_id: str) -> str:
-        """Delete a meal plan and all its entries."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT name FROM meal_plans WHERE id = ? AND household_id = ?",
-                [plan_id, household_id],
-            ).fetchone()
-            if not row:
-                return f"Meal plan {plan_id} not found."
-            conn.execute("DELETE FROM meal_plans WHERE id = ?", [plan_id])
-        audit.record("plan.delete", f"Deleted meal plan '{row['name']}'", {"plan_id": plan_id})
-        return f"Deleted meal plan '{row['name']}'."
-
-    # ---- Pantry / ingredients ----
-
-    @agent.tool_plain
     def search_pantry(query: str) -> str:
-        """Search the curated pantry (dbt seed ∪ user pantry) for ingredients matching a name or category."""
+        """Search the curated pantry (dbt seed ∪ user pantry) for ingredients."""
         meta = load_all_curated_meta()
         ql = query.lower()
         hits = [
@@ -379,7 +158,7 @@ def register_all(agent, household_id: str, audit: AuditLog) -> None:
 
     @agent.tool_plain
     def search_usda(query: str, limit: int = 25) -> str:
-        """Search the full USDA database (~8k items) by name. Returns fdc_ids you can promote to the pantry or use directly."""
+        """Search the full USDA database (~8k items) by name."""
         like = f"%{query.lower()}%"
         with get_connection() as conn:
             rows = conn.execute(
@@ -393,11 +172,15 @@ def register_all(agent, household_id: str, audit: AuditLog) -> None:
             f"fdc_id={r[0]} | {r[1]} (group: {r[2]})" for r in rows
         )
 
-    # ---- Helpful summaries ----
+    @agent.tool_plain
+    def get_profile() -> str:
+        """Read the household profile — dietary needs, likes/dislikes, etc."""
+        from api.profile import load_profile, render_profile_context
+        return render_profile_context(load_profile(household_id))
 
     @agent.tool_plain
     def household_summary() -> str:
-        """Quick state-of-the-app summary: counts of recipes, meal plans, pantry items."""
+        """State-of-the-app summary: counts of recipes, meal plans, pantry items."""
         with get_recipe_db() as conn:
             n_recipes = conn.execute(
                 "SELECT COUNT(*) AS c FROM recipes WHERE household_id = ?",
@@ -415,4 +198,189 @@ def register_all(agent, household_id: str, audit: AuditLog) -> None:
             f"  meal plans: {n_plans}\n"
             f"  pantry: {n_curated} ingredients ({n_pantry} user-promoted, "
             f"{n_curated - n_pantry} from curated seed)"
+        )
+
+    # =========================================================
+    # WRITE — propose for user approval
+    # =========================================================
+
+    def _preview(kind: str, summary: str, params: dict) -> str:
+        pid = proposer.propose(kind, summary, params)
+        return f"Proposed (id={pid}): {summary}. Waiting for the user to accept."
+
+    @agent.tool_plain
+    def propose_rename_recipe(recipe_id: str, new_name: str) -> str:
+        """PROPOSE renaming a saved recipe. Does NOT apply the change — the user
+        must accept it in the UI."""
+        with get_recipe_db() as conn:
+            row = conn.execute(
+                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
+                [recipe_id, household_id],
+            ).fetchone()
+        if not row:
+            return f"Recipe {recipe_id} not found."
+        return _preview(
+            "recipe.rename",
+            f"Rename '{row['name']}' -> '{new_name}'",
+            {"recipe_id": recipe_id, "new_name": new_name},
+        )
+
+    @agent.tool_plain
+    def propose_update_recipe_servings(recipe_id: str, servings: int) -> str:
+        """PROPOSE changing a recipe's base serving count."""
+        with get_recipe_db() as conn:
+            row = conn.execute(
+                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
+                [recipe_id, household_id],
+            ).fetchone()
+        if not row:
+            return f"Recipe {recipe_id} not found."
+        return _preview(
+            "recipe.servings",
+            f"Set '{row['name']}' to {servings} servings",
+            {"recipe_id": recipe_id, "servings": int(servings)},
+        )
+
+    @agent.tool_plain
+    def propose_delete_recipe(recipe_id: str) -> str:
+        """PROPOSE deleting a recipe."""
+        with get_recipe_db() as conn:
+            row = conn.execute(
+                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
+                [recipe_id, household_id],
+            ).fetchone()
+        if not row:
+            return f"Recipe {recipe_id} not found."
+        return _preview(
+            "recipe.delete",
+            f"Delete recipe '{row['name']}'",
+            {"recipe_id": recipe_id},
+        )
+
+    @agent.tool_plain
+    def propose_generate_recipe(prompt: str, servings: int = 4) -> str:
+        """PROPOSE generating and saving a new recipe from a short prompt.
+
+        The generation itself only happens on accept — avoids wasting tokens on
+        recipes the user doesn't want."""
+        return _preview(
+            "recipe.create",
+            f"Generate and save recipe: '{prompt}' (base servings {servings})",
+            {"prompt": prompt, "servings": int(servings)},
+        )
+
+    @agent.tool_plain
+    def propose_create_meal_plan(name: str, start_date: str) -> str:
+        """PROPOSE creating an empty meal plan. start_date is ISO YYYY-MM-DD."""
+        return _preview(
+            "plan.create",
+            f"Create meal plan '{name}' starting {start_date}",
+            {"name": name, "start_date": start_date},
+        )
+
+    @agent.tool_plain
+    def propose_delete_meal_plan(plan_id: str) -> str:
+        """PROPOSE deleting a meal plan."""
+        with get_recipe_db() as conn:
+            row = conn.execute(
+                "SELECT name FROM meal_plans WHERE id = ? AND household_id = ?",
+                [plan_id, household_id],
+            ).fetchone()
+        if not row:
+            return f"Meal plan {plan_id} not found."
+        return _preview(
+            "plan.delete",
+            f"Delete meal plan '{row['name']}'",
+            {"plan_id": plan_id},
+        )
+
+    @agent.tool_plain
+    def propose_add_meal_to_plan(
+        plan_id: str, recipe_id: str, plan_date: str,
+        slot: str = "dinner", portions: float = 1,
+    ) -> str:
+        """PROPOSE adding a recipe to a meal plan on a specific date and slot."""
+        with get_recipe_db() as conn:
+            plan = conn.execute(
+                "SELECT name FROM meal_plans WHERE id = ? AND household_id = ?",
+                [plan_id, household_id],
+            ).fetchone()
+            if not plan:
+                return f"Meal plan {plan_id} not found."
+            recipe = conn.execute(
+                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
+                [recipe_id, household_id],
+            ).fetchone()
+            if not recipe:
+                return f"Recipe {recipe_id} not found."
+        return _preview(
+            "plan.add_entry",
+            f"Add '{recipe['name']}' to '{plan['name']}' on {plan_date} {slot} ({portions} portions)",
+            {
+                "plan_id": plan_id, "recipe_id": recipe_id, "plan_date": plan_date,
+                "slot": slot, "portions": float(portions),
+            },
+        )
+
+    @agent.tool_plain
+    def propose_remove_meal_from_plan(entry_id: str) -> str:
+        """PROPOSE removing a single entry from a meal plan."""
+        with get_recipe_db() as conn:
+            row = conn.execute(
+                "SELECT e.plan_date, e.slot, r.name AS recipe_name "
+                "FROM meal_plan_entries e LEFT JOIN recipes r ON r.id = e.recipe_id "
+                "WHERE e.id = ?",
+                [entry_id],
+            ).fetchone()
+        if not row:
+            return f"Entry {entry_id} not found."
+        return _preview(
+            "plan.remove_entry",
+            f"Remove '{row['recipe_name']}' from {row['plan_date']} {row['slot']}",
+            {"entry_id": entry_id},
+        )
+
+    @agent.tool_plain
+    def propose_update_entry_portions(entry_id: str, portions: float) -> str:
+        """PROPOSE changing the portions on a meal plan entry."""
+        with get_recipe_db() as conn:
+            row = conn.execute(
+                "SELECT r.name AS recipe_name FROM meal_plan_entries e "
+                "LEFT JOIN recipes r ON r.id = e.recipe_id WHERE e.id = ?",
+                [entry_id],
+            ).fetchone()
+        if not row:
+            return f"Entry {entry_id} not found."
+        return _preview(
+            "plan.update_portions",
+            f"Set portions for '{row['recipe_name']}' to {portions}",
+            {"entry_id": entry_id, "portions": float(portions)},
+        )
+
+    @agent.tool_plain
+    def propose_profile_field(field: str, value: str) -> str:
+        """PROPOSE updating a structured profile field.
+
+        Supported fields: family_size (int), dietary/allergies/dislikes/likes/
+        cuisines/kitchen_equipment (comma-separated list), typical_cook_time_min
+        (int), batch_cook_preference ('none'|'moderate'|'heavy'), budget_level
+        ('thrifty'|'moderate'|'splurge')."""
+        if field not in PROFILE_FIELDS:
+            return f"Unknown field '{field}'. Valid: {', '.join(PROFILE_FIELDS)}"
+        return _preview(
+            "profile.field",
+            f"Set profile.{field} to {value!r}",
+            {"field": field, "value": value},
+        )
+
+    @agent.tool_plain
+    def propose_profile_note(note: str) -> str:
+        """PROPOSE appending an observation to the household profile notes."""
+        note = note.strip()
+        if not note:
+            return "Empty note — nothing to propose."
+        return _preview(
+            "profile.note",
+            f"Add note: {note}",
+            {"note": note},
         )

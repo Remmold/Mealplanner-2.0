@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import {
   fetchIngredientCategories,
   fetchIngredients,
@@ -11,6 +11,7 @@ import {
   searchUsda,
   addToPantry,
   onDataChanged,
+  regenerateRecipeImage,
   type Ingredient,
   type Recipe,
   type RecipeNutrition,
@@ -22,12 +23,20 @@ interface RecipeItem {
   quantity_g: number;
 }
 
-export default function RecipeBuilder() {
+interface RecipeBuilderProps {
+  initialRecipeId?: string | null;
+  onInitialConsumed?: () => void;
+}
+
+export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: RecipeBuilderProps = {}) {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
 
   const [recipeName, setRecipeName] = useState("Untitled Recipe");
   const [servings, setServings] = useState(4);
+  const [imagePath, setImagePath] = useState<string | null>(null);
+  const [imageBust, setImageBust] = useState(0);    // force <img> reload after regenerate
+  const [regenerating, setRegenerating] = useState(false);
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -55,6 +64,20 @@ export default function RecipeBuilder() {
     loadRecipes();
   }, []);
 
+  // Auto-select a recipe when the parent passes initialRecipeId (navigation from chat).
+  useEffect(() => {
+    if (!initialRecipeId) return;
+    const hit = recipes.find((r) => r.id === initialRecipeId);
+    if (hit) {
+      loadRecipeIntoEditor(hit);
+      onInitialConsumed?.();
+    } else {
+      // Not in our list yet (fresh from chat). Refresh once.
+      loadRecipes();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRecipeId, recipes]);
+
   useEffect(() => {
     return onDataChanged((kind) => {
       if (kind === "*" || kind === "recipes") loadRecipes();
@@ -65,6 +88,15 @@ export default function RecipeBuilder() {
     });
   }, []);
 
+  // While viewing a recipe without an image yet, poll every 5s to pick up the
+  // background-generated one.
+  useEffect(() => {
+    if (!activeRecipeId || imagePath) return;
+    const id = setInterval(() => { loadRecipes(); }, 5000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRecipeId, imagePath]);
+
   useEffect(() => {
     if (items.length === 0) { setNutrition(null); return; }
     aggregateRecipe(items.map((i) => ({ fdc_id: i.ingredient.fdc_id, quantity_g: i.quantity_g })))
@@ -73,7 +105,17 @@ export default function RecipeBuilder() {
   }, [items]);
 
   async function loadRecipes() {
-    try { setRecipes(await fetchRecipes()); } catch {}
+    try {
+      const list = await fetchRecipes();
+      setRecipes(list);
+      if (activeRecipeId) {
+        const cur = list.find((r) => r.id === activeRecipeId);
+        if (cur && cur.image_path !== imagePath) {
+          setImagePath(cur.image_path ?? null);
+          setImageBust(Date.now());
+        }
+      }
+    } catch {}
   }
 
   async function reloadPantry() {
@@ -92,6 +134,8 @@ export default function RecipeBuilder() {
     setItems(loaded);
     setInstructions(recipe.instructions ?? []);
     setServings(recipe.servings ?? 4);
+    setImagePath(recipe.image_path ?? null);
+    setImageBust(Date.now());
     setDirty(false);
   }, [allIngredients]);
 
@@ -101,7 +145,20 @@ export default function RecipeBuilder() {
     setItems([]);
     setInstructions([]);
     setServings(4);
+    setImagePath(null);
     setDirty(false);
+  }
+
+  async function handleRegenerateImage() {
+    if (!activeRecipeId) return;
+    setRegenerating(true);
+    try {
+      await regenerateRecipeImage(activeRecipeId);
+      await loadRecipes();
+      // Find the updated recipe and refresh our local image_path
+      setImageBust(Date.now());
+    } catch (e) { setError(String(e)); }
+    finally { setRegenerating(false); }
   }
 
   async function handleGenerate() {
@@ -254,6 +311,29 @@ export default function RecipeBuilder() {
 
       {/* Editor: name, servings, save */}
       <div className="card">
+        {activeRecipeId && (
+          <div className="recipe-hero">
+            {imagePath ? (
+              <img
+                src={`/api/recipe-images/${imagePath}?v=${imageBust}`}
+                alt={recipeName}
+                className="recipe-hero-img"
+              />
+            ) : (
+              <div className="recipe-hero-placeholder">
+                <span className="tiny muted">Generating image…</span>
+              </div>
+            )}
+            <button
+              onClick={handleRegenerateImage}
+              disabled={regenerating}
+              className="btn btn-xs recipe-hero-regen"
+              title="Generate a new image"
+            >
+              {regenerating ? "…" : "↻ Regenerate image"}
+            </button>
+          </div>
+        )}
         <div className="row gap-3 wrap">
           <input
             className="input-title flex-1"
@@ -442,14 +522,13 @@ export default function RecipeBuilder() {
           <ol className="col-2" style={{ paddingLeft: 24, margin: 0 }}>
             {instructions.map((step, i) => (
               <li key={i} className="row gap-2" style={{ alignItems: "flex-start" }}>
-                <textarea
+                <AutoGrowTextarea
                   className="textarea flex-1"
                   value={step}
-                  onChange={(e) => {
-                    const next = [...instructions]; next[i] = e.target.value;
+                  onChange={(v) => {
+                    const next = [...instructions]; next[i] = v;
                     setInstructions(next); markDirty();
                   }}
-                  rows={1}
                 />
                 <button
                   onClick={() => { setInstructions((prev) => prev.filter((_, j) => j !== i)); markDirty(); }}
@@ -461,5 +540,32 @@ export default function RecipeBuilder() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Textarea that grows to fit its content. */
+function AutoGrowTextarea({
+  value, onChange, className,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  className?: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={ref}
+      className={className}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      rows={1}
+      style={{ overflow: "hidden", resize: "none" }}
+    />
   );
 }

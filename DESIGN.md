@@ -114,6 +114,12 @@ chat_messages (id PK, session_id FK ON DELETE CASCADE, role, content,
                tool_calls JSON, created_at)
 
 ingredient_aliases (alias_fdc_id PK, canonical_fdc_id, created_at)
+
+household_profiles (household_id PK, data JSON, updated_at)
+
+pending_actions (id PK, session_id FK ON DELETE CASCADE, household_id FK,
+                 kind, summary, params JSON, status, result, created_at,
+                 resolved_at)
 ```
 
 Key design choices:
@@ -190,25 +196,42 @@ Key design choices:
 - Trade-off: stage-1 + N stage-2 calls is many round-trips and 30–60s typical.
   Worth it for the demo since the output looks magical.
 
-### 4.7 Conversational agent (chat)
+### 4.7 Household profile
+- Stored in `household_profiles.data` as JSON. Loose shape (Pydantic model)
+  so it evolves without migrations. Fields: `family_size`, `dietary`,
+  `allergies`, `dislikes`, `likes`, `cuisines`, `typical_cook_time_min`,
+  `batch_cook_preference`, `kitchen_equipment`, `budget_level`, `notes[]`.
+- Chat agent has read/write tools (`get_profile`, `update_profile_field`,
+  `add_profile_note`) and is instructed to record persistent facts as they
+  come up during conversation. Sparse profiles trigger one natural
+  discovery question per turn.
+- Injected as a "Household profile" block into both the chat system prompt
+  and the meal-plan planner brief — every generation respects allergies
+  strictly, avoids dislikes, leans into likes/cuisines.
+
+### 4.8 Conversational agent (chat) — with human-in-the-loop writes
 - `POST /chat/sessions/{id}/messages` runs a tool-equipped PydanticAI agent.
-  Tools live in `api/agent_tools.py` and wrap every meaningful operation:
-  list/get/update/delete recipe, generate-and-save recipe, list/get/create/
-  update/delete meal plan and entries, search pantry, search USDA, household
-  summary. Each tool returns a compact human-readable string for the LLM and
-  pushes an `AuditEvent` for the UI.
+  Tools live in `api/agent_tools.py`. Read tools (list/get/search/profile)
+  run inline; **write tools propose** instead of acting.
+- **Propose/accept/reject pipeline:** every `propose_*` tool calls
+  `PendingProposer.propose(kind, summary, params)`, which records a row in
+  `pending_actions` (status='pending'). The chat endpoint returns the new
+  proposals alongside the assistant reply. The UI renders each as a card
+  with Accept / Reject buttons; clicking either calls
+  `POST /chat/pending/{id}/accept|reject`. Accept dispatches to a per-kind
+  executor in `api/pending_actions.py`. Recipe generation is deferred until
+  accept — no tokens spent on dishes the user doesn't want.
 - **Persistence:** PydanticAI's `ModelMessagesTypeAdapter` serialises the full
   message history (including tool calls and returns) as JSON on
   `chat_sessions.message_history`. Sessions resume across page reloads.
-- **Audit-driven UI feedback:** the API returns `audit: AuditEvent[]` along
-  with the assistant reply. The chat panel shows them as honey-tinted cards
-  ("Renamed 'Pasta' → 'Lemon-Garlic Spaghetti'"), and dispatches a global
-  `dataChanged()` event so other views refetch their data automatically.
+- **Cross-view refresh:** on accept, the UI dispatches `dataChanged("*")`
+  so MealPlan, RecipeBuilder, Profile etc. refetch automatically.
 - **System prompt** instructs the agent to: always look things up before
-  claiming facts, never invent IDs, actually do what the user asks (don't
-  just describe), confirm destructive ops.
+  claiming facts, never invent IDs, propose freely (the user is the
+  gatekeeper), and not pretend mutations happened ("I added X" →
+  "I've put a card above for you to accept").
 
-### 4.8 Shopping list generation
+### 4.9 Shopping list generation
 - `POST /shopping-lists/generate` takes `[{recipe_id, portions}]`, scales by
   `portions / recipe.servings`, consolidates ingredients by `fdc_id`, applies
   unit conversions (eggs → pcs, milk/cream/oil/soy → dl, flour/rice/sugar →
@@ -298,6 +321,57 @@ Key design choices:
 
 > Newest entries on top. Keep each entry short — one or two lines on *what
 > changed* and *why*. Leave dates approximate when unsure.
+
+### 2026-04 — Rich confirmation cards in chat
+After the user accepts a `recipe.create` proposal, the chat now shows proof
+of the saved recipe instead of just a text line. The accept endpoint returns
+a `created: {recipe_id, plan_id, entry_id}` map (per executor) so the UI
+knows what to surface. For recipe creates the chat fetches the new recipe
+and renders a preview card inside the proposal: thumbnail (or
+diagonal-stripe placeholder while the image generates), name, "X servings ·
+Y ingredients · Z steps", and a "View →" button. View dispatches a new
+global `navigateTo({tab: "recipe", recipe_id})` event the App listens to —
+switches to the Recipes tab, auto-selects the recipe via a new
+`initialRecipeId` prop on RecipeBuilder, and closes the chat drawer.
+Polls the recipe every 5s for up to 60s so the image fills in when ready.
+
+### 2026-04 — Free recipe images (Pollinations.ai)
+Added image generation for recipes via Pollinations.ai — a free public
+Flux/Stable-Diffusion endpoint, no API key, no cost. New `api/image_gen.py`
+builds a food-photography prompt from the recipe name, fetches the JPEG,
+saves to `backend/recipe_images/<recipe_id>.jpg`, and writes `image_path`
+back on the recipe row. Fires-and-forgets as an asyncio task after every
+recipe creation (chat-accepted, weekly-plan generator, manual) so the API
+returns immediately and the image lands ~10–20s later. Frontend polls every
+5s while viewing an image-less recipe, and has a "↻ Regenerate image"
+button on the editor hero. Meal plan recipe picker shows thumbnails for
+visual selection. Image column added to `recipes` via lightweight migration.
+
+### 2026-04 — Human-in-the-loop chat writes (propose / accept / reject)
+The chat agent no longer mutates the database directly. Every write tool was
+renamed `propose_*` and now records to a new `pending_actions` SQLite table
+instead of acting. The chat endpoint returns the queued proposals alongside
+the assistant reply; the UI renders them as honey-tinted cards with Accept /
+Reject buttons (plus an "Accept all" shortcut). New `POST /chat/pending/{id}/
+accept|reject` endpoints dispatch by `kind` to executor functions that perform
+the actual mutation. Recipe generation is deferred until accept — no tokens
+spent on dishes the user doesn't want. Read tools (list/get/search/profile)
+still run inline. System prompt updated so the agent stops claiming
+mutations happened ("I added X" → "I've put a card above for you to accept").
+
+### 2026-04 — Household profile (context-aware planning)
+New `household_profiles` SQLite table (one row, JSON blob) capturing family
+size, dietary restrictions, allergies, dislikes/likes, cuisines, cook-time
+tolerance, batch-cook preference, kitchen equipment, budget, plus a free-form
+`notes` list. `api/profile.py` exposes `GET/PATCH/DELETE /profile`. The chat
+agent gets three new tools: `get_profile`, `update_profile_field`,
+`add_profile_note` — and the chat system prompt now (a) includes the rendered
+profile every turn, (b) tells the agent to record persistent preferences as
+they come up without asking permission, (c) switches to discovery-question
+mode when the profile is sparse. Meal-plan generator injects the profile into
+the planner brief so plans respect dietary/allergy/cuisine constraints. New
+frontend "Household" tab with structured editor + notes list — the user can
+edit directly, or just let the assistant fill it in through conversation.
 
 ### 2026-04 — Per-slot meal plan controls (portions, distinct, disjoint)
 Reworked the weekly plan generator input from `{slots, distinct_meals, servings}`

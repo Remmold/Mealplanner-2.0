@@ -7,6 +7,9 @@ from api.shopping import router as shopping_router
 from api.ingredients import router as ingredients_router, load_all_curated_meta
 from api.meal_plans import router as meal_plans_router
 from api.chat import router as chat_router
+from api.profile import router as profile_router
+from api.pending_actions import router as pending_router
+from api.image_gen import router as image_router
 from api.models import (
     AggregatedNutrition,
     Ingredient,
@@ -32,6 +35,9 @@ app.include_router(shopping_router)
 app.include_router(ingredients_router)
 app.include_router(meal_plans_router)
 app.include_router(chat_router)
+app.include_router(profile_router)
+app.include_router(pending_router)
+app.include_router(image_router)
 
 
 SUMMARY_COLUMNS = """

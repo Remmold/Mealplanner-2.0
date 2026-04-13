@@ -448,9 +448,16 @@ export default function MealPlan() {
             {recipes.length === 0 && <div className="empty">No saved recipes.</div>}
             <div className="col-2 mt-3">
               {recipes.map((r) => (
-                <div key={r.id} onClick={() => addRecipeToCell(r)} className="recipe-card">
-                  <div style={{ fontWeight: 600 }}>{r.name}</div>
-                  <div className="tiny muted">{r.servings} servings · {r.ingredients.length} ingredients</div>
+                <div key={r.id} onClick={() => addRecipeToCell(r)} className="recipe-card" style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                  {r.image_path ? (
+                    <img src={`/api/recipe-images/${r.image_path}`} alt="" className="recipe-thumb" />
+                  ) : (
+                    <div className="recipe-thumb" />
+                  )}
+                  <div className="flex-1">
+                    <div style={{ fontWeight: 600 }}>{r.name}</div>
+                    <div className="tiny muted">{r.servings} servings · {r.ingredients.length} ingredients</div>
+                  </div>
                 </div>
               ))}
             </div>

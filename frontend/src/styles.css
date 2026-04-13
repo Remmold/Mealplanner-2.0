@@ -500,6 +500,42 @@ table.table tr:last-child td { border-bottom: none; }
   font-style: italic;
 }
 
+/* ---- Recipe image hero ---- */
+.recipe-hero {
+  position: relative;
+  margin: calc(var(--space-5) * -1) calc(var(--space-5) * -1) var(--space-4);
+  border-top-left-radius: var(--r-lg);
+  border-top-right-radius: var(--r-lg);
+  overflow: hidden;
+  height: 260px;
+  background: var(--cream-2);
+}
+.recipe-hero-img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.recipe-hero-placeholder {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  background:
+    repeating-linear-gradient(45deg,
+      var(--cream-2) 0, var(--cream-2) 20px,
+      var(--cream-3) 20px, var(--cream-3) 40px);
+}
+.recipe-hero-regen {
+  position: absolute; bottom: 10px; right: 10px;
+  background: rgba(255, 254, 251, 0.92);
+  backdrop-filter: blur(6px);
+  box-shadow: var(--shadow-sm);
+}
+
+.recipe-thumb {
+  width: 48px; height: 48px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+  background: var(--cream-2);
+}
+
 /* ---- Recipe / meal-plan specific ---- */
 .recipe-card {
   background: var(--paper);
@@ -728,24 +764,79 @@ input[type="checkbox"] {
   word-wrap: break-word;
 }
 
-.chat-audit {
-  margin-top: 6px;
+.chat-pending {
+  margin-top: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.chat-pending-header {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--taupe-2); font-weight: 600;
+  padding: 2px 4px;
+}
+.pending-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px;
   background: var(--honey-soft);
   border: 1px solid #ecdcb1;
+  border-left: 3px solid var(--honey);
   border-radius: var(--r-sm);
-  padding: 8px 10px;
-  font-size: 12px;
+  font-size: 13px;
+  transition: opacity .2s;
 }
-.chat-audit-item {
-  display: flex; align-items: center; gap: 6px;
+.pending-card.pending-accepted { border-left-color: var(--sage); background: var(--sage-soft); border-color: #cddec6; }
+.pending-card.pending-rejected { border-left-color: var(--taupe-3); background: var(--cream-2); opacity: 0.6; }
+.pending-card.pending-failed   { border-left-color: var(--danger); background: var(--danger-soft); border-color: #efc4be; }
+.pending-card-summary {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.pending-kind {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--terracotta-dark);
-  padding: 2px 0;
+  font-family: ui-monospace, "SF Mono", monospace;
 }
-.chat-audit-dot {
-  width: 6px; height: 6px;
-  background: var(--terracotta);
-  border-radius: var(--r-pill);
+.pending-card.pending-accepted .pending-kind { color: var(--sage-dark); }
+.pending-card.pending-rejected .pending-kind { color: var(--taupe-2); }
+.pending-text {
+  color: var(--ink); line-height: 1.4;
+}
+.pending-actions {
+  display: flex; gap: 6px; justify-content: flex-end;
+}
+.pending-status {
+  font-size: 12px; font-style: italic;
+}
+.pending-status.accepted { color: var(--sage-dark); font-style: normal; }
+.pending-status.rejected { color: var(--taupe-2); }
+.pending-status.failed   { color: var(--danger); }
+
+.pending-preview {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  margin-top: 4px;
+}
+.pending-preview-img {
+  width: 56px; height: 56px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
   flex-shrink: 0;
+  background: var(--cream-2);
+}
+.pending-preview-img.placeholder {
+  background:
+    repeating-linear-gradient(45deg,
+      var(--cream-2) 0, var(--cream-2) 8px,
+      var(--cream-3) 8px, var(--cream-3) 16px);
+}
+.pending-preview-body { flex: 1; min-width: 0; }
+.pending-preview-name {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 .chat-typing {

@@ -47,6 +47,7 @@ def init_db():
                 name TEXT NOT NULL,
                 instructions TEXT NOT NULL DEFAULT '[]',
                 servings INTEGER NOT NULL DEFAULT 4,
+                image_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -81,6 +82,30 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_ingredient_aliases_canonical
                 ON ingredient_aliases(canonical_fdc_id);
+
+            CREATE TABLE IF NOT EXISTS household_profiles (
+                household_id TEXT PRIMARY KEY REFERENCES households(id),
+                data TEXT NOT NULL DEFAULT '{}',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_actions (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                household_id TEXT NOT NULL REFERENCES households(id),
+                kind TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                params TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                result TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pending_actions_session
+                ON pending_actions(session_id);
+            CREATE INDEX IF NOT EXISTS idx_pending_actions_status
+                ON pending_actions(status);
 
             CREATE TABLE IF NOT EXISTS meal_plans (
                 id TEXT PRIMARY KEY,
@@ -145,6 +170,8 @@ def init_db():
             conn.execute("ALTER TABLE recipes ADD COLUMN instructions TEXT NOT NULL DEFAULT '[]'")
         if "servings" not in cols:
             conn.execute("ALTER TABLE recipes ADD COLUMN servings INTEGER NOT NULL DEFAULT 4")
+        if "image_path" not in cols:
+            conn.execute("ALTER TABLE recipes ADD COLUMN image_path TEXT")
 
         # Ensure default household exists
         existing = conn.execute(

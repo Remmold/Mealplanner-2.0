@@ -23,7 +23,9 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
-from api.agent_tools import AuditLog, register_all
+from api.agent_tools import register_all
+from api.pending_actions import PendingProposer
+from api.profile import is_profile_sparse, load_profile, render_profile_context
 from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db, new_id
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -32,7 +34,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 _MODEL = os.getenv("OPENAI_RECIPE_MODEL", "openai:gpt-4o")
 
-SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_BASE = (
     "You are a helpful kitchen assistant inside the Hearth meal-planning app. "
     "You help the user manage their saved recipes, meal plans, and pantry by "
     "calling the available tools.\n\n"
@@ -47,8 +49,51 @@ SYSTEM_PROMPT = (
     "  generate_and_save_recipe, then add_meal_to_plan with the returned id.\n"
     "- Be concise. After completing actions, give a brief summary of what you did.\n"
     "- If unsure about destructive operations (delete recipe, delete plan), "
-    "  confirm with the user before acting."
+    "  confirm with the user before acting.\n"
+    "\n"
+    "Getting to know the household:\n"
+    "- The profile below is what you know about this household's eating habits. "
+    "  Use it whenever you pick or generate recipes — respect allergies strictly, "
+    "  avoid dislikes, lean into likes/cuisines, match their cook-time tolerance "
+    "  and batch-cook preference.\n"
+    "- When the user mentions something persistent (a preference, a habit, an "
+    "  aversion, family size, equipment), PROPOSE it via propose_profile_field "
+    "  or propose_profile_note. Don't re-propose things already on file.\n"
+    "- Never spam the user with questionnaires. Ask at most one natural "
+    "  profile-discovery question per turn, and only when it would improve the "
+    "  answer you're about to give.\n"
+    "\n"
+    "Human-in-the-loop writes:\n"
+    "- Every write is via a `propose_*` tool. These DO NOT mutate anything — "
+    "  they queue a card the user accepts or rejects in the UI.\n"
+    "- It's fine (and expected) to propose multiple actions in one turn — e.g. "
+    "  generate three recipes and add each to the plan. The user will see and "
+    "  approve each card.\n"
+    "- After proposing, do NOT pretend the change happened. Say things like "
+    "  'I've put 3 cards above for you to accept' rather than 'I've added X to "
+    "  Tuesday'.\n"
+    "- If a previous turn's proposal was rejected, don't re-propose the exact "
+    "  same thing — ask what the user would prefer instead."
 )
+
+
+def _build_system_prompt(household_id: str) -> str:
+    profile = load_profile(household_id)
+    profile_block = render_profile_context(profile)
+    sparse_hint = ""
+    if is_profile_sparse(profile):
+        sparse_hint = (
+            "\n\nPROFILE IS SPARSE — if the current conversation is about meal "
+            "planning or recipe generation, ask one or two quick discovery "
+            "questions first (family size, dietary needs, things they love/hate) "
+            "and record the answers via the profile tools before doing the work."
+        )
+    return (
+        _SYSTEM_PROMPT_BASE
+        + "\n\n--- Household profile ---\n"
+        + profile_block
+        + sparse_hint
+    )
 
 
 # ============================================================
@@ -60,15 +105,16 @@ class SendMessageRequest(BaseModel):
     content: str
 
 
-class AuditEvent(BaseModel):
+class ProposedAction(BaseModel):
+    id: str
     kind: str
     summary: str
-    meta: dict
+    params: dict
 
 
 class SendMessageResponse(BaseModel):
     reply: str
-    audit: list[AuditEvent]
+    pending: list[ProposedAction]
     session_id: str
 
 
@@ -216,10 +262,10 @@ async def send_message(sid: str, body: SendMessageRequest, household_id: str = D
         prior_history_str: str = row["message_history"] or ""
         title = row["title"]
 
-    # Build a fresh agent for this turn (cheap; tools close over household_id + audit)
-    audit = AuditLog()
-    agent = Agent(_MODEL, system_prompt=SYSTEM_PROMPT)
-    register_all(agent, household_id, audit)
+    # Build a fresh agent for this turn (cheap; tools close over household_id + proposer)
+    proposer = PendingProposer(session_id=sid, household_id=household_id)
+    agent = Agent(_MODEL, system_prompt=_build_system_prompt(household_id))
+    register_all(agent, household_id, proposer)
 
     # Deserialise prior history
     if prior_history_str:
@@ -247,6 +293,9 @@ async def send_message(sid: str, body: SendMessageRequest, household_id: str = D
     if title == "New chat":
         new_title = _derive_title(body.content)
 
+    # Persist any proposals the tools queued during the turn.
+    flushed = proposer.flush()
+
     with get_recipe_db() as conn:
         conn.execute(
             "UPDATE chat_sessions SET message_history = ?, title = ?, "
@@ -256,6 +305,9 @@ async def send_message(sid: str, body: SendMessageRequest, household_id: str = D
 
     return SendMessageResponse(
         reply=reply_text,
-        audit=[AuditEvent(**e) for e in audit.events],
+        pending=[
+            ProposedAction(id=p["id"], kind=p["kind"], summary=p["summary"], params=p["params"])
+            for p in flushed
+        ],
         session_id=sid,
     )

@@ -85,6 +85,7 @@ def _build_recipe_out(conn, recipe_id: str) -> RecipeOut:
         ],
         instructions=instructions,
         servings=row["servings"] if "servings" in row.keys() else 4,
+        image_path=row["image_path"] if "image_path" in row.keys() else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

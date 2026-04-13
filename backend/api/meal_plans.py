@@ -267,11 +267,18 @@ async def generate_meal_plan(
 
     planner = Agent(_PLAN_MODEL, output_type=_PlannedWeek, system_prompt=planner_system_prompt)
 
+    from api.profile import load_profile, render_profile_context
+    profile_block = render_profile_context(load_profile(household_id))
+
     user_brief = (
         f"Brief: {body.prompt}\n\n"
         f"Days: {body.days}\n"
         f"Base servings per generated recipe: {body.servings}\n"
         f"Slots are listed in the system prompt above.\n\n"
+        f"--- Household profile ---\n{profile_block}\n\n"
+        f"Respect the household profile strictly: never include allergens, avoid "
+        f"dislikes, lean into likes/cuisines, match their cook-time tolerance and "
+        f"batch-cook preference.\n\n"
         f"Existing saved recipes:\n{existing_recipes_listing}"
     )
 
@@ -394,6 +401,9 @@ async def generate_meal_plan(
                     [new_id(), rid, ing.fdc_id, ing.quantity_g],
                 )
             prompt_to_recipe_id[prompt] = rid
+            # Kick off image generation for this newly-created recipe
+            from api.image_gen import schedule_image
+            schedule_image(rid, gen.name, household_id)
 
         # Assemble the plan entries.
         for meal in valid_meals:

@@ -167,6 +167,7 @@ class RecipeOut(BaseModel):
     ingredients: list[RecipeIngredientOut] = []
     instructions: list[str] = []
     servings: int = 4
+    image_path: str | None = None
     created_at: str
     updated_at: str
 

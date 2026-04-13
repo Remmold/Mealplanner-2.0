@@ -22,6 +22,22 @@ export function onDataChanged(handler: (kind: DataKind) => void): () => void {
   return () => listeners.delete(handler);
 }
 
+// ------------------------------------------------------------------
+// Navigation intents — used by chat cards to jump to a related view.
+// ------------------------------------------------------------------
+export type NavIntent =
+  | { tab: "recipe"; recipe_id?: string }
+  | { tab: "plan"; plan_id?: string };
+
+const navListeners = new Set<(intent: NavIntent) => void>();
+export function navigateTo(intent: NavIntent) {
+  for (const l of navListeners) { try { l(intent); } catch {} }
+}
+export function onNavigate(handler: (intent: NavIntent) => void): () => void {
+  navListeners.add(handler);
+  return () => navListeners.delete(handler);
+}
+
 export interface ProductSummary {
   code: string;
   product_name: string;
@@ -197,8 +213,19 @@ export interface Recipe {
   ingredients: RecipeIngredient[];
   instructions: string[];
   servings: number;
+  image_path: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Resolve a recipe's `image_path` into a URL the browser can fetch. */
+export function recipeImageUrl(recipe: Pick<Recipe, "image_path">): string | null {
+  return recipe.image_path ? `${BASE}/recipe-images/${recipe.image_path}` : null;
+}
+
+export async function regenerateRecipeImage(recipeId: string): Promise<void> {
+  const res = await fetch(`${BASE}/recipes/${recipeId}/image/regenerate`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
 export async function fetchRecipes(): Promise<Recipe[]> {
@@ -484,16 +511,36 @@ export interface ChatSessionDetail {
   messages: ChatMessage[];
 }
 
-export interface ChatAuditEvent {
+export interface ProposedAction {
+  id: string;
   kind: string;
   summary: string;
-  meta: Record<string, unknown>;
+  params: Record<string, unknown>;
 }
 
 export interface SendMessageResponse {
   reply: string;
-  audit: ChatAuditEvent[];
+  pending: ProposedAction[];
   session_id: string;
+}
+
+export interface ResolveResponse {
+  id: string;
+  status: "accepted" | "rejected" | "failed";
+  result: string | null;
+  created: Record<string, string> | null;
+}
+
+export async function acceptPending(id: string): Promise<ResolveResponse> {
+  const res = await fetch(`${BASE}/chat/pending/${id}/accept`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function rejectPending(id: string): Promise<ResolveResponse> {
+  const res = await fetch(`${BASE}/chat/pending/${id}/reject`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
 }
 
 export async function listChatSessions(): Promise<ChatSessionSummary[]> {
@@ -516,6 +563,59 @@ export async function getChatSession(id: string): Promise<ChatSessionDetail> {
 
 export async function deleteChatSession(id: string): Promise<void> {
   const res = await fetch(`${BASE}/chat/sessions/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+}
+
+// --- Household profile ---
+
+export interface HouseholdProfile {
+  family_size: number | null;
+  dietary: string[];
+  allergies: string[];
+  dislikes: string[];
+  likes: string[];
+  typical_cook_time_min: number | null;
+  batch_cook_preference: string | null;
+  kitchen_equipment: string[];
+  cuisines: string[];
+  budget_level: string | null;
+  notes: string[];
+  updated_at: string | null;
+}
+
+export type ProfilePatch = Partial<{
+  family_size: number | null;
+  dietary: string[];
+  allergies: string[];
+  dislikes: string[];
+  likes: string[];
+  typical_cook_time_min: number | null;
+  batch_cook_preference: string | null;
+  kitchen_equipment: string[];
+  cuisines: string[];
+  budget_level: string | null;
+  notes: string[];
+  append_notes: string[];
+}>;
+
+export async function fetchProfile(): Promise<HouseholdProfile> {
+  const res = await fetch(`${BASE}/profile`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function patchProfile(patch: ProfilePatch): Promise<HouseholdProfile> {
+  const res = await fetch(`${BASE}/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function resetProfile(): Promise<void> {
+  const res = await fetch(`${BASE}/profile`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 

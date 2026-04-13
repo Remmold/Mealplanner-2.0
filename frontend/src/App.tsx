@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { onNavigate } from "./api";
 import ProductList from "./components/ProductList";
 import ProductDetail from "./components/ProductDetail";
 import Categories from "./components/Categories";
@@ -7,13 +8,15 @@ import RecipeBuilder from "./components/RecipeBuilder";
 import ShoppingList from "./components/ShoppingList";
 import MealPlan from "./components/MealPlan";
 import Chat from "./components/Chat";
+import Profile from "./components/Profile";
 
-type Tab = "recipe" | "plan" | "shopping" | "products" | "categories" | "nutrition";
+type Tab = "recipe" | "plan" | "shopping" | "profile" | "products" | "categories" | "nutrition";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "recipe",     label: "Recipes" },
   { id: "plan",       label: "Meal Plan" },
   { id: "shopping",   label: "Shopping" },
+  { id: "profile",    label: "Household" },
   { id: "products",   label: "Products" },
   { id: "categories", label: "Categories" },
   { id: "nutrition",  label: "Nutrition" },
@@ -23,6 +26,20 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("recipe");
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [initialRecipeId, setInitialRecipeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    return onNavigate((intent) => {
+      if (intent.tab === "recipe") {
+        setTab("recipe");
+        if (intent.recipe_id) setInitialRecipeId(intent.recipe_id);
+        setChatOpen(false);
+      } else if (intent.tab === "plan") {
+        setTab("plan");
+        setChatOpen(false);
+      }
+    });
+  }, []);
 
   return (
     <div className="app-shell">
@@ -47,9 +64,15 @@ export default function App() {
       </header>
 
       <main className="content">
-        {tab === "recipe" && <RecipeBuilder />}
+        {tab === "recipe" && (
+          <RecipeBuilder
+            initialRecipeId={initialRecipeId}
+            onInitialConsumed={() => setInitialRecipeId(null)}
+          />
+        )}
         {tab === "plan" && <MealPlan />}
         {tab === "shopping" && <ShoppingList />}
+        {tab === "profile" && <Profile />}
         {tab === "products" && !selectedCode && (
           <ProductList onSelect={setSelectedCode} />
         )}
