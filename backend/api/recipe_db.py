@@ -162,6 +162,16 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe
                 ON recipe_ingredients(recipe_id);
+
+            CREATE TABLE IF NOT EXISTS shopping_list_template (
+                household_id TEXT NOT NULL REFERENCES households(id),
+                fdc_id INTEGER NOT NULL,
+                quantity_g REAL NOT NULL,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (household_id, fdc_id)
+            );
         """)
 
         # Lightweight migrations: add missing columns

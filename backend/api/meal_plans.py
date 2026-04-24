@@ -439,7 +439,11 @@ async def generate_meal_plan(
 
 
 @router.post("/{plan_id}/shopping-list", response_model=ShoppingListOut)
-def shopping_list_from_plan(plan_id: str, household_id: str = DEFAULT_HOUSEHOLD_ID):
+def shopping_list_from_plan(
+    plan_id: str,
+    household_id: str = DEFAULT_HOUSEHOLD_ID,
+    include_template: bool = True,
+):
     """Consolidate all entries in a plan into a single shopping list.
 
     Entries for the same recipe on different days are summed, so an ingredient
@@ -466,4 +470,6 @@ def shopping_list_from_plan(plan_id: str, household_id: str = DEFAULT_HOUSEHOLD_
         ShoppingRecipeSelection(recipe_id=rid, portions=pts)
         for rid, pts in totals.items()
     ]
-    return generate_shopping_list(selections, household_id=household_id)
+    return generate_shopping_list(
+        selections, household_id=household_id, include_template=include_template,
+    )

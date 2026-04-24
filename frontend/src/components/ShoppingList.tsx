@@ -7,14 +7,27 @@ import {
   type Recipe,
   type ShoppingList as ShoppingListType,
 } from "../api";
+import ShoppingTemplate from "./ShoppingTemplate";
 
 interface Selection { recipe: Recipe; portions: number; }
 
+type View = "list" | "template";
+
 export default function ShoppingList() {
+  const [view, setView] = useState<View>("list");
+
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [selections, setSelections] = useState<Record<string, Selection>>({});
   const [list, setList] = useState<ShoppingListType | null>(null);
   const [checked, setChecked] = useState<Set<number>>(new Set());
+  // Items the user has removed *just for this week* (ephemeral — not saved).
+  const [hidden, setHidden] = useState<Set<number>>(new Set());
+  // Ephemeral per-week display-quantity overrides. Keyed on fdc_id, value is the
+  // user-edited display_quantity (unit stays the same). Cleared on regenerate.
+  const [qtyOverride, setQtyOverride] = useState<Record<number, number>>({});
+  const [editingQty, setEditingQty] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<string>("");
+  const [includeTemplate, setIncludeTemplate] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -43,11 +56,12 @@ export default function ShoppingList() {
 
   async function handleGenerate() {
     const picks = Object.values(selections);
-    if (picks.length === 0) return;
-    setLoading(true); setError(""); setChecked(new Set());
+    if (picks.length === 0 && !includeTemplate) return;
+    setLoading(true); setError(""); setChecked(new Set()); setHidden(new Set()); setQtyOverride({}); setEditingQty(null);
     try {
       const result = await generateShoppingList(
-        picks.map((s) => ({ recipe_id: s.recipe.id, portions: s.portions }))
+        picks.map((s) => ({ recipe_id: s.recipe.id, portions: s.portions })),
+        includeTemplate,
       );
       setList(result);
     } catch (e) { setError(String(e)); }
@@ -59,6 +73,22 @@ export default function ShoppingList() {
       const next = new Set(prev);
       if (next.has(fdcId)) next.delete(fdcId);
       else next.add(fdcId);
+      return next;
+    });
+  }
+
+  function hideForWeek(fdcId: number) {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      next.add(fdcId);
+      return next;
+    });
+  }
+
+  function restoreItem(fdcId: number) {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      next.delete(fdcId);
       return next;
     });
   }
@@ -78,14 +108,41 @@ export default function ShoppingList() {
     } catch (e) { setError(String(e)); }
   }
 
-  const totalItems = list?.categories.reduce((sum, c) => sum + c.items.length, 0) ?? 0;
+  const visibleCategories = list?.categories
+    .map((c) => ({ ...c, items: c.items.filter((it) => !hidden.has(it.fdc_id)) }))
+    .filter((c) => c.items.length > 0) ?? [];
+  const totalItems = visibleCategories.reduce((sum, c) => sum + c.items.length, 0);
   const checkedCount = checked.size;
+  const hiddenItems = list
+    ? list.categories.flatMap((c) => c.items).filter((it) => hidden.has(it.fdc_id))
+    : [];
+
+  if (view === "template") {
+    return (
+      <div className="col gap-5">
+        <div className="hero">
+          <h1>Shopping template</h1>
+          <p>Baseline items your household always buys. These get preprinted into every weekly shopping list — edits here are permanent.</p>
+        </div>
+        <div className="row gap-2">
+          <button onClick={() => setView("list")} className="btn btn-ghost btn-sm">← Back to list</button>
+        </div>
+        <ShoppingTemplate />
+      </div>
+    );
+  }
 
   return (
     <div className="col gap-5">
       <div className="hero">
         <h1>Shopping list</h1>
         <p>Pick recipes and portions. We'll consolidate ingredients, convert to friendly units, and order everything in your store's aisle layout.</p>
+      </div>
+
+      <div className="row gap-2">
+        <button onClick={() => setView("template")} className="btn btn-ghost btn-sm">
+          Manage shopping template →
+        </button>
       </div>
 
       {error && <div className="error">{error}</div>}
@@ -131,9 +188,17 @@ export default function ShoppingList() {
                 );
               })}
             </div>
+            <label className="row gap-2 mt-3" style={{ alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={includeTemplate}
+                onChange={(e) => setIncludeTemplate(e.target.checked)}
+              />
+              <span className="small">Include household template (baseline items)</span>
+            </label>
             <button
               onClick={handleGenerate}
-              disabled={loading || Object.keys(selections).length === 0}
+              disabled={loading || (Object.keys(selections).length === 0 && !includeTemplate)}
               className="btn btn-primary btn-block mt-4"
             >
               {loading ? "Generating..." : "Generate shopping list"}
@@ -177,8 +242,8 @@ export default function ShoppingList() {
                 <h3 style={{ margin: 0 }}>Your list</h3>
                 <span className="pill">{checkedCount} / {totalItems} done</span>
               </div>
-              {list.categories.length === 0 && <div className="empty">No items.</div>}
-              {list.categories.map((cat) => (
+              {visibleCategories.length === 0 && <div className="empty">No items.</div>}
+              {visibleCategories.map((cat) => (
                 <div key={cat.category} className="mb-4">
                   <div className="shop-cat-header">
                     <span>{cat.category}</span>
@@ -186,25 +251,111 @@ export default function ShoppingList() {
                   </div>
                   {cat.items.map((item) => {
                     const isChecked = checked.has(item.fdc_id);
+                    const fromTemplate = item.source === "template" || item.source === "both";
                     return (
-                      <label key={item.fdc_id} className={`shop-row ${isChecked ? "checked" : ""}`}>
+                      <label
+                        key={item.fdc_id}
+                        className={`shop-row ${isChecked ? "checked" : ""}`}
+                        style={fromTemplate ? { borderLeft: "3px solid var(--sage, #6b8e23)", paddingLeft: 8 } : undefined}
+                      >
                         <input
                           type="checkbox"
                           checked={isChecked}
                           onChange={() => toggleChecked(item.fdc_id)}
                         />
-                        <span className="flex-1">{item.name}</span>
-                        <span className={`shop-qty ${isChecked ? "checked" : ""}`}>
-                          {item.display_quantity} {item.display_unit}
+                        <span className="flex-1">
+                          {item.name}
+                          {fromTemplate && (
+                            <span
+                              className="tiny muted"
+                              style={{ marginLeft: 6 }}
+                              title={item.source === "both" ? "From template + recipes" : "From household template"}
+                            >
+                              ★
+                            </span>
+                          )}
+                          {item.note && (
+                            <span className="tiny muted" style={{ marginLeft: 8 }}>— {item.note}</span>
+                          )}
                         </span>
-                        {item.display_unit !== "g" && (
+                        {editingQty === item.fdc_id ? (
+                          <label className="field" onClick={(e) => e.preventDefault()}>
+                            <input
+                              type="number"
+                              min={0}
+                              step="any"
+                              autoFocus
+                              className="input input-num"
+                              value={editDraft}
+                              onChange={(e) => setEditDraft(e.target.value)}
+                              onBlur={() => {
+                                const v = Number(editDraft);
+                                if (v > 0) {
+                                  setQtyOverride((prev) => ({ ...prev, [item.fdc_id]: v }));
+                                }
+                                setEditingQty(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                                if (e.key === "Escape") { setEditingQty(null); }
+                              }}
+                            />
+                            <span className="tiny">{item.display_unit}</span>
+                          </label>
+                        ) : (
+                          <span
+                            className={`shop-qty ${isChecked ? "checked" : ""}`}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              const current = qtyOverride[item.fdc_id] ?? item.display_quantity;
+                              setEditDraft(String(current));
+                              setEditingQty(item.fdc_id);
+                            }}
+                            style={{ cursor: "pointer" }}
+                            title="Click to alter quantity for this week"
+                          >
+                            {qtyOverride[item.fdc_id] ?? item.display_quantity} {item.display_unit}
+                            {qtyOverride[item.fdc_id] !== undefined && (
+                              <span className="tiny muted" style={{ marginLeft: 4 }}>·edited</span>
+                            )}
+                          </span>
+                        )}
+                        {item.display_unit !== "g" && qtyOverride[item.fdc_id] === undefined && (
                           <span className="tiny muted">({Math.round(item.quantity_g)} g)</span>
                         )}
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); hideForWeek(item.fdc_id); }}
+                          className="btn btn-ghost btn-xs"
+                          title="Skip this week (won't change the template)"
+                        >
+                          ✕
+                        </button>
                       </label>
                     );
                   })}
                 </div>
               ))}
+              {hiddenItems.length > 0 && (
+                <div className="card-soft mt-3">
+                  <div className="row between mb-2">
+                    <strong className="small">Skipped this week ({hiddenItems.length})</strong>
+                    <span className="tiny muted">won't affect the template</span>
+                  </div>
+                  <div className="col-2">
+                    {hiddenItems.map((it) => (
+                      <div key={it.fdc_id} className="row gap-2" style={{ alignItems: "center" }}>
+                        <span className="flex-1 tiny muted" style={{ textDecoration: "line-through" }}>
+                          {it.name} — {it.display_quantity} {it.display_unit}
+                        </span>
+                        <button onClick={() => restoreItem(it.fdc_id)} className="btn btn-ghost btn-xs">
+                          Restore
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {list.missing_recipes.length > 0 && (
                 <p className="small" style={{ color: "var(--terracotta-dark)" }}>
                   Some recipes not found: {list.missing_recipes.join(", ")}

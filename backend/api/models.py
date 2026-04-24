@@ -187,6 +187,8 @@ class ShoppingListItem(BaseModel):
     quantity_g: float
     display_quantity: float
     display_unit: str
+    source: str = "recipe"  # "recipe" | "template" | "both"
+    note: str | None = None
 
 
 class ShoppingListCategory(BaseModel):
@@ -198,6 +200,25 @@ class ShoppingListCategory(BaseModel):
 class ShoppingListOut(BaseModel):
     categories: list[ShoppingListCategory]
     missing_recipes: list[str] = []
+
+
+# --- Shopping list template (household baseline) ---
+
+
+class ShoppingTemplateItemIn(BaseModel):
+    fdc_id: int
+    quantity_g: float
+    note: str | None = None
+
+
+class ShoppingTemplateItemOut(BaseModel):
+    fdc_id: int
+    name: str
+    category: str
+    quantity_g: float
+    display_quantity: float
+    display_unit: str
+    note: str | None = None
 
 
 # --- Meal plan models ---

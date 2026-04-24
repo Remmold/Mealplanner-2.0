@@ -101,6 +101,10 @@ ingredient_units (fdc_id PK, display_unit, grams_per_unit, round_step)
 store_layout (household_id FK, category, sort_index,
               PRIMARY KEY (household_id, category))
 
+shopping_list_template (household_id FK, fdc_id, quantity_g, note,
+                        created_at, updated_at,
+                        PRIMARY KEY (household_id, fdc_id))
+
 meal_plans (id PK, household_id FK, name, start_date,
             created_at, updated_at)
 
@@ -242,6 +246,13 @@ Key design choices:
   order with a drag-free up/down UI.
 - Fallback for un-promoted USDA ids (e.g. LLM used something not in pantry):
   the generator still groups them correctly via `food_group → category` mapping.
+- **Household shopping template** (`shopping_list_template` table): baseline
+  "we always buy X" items (milk, eggs, …) get merged into every generated
+  list before unit conversion, so they sum cleanly with any recipe usage.
+  Items carry a `source` tag (`recipe | template | both`). Per-week edits
+  on the generated list (skip, alter qty) stay ephemeral on the client —
+  only the template editor (`POST|PUT|DELETE /shopping-lists/template`) makes
+  permanent changes.
 
 ---
 
@@ -321,6 +332,17 @@ Key design choices:
 
 > Newest entries on top. Keep each entry short — one or two lines on *what
 > changed* and *why*. Leave dates approximate when unsure.
+
+### 2026-04 — Shopping list template (household baseline)
+New `shopping_list_template` table lets the user pin items they always buy
+(e.g. 1 L milk, 6 eggs). Baseline items are merged into every generated
+list via a new `include_template` flag on `/shopping-lists/generate` and
+`/meal-plans/{id}/shopping-list`, summing against recipe usage so nothing
+double-counts. Each list item now carries a `source` tag (`recipe | template
+| both`), rendered with a ★ marker and left-border accent. The template
+editor (its own sub-view inside the Shopping tab) is the only permanent
+path; per-week edits on the generated list — skip item or alter qty —
+stay client-side and reset on the next generate.
 
 ### 2026-04 — Rich confirmation cards in chat
 After the user accepts a `recipe.create` proposal, the chat now shows proof

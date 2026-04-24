@@ -311,6 +311,8 @@ export interface ShoppingListItem {
   quantity_g: number;
   display_quantity: number;
   display_unit: string;
+  source: "recipe" | "template" | "both";
+  note: string | null;
 }
 
 export interface ShoppingListCategory {
@@ -325,13 +327,64 @@ export interface ShoppingList {
 }
 
 export async function generateShoppingList(
-  selections: { recipe_id: string; portions: number }[]
+  selections: { recipe_id: string; portions: number }[],
+  includeTemplate: boolean = true,
 ): Promise<ShoppingList> {
-  const res = await fetch(`${BASE}/shopping-lists/generate`, {
+  const qs = new URLSearchParams({ include_template: String(includeTemplate) }).toString();
+  const res = await fetch(`${BASE}/shopping-lists/generate?${qs}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(selections),
   });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+// --- Shopping list template (household baseline items) ---
+
+export interface ShoppingTemplateItem {
+  fdc_id: number;
+  name: string;
+  category: string;
+  quantity_g: number;
+  display_quantity: number;
+  display_unit: string;
+  note: string | null;
+}
+
+export async function fetchShoppingTemplate(): Promise<ShoppingTemplateItem[]> {
+  const res = await fetch(`${BASE}/shopping-lists/template`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function upsertShoppingTemplateItem(
+  fdc_id: number,
+  quantity_g: number,
+  note: string | null = null,
+): Promise<ShoppingTemplateItem> {
+  const res = await fetch(`${BASE}/shopping-lists/template`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fdc_id, quantity_g, note }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function deleteShoppingTemplateItem(fdc_id: number): Promise<void> {
+  const res = await fetch(`${BASE}/shopping-lists/template/${fdc_id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+}
+
+export interface IngredientUnit {
+  display_unit: string;
+  grams_per_unit: number;
+  round_step: number;
+}
+
+export async function fetchIngredientUnits(): Promise<Record<number, IngredientUnit>> {
+  const res = await fetch(`${BASE}/shopping-lists/ingredient-units`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
