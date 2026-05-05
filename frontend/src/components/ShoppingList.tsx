@@ -33,6 +33,7 @@ export default function ShoppingList() {
 
   const [layout, setLayout] = useState<string[]>([]);
   const [editLayout, setEditLayout] = useState(false);
+  const [recipeFilter, setRecipeFilter] = useState("");
 
   useEffect(() => {
     fetchRecipes().then(setRecipes).catch((e) => setError(String(e)));
@@ -119,12 +120,14 @@ export default function ShoppingList() {
 
   if (view === "template") {
     return (
-      <div className="col gap-5">
-        <div className="hero">
-          <h1>Shopping template</h1>
-          <p>Baseline items your household always buys. These get preprinted into every weekly shopping list — edits here are permanent.</p>
-        </div>
-        <div className="row gap-2">
+      <div className="col gap-3">
+        <div className="row between" style={{ alignItems: "baseline" }}>
+          <div>
+            <h2 style={{ margin: 0 }}>Shopping template</h2>
+            <span className="small muted">
+              Baseline items — preprinted into every weekly list. Edits here are permanent.
+            </span>
+          </div>
           <button onClick={() => setView("list")} className="btn btn-ghost btn-sm">← Back to list</button>
         </div>
         <ShoppingTemplate />
@@ -151,44 +154,80 @@ export default function ShoppingList() {
         {/* Left: pick recipes */}
         <div className="flex-1" style={{ minWidth: 320 }}>
           <div className="card">
-            <h3>Pick recipes</h3>
-            {recipes.length === 0 && <div className="empty">No recipes saved yet.</div>}
-            <div className="col-2">
-              {recipes.map((r) => {
-                const sel = selections[r.id];
-                return (
-                  <div key={r.id} className="row gap-3" style={{
-                    padding: 10,
-                    background: sel ? "var(--sage-soft)" : "var(--cream-2)",
-                    borderRadius: "var(--r-sm)",
-                    border: sel ? "1px solid #cddec6" : "1px solid var(--line)",
-                  }}>
-                    <input
-                      type="checkbox"
-                      checked={!!sel}
-                      onChange={() => toggleRecipe(r)}
-                    />
-                    <div className="flex-1">
-                      <div style={{ fontWeight: 500 }}>{r.name}</div>
-                      <div className="tiny muted">base: {r.servings} servings</div>
-                    </div>
-                    {sel && (
-                      <label className="field">
-                        <input
-                          type="number"
-                          min={1}
-                          className="input input-num"
-                          value={sel.portions}
-                          onChange={(e) => updatePortions(r.id, Number(e.target.value) || 1)}
-                        />
-                        <span className="tiny">portions</span>
-                      </label>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="row between mb-2" style={{ alignItems: "baseline" }}>
+              <h4 style={{ margin: 0 }}>Pick recipes</h4>
+              <span className="tiny muted">
+                {Object.keys(selections).length} selected · {recipes.length} total
+              </span>
             </div>
-            <label className="row gap-2 mt-3" style={{ alignItems: "center" }}>
+            {recipes.length === 0 ? (
+              <div className="empty">No recipes saved yet.</div>
+            ) : (
+              <>
+                <input
+                  className="input mb-2"
+                  placeholder="Filter recipes…"
+                  value={recipeFilter}
+                  onChange={(e) => setRecipeFilter(e.target.value)}
+                />
+                <div
+                  style={{
+                    maxHeight: 340,
+                    overflowY: "auto",
+                    border: "1px solid var(--line)",
+                    borderRadius: "var(--r-sm)",
+                    padding: 4,
+                  }}
+                >
+                  {recipes
+                    .filter((r) => r.name.toLowerCase().includes(recipeFilter.toLowerCase()))
+                    .map((r) => {
+                      const sel = selections[r.id];
+                      return (
+                        <div
+                          key={r.id}
+                          onClick={() => toggleRecipe(r)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            padding: "4px 8px",
+                            background: sel ? "var(--sage-soft)" : "transparent",
+                            borderRadius: "var(--r-sm)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!!sel}
+                            onChange={() => toggleRecipe(r)}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                          <span className="flex-1 small" style={{ fontWeight: sel ? 500 : 400 }}>
+                            {r.name}
+                          </span>
+                          {sel ? (
+                            <label className="field" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="number"
+                                min={1}
+                                className="input input-num"
+                                style={{ width: 52 }}
+                                value={sel.portions}
+                                onChange={(e) => updatePortions(r.id, Number(e.target.value) || 1)}
+                              />
+                              <span className="tiny">pt</span>
+                            </label>
+                          ) : (
+                            <span className="tiny muted">{r.servings}s</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              </>
+            )}
+            <label className="row gap-2 mt-2" style={{ alignItems: "center" }}>
               <input
                 type="checkbox"
                 checked={includeTemplate}
@@ -199,35 +238,32 @@ export default function ShoppingList() {
             <button
               onClick={handleGenerate}
               disabled={loading || (Object.keys(selections).length === 0 && !includeTemplate)}
-              className="btn btn-primary btn-block mt-4"
+              className="btn btn-primary btn-block mt-3"
             >
               {loading ? "Generating..." : "Generate shopping list"}
             </button>
           </div>
 
-          <div className="card-soft mt-4">
-            <div className="row between mb-2">
-              <h4 style={{ margin: 0 }}>Store layout</h4>
-              <button onClick={() => setEditLayout(!editLayout)} className="btn btn-ghost btn-sm">
-                {editLayout ? "Close" : "Edit"}
-              </button>
-            </div>
-            {!editLayout && (
-              <p className="small muted" style={{ margin: 0 }}>
-                Items appear in this order on your list. Edit to match your store's aisle flow.
-              </p>
-            )}
+          <div className="mt-3">
+            <button onClick={() => setEditLayout(!editLayout)} className="btn btn-ghost btn-sm">
+              {editLayout ? "Close store layout" : "Edit store layout →"}
+            </button>
             {editLayout && (
-              <div className="col-2">
-                {layout.map((cat, i) => (
-                  <div key={cat} className="row gap-2" style={{ padding: 4 }}>
-                    <span className="muted small" style={{ width: 24 }}>{i + 1}.</span>
-                    <span className="flex-1">{cat}</span>
-                    <button onClick={() => moveCategory(i, -1)} disabled={i === 0} className="btn btn-xs">↑</button>
-                    <button onClick={() => moveCategory(i, 1)} disabled={i === layout.length - 1} className="btn btn-xs">↓</button>
-                  </div>
-                ))}
-                <button onClick={saveLayout} className="btn btn-primary btn-sm mt-2">Save layout</button>
+              <div className="card-soft mt-2">
+                <p className="tiny muted" style={{ margin: "0 0 8px" }}>
+                  Order items match on your list. Arrange to match your store's aisles.
+                </p>
+                <div className="col-2">
+                  {layout.map((cat, i) => (
+                    <div key={cat} className="row gap-2" style={{ padding: 2 }}>
+                      <span className="muted tiny" style={{ width: 24 }}>{i + 1}.</span>
+                      <span className="flex-1 small">{cat}</span>
+                      <button onClick={() => moveCategory(i, -1)} disabled={i === 0} className="btn btn-xs">↑</button>
+                      <button onClick={() => moveCategory(i, 1)} disabled={i === layout.length - 1} className="btn btn-xs">↓</button>
+                    </div>
+                  ))}
+                  <button onClick={saveLayout} className="btn btn-primary btn-sm mt-2">Save layout</button>
+                </div>
               </div>
             )}
           </div>

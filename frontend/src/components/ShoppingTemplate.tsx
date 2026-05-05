@@ -114,97 +114,91 @@ export default function ShoppingTemplate() {
     : 0;
 
   return (
-    <div className="col gap-4">
-      <div className="card-warm">
-        <p style={{ margin: 0 }}>
-          Items here are <strong>always added</strong> to your weekly shopping list.
-          Remove or adjust them per week on the list itself — those changes won't
-          touch this template.
-        </p>
-      </div>
-
+    <div className="col gap-3">
       {error && <div className="error">{error}</div>}
 
-      {/* Add item */}
-      <div className="card">
-        <h3>Add baseline item</h3>
-        <div className="row gap-2">
-          <input
-            className="input flex-1"
-            placeholder="Search ingredient (e.g. milk, eggs)…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void runSearch(); }}
-          />
-          <button onClick={runSearch} disabled={searching || query.trim().length < 2} className="btn btn-primary btn-sm">
-            {searching ? "Searching…" : "Search"}
-          </button>
-        </div>
-        {results.length > 0 && !picked && (
-          <div className="col-2 mt-3" style={{ maxHeight: 240, overflowY: "auto" }}>
-            {results.map((r) => (
-              <button
-                key={r.fdc_id}
-                onClick={() => setPicked(r)}
-                className="row gap-2"
-                style={{
-                  padding: 8,
-                  background: "var(--cream-2)",
-                  borderRadius: "var(--r-sm)",
-                  border: "1px solid var(--line)",
-                  textAlign: "left",
-                  cursor: "pointer",
-                }}
-              >
-                <span className="flex-1">{r.name}</span>
-                <span className="tiny muted">{r.mapped_category}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        {picked && (
-          <div className="col-2 mt-3" style={{ padding: 12, background: "var(--sage-soft)", borderRadius: "var(--r-sm)" }}>
+      <div className="row gap-5" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
+        {/* Left: add item */}
+        <div className="flex-1" style={{ minWidth: 300, maxWidth: 420 }}>
+          <div className="card">
+            <h4 style={{ margin: "0 0 8px" }}>Add item</h4>
             <div className="row gap-2">
-              <strong className="flex-1">{picked.name}</strong>
-              <button onClick={() => setPicked(null)} className="btn btn-ghost btn-xs">Change</button>
-            </div>
-            <div className="row gap-2" style={{ alignItems: "flex-end" }}>
-              <label className="field">
-                <input
-                  type="number"
-                  min={0}
-                  step={pickedUnit()?.round_step ?? 1}
-                  className="input input-num"
-                  value={qtyDisplay}
-                  onChange={(e) => setQtyDisplay(e.target.value)}
-                />
-                <span className="tiny">{pickedUnitLabel}</span>
-              </label>
-              {pickedUnit() && (
-                <span className="tiny muted" style={{ paddingBottom: 8 }}>
-                  ≈ {Math.round(pickedGrams)} g
-                </span>
-              )}
               <input
                 className="input flex-1"
-                placeholder="Note (e.g. 'organic', optional)"
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
+                placeholder="Search (e.g. milk, eggs)…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void runSearch(); }}
               />
-              <button onClick={handleAdd} className="btn btn-primary btn-sm">Add</button>
+              <button onClick={runSearch} disabled={searching || query.trim().length < 2} className="btn btn-primary btn-sm">
+                {searching ? "…" : "Search"}
+              </button>
             </div>
+            {results.length > 0 && !picked && (
+              <div className="col-2 mt-2" style={{ maxHeight: 200, overflowY: "auto" }}>
+                {results.map((r) => (
+                  <button
+                    key={r.fdc_id}
+                    onClick={() => setPicked(r)}
+                    className="row gap-2"
+                    style={{
+                      padding: "6px 8px",
+                      background: "var(--cream-2)",
+                      borderRadius: "var(--r-sm)",
+                      border: "1px solid var(--line)",
+                      textAlign: "left",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span className="flex-1 small">{r.name}</span>
+                    <span className="tiny muted">{r.mapped_category}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {picked && (
+              <div className="col-2 mt-2" style={{ padding: 10, background: "var(--sage-soft)", borderRadius: "var(--r-sm)" }}>
+                <div className="row gap-2" style={{ alignItems: "center" }}>
+                  <strong className="flex-1 small">{picked.name}</strong>
+                  <button onClick={() => setPicked(null)} className="btn btn-ghost btn-xs">Change</button>
+                </div>
+                <div className="row gap-2" style={{ alignItems: "center" }}>
+                  <label className="field">
+                    <input
+                      type="number"
+                      min={0}
+                      step={pickedUnit()?.round_step ?? 1}
+                      className="input input-num"
+                      value={qtyDisplay}
+                      onChange={(e) => setQtyDisplay(e.target.value)}
+                    />
+                    <span className="tiny">{pickedUnitLabel}</span>
+                  </label>
+                  {pickedUnit() && (
+                    <span className="tiny muted">≈ {Math.round(pickedGrams)} g</span>
+                  )}
+                  <button onClick={handleAdd} className="btn btn-primary btn-sm" style={{ marginLeft: "auto" }}>Add</button>
+                </div>
+                <input
+                  className="input"
+                  placeholder="Note (optional)"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                />
+              </div>
+            )}
           </div>
-        )}
-      </div>
-
-      {/* Existing items */}
-      <div className="card">
-        <div className="row between mb-2">
-          <h3 style={{ margin: 0 }}>Your baseline ({items.length})</h3>
-          {loading && <span className="tiny muted">Loading…</span>}
         </div>
-        {items.length === 0 && <div className="empty">No baseline items yet. Add what you always buy.</div>}
-        {Object.entries(grouped).map(([category, rows]) => (
+
+        {/* Right: existing items */}
+        <div className="flex-1" style={{ minWidth: 320 }}>
+          <div className="card">
+            <div className="row between mb-2">
+              <h4 style={{ margin: 0 }}>Your baseline ({items.length})</h4>
+              {loading && <span className="tiny muted">Loading…</span>}
+            </div>
+            {items.length === 0 && <div className="empty">No baseline items yet. Add what you always buy.</div>}
+            {Object.entries(grouped).map(([category, rows]) => (
           <div key={category} className="mb-4">
             <div className="shop-cat-header">
               <span>{category}</span>
@@ -213,51 +207,90 @@ export default function ShoppingTemplate() {
             {rows.map((item) => {
               const isEditing = editingFdcId === item.fdc_id;
               const unit = units[item.fdc_id] ?? null;
-              return (
-                <div key={item.fdc_id} className="shop-row" style={{ alignItems: "center" }}>
-                  <span className="flex-1">
-                    {item.name}
-                    {item.note && !isEditing && (
-                      <span className="tiny muted" style={{ marginLeft: 8 }}>— {item.note}</span>
-                    )}
-                  </span>
-                  {isEditing ? (
-                    <>
+              if (isEditing) {
+                return (
+                  <div
+                    key={item.fdc_id}
+                    style={{
+                      padding: "8px 10px",
+                      background: "var(--sage-soft)",
+                      borderBottom: "1px solid var(--cream-3)",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    <div className="row gap-2" style={{ alignItems: "center" }}>
+                      <strong className="flex-1 small">{item.name}</strong>
                       <label className="field">
                         <input
                           type="number"
                           min={0}
                           step={unit?.round_step ?? 1}
+                          autoFocus
                           className="input input-num"
                           value={editQty}
                           onChange={(e) => setEditQty(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void saveEdit(item);
+                            if (e.key === "Escape") setEditingFdcId(null);
+                          }}
                         />
                         <span className="tiny">{item.display_unit}</span>
                       </label>
-                      <input
-                        className="input"
-                        style={{ width: 160 }}
-                        placeholder="Note"
-                        value={editNote}
-                        onChange={(e) => setEditNote(e.target.value)}
-                      />
-                      <button onClick={() => saveEdit(item)} className="btn btn-primary btn-xs">Save</button>
-                      <button onClick={() => setEditingFdcId(null)} className="btn btn-ghost btn-xs">Cancel</button>
-                    </>
-                  ) : (
-                    <>
-                      <span className="shop-qty">
-                        {item.display_quantity} {item.display_unit}
-                      </span>
-                      <button onClick={() => startEdit(item)} className="btn btn-ghost btn-xs">Edit</button>
-                      <button onClick={() => handleDelete(item.fdc_id)} className="btn btn-ghost btn-xs">✕</button>
-                    </>
-                  )}
+                      <button onClick={() => saveEdit(item)} className="btn btn-primary btn-sm">Save</button>
+                      <button onClick={() => setEditingFdcId(null)} className="btn btn-ghost btn-sm">Cancel</button>
+                    </div>
+                    <input
+                      className="input"
+                      placeholder="Note (optional)"
+                      value={editNote}
+                      onChange={(e) => setEditNote(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void saveEdit(item);
+                        if (e.key === "Escape") setEditingFdcId(null);
+                      }}
+                    />
+                  </div>
+                );
+              }
+              return (
+                <div
+                  key={item.fdc_id}
+                  onClick={() => startEdit(item)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "6px 10px",
+                    borderBottom: "1px solid var(--cream-3)",
+                    cursor: "pointer",
+                  }}
+                  title="Click to edit"
+                >
+                  <span className="flex-1 small">
+                    {item.name}
+                    {item.note && (
+                      <span className="tiny muted" style={{ marginLeft: 8 }}>— {item.note}</span>
+                    )}
+                  </span>
+                  <span className="shop-qty">
+                    {item.display_quantity} {item.display_unit}
+                  </span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); void handleDelete(item.fdc_id); }}
+                    className="btn btn-ghost btn-xs"
+                    title="Remove from template"
+                  >
+                    ✕
+                  </button>
                 </div>
               );
             })}
           </div>
         ))}
+          </div>
+        </div>
       </div>
     </div>
   );
