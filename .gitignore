@@ -237,3 +237,4 @@ frontend/node_modules/
 
 # Claude Code working notes (not part of the project)
 CLAUDE.md
+.claude/settings.local.json
