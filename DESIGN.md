@@ -531,3 +531,61 @@ flags, quality scores.
    task where an LLM is dramatically better than a regex — subjective
    "should this be in a pantry?" calls across 2000 candidates.
 7. **Close on what's next.** Meal plans, Supabase, mobile shopping view.
+
+---
+
+## 9. Real-product roadmap (post-demo direction)
+
+> Decided 2026-05-25. The school demo is a checkpoint, not the destination:
+> Hearth is being taken to a **real, public, monetized product**. This section
+> records the resolved decisions so the roadmap in §6 is superseded by a
+> concrete plan. Implementation has not started — this is the agreed shape.
+
+### 9.1 End-state shape
+
+| Area | Decision |
+|---|---|
+| **Backend** | FastAPI stays the application server, deployed as a **container on an existing Azure VM**. No Edge Functions rewrite. |
+| **Supabase role** | **Postgres + Auth + Storage only.** A free Supabase project is provisioned. |
+| **Data topology** | User data + **USDA (~8k rows)** + the `common_ingredients` seed move to **Postgres** — this collapses the cross-store nutrition join into one SQL query. **OFF is cut from production** (12GB dump, 900MB DuckDB, dlt/dbt OFF pipeline, and the dormant Products/Categories/Nutrition pages stay in the repo as the data-engineering showcase, not hosted). |
+| **Tenant isolation** | **Postgres RLS with the user's Supabase JWT propagated per request.** Tenant-owned (RLS): recipes, recipe_ingredients, meal_plans, meal_plan_entries, household_profiles, chat_sessions, chat_messages, pending_actions, store_layout, shopping_list_template. Public-read reference: USDA, curated catalog, `ingredient_aliases`, `ingredient_units`. |
+| **Ingredient catalog** | **Global, read-only to users.** Users build recipes from the 819 curated items + direct search over all 8k USDA (no writes — recipes can reference any `fdc_id`). Promote / dedup / rename become **admin-only** tools. No per-user pantry table in v1. |
+| **Auth** | **Google OAuth + email magic link** (passwordless — no password storage or reset flows). Each signup creates a household; onboarding seeds the profile. |
+| **Monetization** | Free tier = the **full manual app**. **All AI is gated.** Paid via **usage credits** (Stripe **one-time** Checkout, not subscriptions): a credit ledger in Postgres, per-action cost priced above token cost, **estimate-and-hold** before the variable-cost weekly planner (refund on failure). Cost can never exceed revenue. |
+| **Mobile** | **Responsive web only** for now. PWA + offline shopping list is a deliberate, reversible later upgrade (accepted risk: blank list on dropped in-store signal). |
+| **Quality bar** | **Critical-path test suite**: RLS tenant isolation, credit-ledger correctness, Stripe webhook idempotency, shopping consolidation. **Supabase CLI migrations** replace the `PRAGMA table_info` checks. |
+
+### 9.2 First milestone — the capped-AI free beta
+
+Stripe/credits are **deferred**. Ship a beta to validate the AI magic with real
+users at a **bounded cost**, then add billing once usage proves demand. Build
+order:
+
+1. Auth (Google + magic link) + user↔household mapping + onboarding.
+2. Migrate user data + USDA + the seed into Postgres; wire FastAPI to Supabase.
+3. RLS policies + JWT propagation; cut OFF from the deploy.
+4. **Hard quota caps on every AI call** — this is what makes a "free AI beta"
+   safe. Without it the beta is an open bar tab.
+5. Responsive pass across all views.
+6. Critical-path tests.
+7. Deploy the container to the Azure VM.
+
+*Then later:* credit ledger + Stripe Checkout + webhook + entitlement gates flip
+the caps into a paywall.
+
+### 9.3 Landmines to watch (not open decisions — known traps)
+
+- **RLS + connection pooling.** Must `SET LOCAL request.jwt.claims` inside each
+  request's transaction. Supabase's transaction-mode pooler (pgBouncer) keeps no
+  session state — get this pattern right early or RLS silently won't apply.
+- **The beta cap must count tokens, not calls.** Chat resends growing history
+  each turn; the weekly planner fans out to ~21 generations. A per-*call* cap
+  won't bound cost — cap tokens/credit-equivalent, and cap the planner fan-out
+  specifically.
+- **Recipe images.** Pollinations images save to local disk; on the VM they
+  persist only until the container is recreated. Mount a volume or push to
+  Supabase Storage, or every image is lost on redeploy.
+- **Supabase free tier pauses after ~7 days of inactivity.** Fine during active
+  dev; sporadic early-beta traffic can hit a paused DB.
+- **Existing single-household SQLite data.** Migration-time decision still open:
+  seed it as the owner's admin household, or start Postgres clean.
