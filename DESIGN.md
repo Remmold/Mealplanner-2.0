@@ -74,6 +74,12 @@ conflict (so users can override naming/categorisation).
   No CSS framework — keeps the bundle lean and styling consistent across
   components via semantic classes (`.card`, `.btn-primary`, `.chip`,
   `.shop-cat-header`, etc.).
+- **React primitive layer** in `src/components/ui/` (`Button`, `Card`, `Input`,
+  `Modal`, `Chip`, `List`, …) wraps those CSS classes. Pages compose from
+  primitives (`<Button variant="primary">`) rather than raw classes; visual
+  identity lives in the primitive/token, so look changes are one-file edits.
+  Conventions are enforced via `frontend/CLAUDE.md`: no inline styles, colors
+  only from tokens, icons from `lucide-react` (no emoji glyphs).
 - Sticky header with brand mark + tab nav; max-width content well; subtle
   gradient backdrop. Each view leads with a hero strip explaining what it does.
 - No state manager — `useState` + fetch. Simple and fast to demo.
@@ -332,6 +338,13 @@ Key design choices:
 
 > Newest entries on top. Keep each entry short — one or two lines on *what
 > changed* and *why*. Leave dates approximate when unsure.
+
+### 2026-05 — Frontend primitive layer + end-user cleanup
+Extracted a React primitive library (`src/components/ui/`) over the existing CSS
+design system, migrated all live views to compose from it, removed inline styles,
+and replaced emoji glyphs with `lucide-react` icons. Removed the Products,
+Categories and Nutrition tabs from the nav (components kept dormant on disk to
+re-add later). Conventions captured in `frontend/CLAUDE.md` so they stay enforced.
 
 ### 2026-04 — Shopping list template (household baseline)
 New `shopping_list_template` table lets the user pin items they always buy

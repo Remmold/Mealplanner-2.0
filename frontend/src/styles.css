@@ -279,6 +279,7 @@ a:hover { text-decoration: underline; }
   cursor: pointer; font-size: 14px;
 }
 .icon-btn:hover { background: var(--cream-2); color: var(--ink); }
+.icon-btn-sm { width: 22px; height: 22px; }
 
 /* ---- Inputs ---- */
 .input, .select, .textarea {
@@ -298,6 +299,7 @@ a:hover { text-decoration: underline; }
   box-shadow: 0 0 0 3px rgba(74, 107, 70, 0.15);
 }
 .textarea { resize: vertical; min-height: 36px; }
+.textarea-autogrow { overflow: hidden; resize: none; }
 
 .input-inline {
   border: none;
@@ -326,6 +328,12 @@ a:hover { text-decoration: underline; }
 .input-num {
   width: 64px;
   text-align: right;
+}
+
+.input-mini {
+  width: 50px;
+  padding: 2px 4px;
+  font-size: 12px;
 }
 
 label.field {
@@ -406,6 +414,46 @@ label.field {
 .list-row:hover { background: var(--cream); }
 .list-row.disabled { opacity: 0.45; }
 
+/* Clickable result row used by search/pickers */
+.option-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--cream-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color .12s;
+}
+.option-row:hover { border-color: var(--taupe-3); }
+
+/* Bordered scroll container (e.g. recipe picker) */
+.scroll-box {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--space-1);
+}
+
+/* Selectable row (toggles on click) */
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background .12s;
+}
+.pick-row:hover { background: var(--cream); }
+.pick-row.selected { background: var(--sage-soft); }
+
 /* ---- Tables ---- */
 table.table {
   width: 100%;
@@ -460,8 +508,19 @@ table.table tr:last-child td { border-bottom: none; }
   box-shadow: var(--shadow-lg);
   animation: slideUp .2s ease-out;
 }
+.modal-lg { max-width: 520px; }
 @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
 @keyframes slideUp { from { transform: translateY(8px); opacity: 0 } to { transform: none; opacity: 1 } }
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.modal-header h2,
+.modal-header h3 { margin: 0; }
 
 /* ---- Layout helpers ---- */
 .row    { display: flex; gap: var(--space-3); align-items: center; }
@@ -470,6 +529,42 @@ table.table tr:last-child td { border-bottom: none; }
 .col-2  { display: flex; flex-direction: column; gap: var(--space-2); }
 .between { justify-content: space-between; }
 .wrap    { flex-wrap: wrap; }
+.items-start { align-items: flex-start; }
+.items-end   { align-items: flex-end; }
+.ml-auto { margin-left: auto; }
+.w-auto  { width: auto; }
+.items-baseline { align-items: baseline; }
+.field-col { flex-direction: column; align-items: flex-start; }
+.m-0  { margin: 0; }
+.ml-1 { margin-left: var(--space-1); }
+.ml-2 { margin-left: var(--space-2); }
+.min-w-300 { min-width: 300px; }
+.min-w-320 { min-width: 320px; }
+.min-w-340 { min-width: 340px; }
+.max-w-420 { max-width: 420px; }
+.w-24 { width: 24px; }
+.min-w-100 { min-width: 100px; }
+.min-w-240 { min-width: 240px; }
+.p-3 { padding: var(--space-3); }
+.fw-500 { font-weight: 500; }
+.fw-600 { font-weight: 600; }
+.clickable { cursor: pointer; }
+.line-through { text-decoration: line-through; }
+.text-warm { color: var(--terracotta-dark); }
+.overline { text-transform: uppercase; letter-spacing: 0.05em; }
+.capitalize { text-transform: capitalize; }
+.scroll-x { overflow-x: auto; }
+.pl-24 { padding-left: 24px; }
+.inset {
+  padding: var(--space-3);
+  background: var(--cream-2);
+  border-radius: var(--r-sm);
+}
+.inset-accent {
+  padding: var(--space-3);
+  background: var(--sage-soft);
+  border-radius: var(--r-sm);
+}
 .gap-2 { gap: var(--space-2); }
 .gap-3 { gap: var(--space-3); }
 .gap-4 { gap: var(--space-4); }
@@ -487,6 +582,7 @@ table.table tr:last-child td { border-bottom: none; }
 .mb-5 { margin-bottom: var(--space-5); }
 
 .scroll-y { overflow-y: auto; }
+.maxh-200 { max-height: 200px; }
 .maxh-360 { max-height: 360px; }
 .maxh-480 { max-height: 480px; }
 
@@ -555,6 +651,7 @@ table.table tr:last-child td { border-bottom: none; }
   border-color: var(--sage-dark);
   background: var(--sage-soft);
 }
+.recipe-card.horizontal { flex-direction: row; align-items: center; gap: var(--space-3); }
 
 .error {
   background: var(--danger-soft);
@@ -599,6 +696,7 @@ table.table tr:last-child td { border-bottom: none; }
   margin-bottom: 4px;
   font-size: 13px;
 }
+.cell-entry-name { font-weight: 500; margin-bottom: 2px; }
 .cell-add {
   width: 100%;
   padding: 4px;
@@ -638,8 +736,19 @@ table.table tr:last-child td { border-bottom: none; }
   text-decoration: line-through;
   color: var(--taupe-3);
 }
+.shop-row.from-template { border-left: 3px solid var(--sage); padding-left: 8px; }
 .shop-qty { font-weight: 600; font-family: var(--font-serif); color: var(--terracotta-dark); }
 .shop-qty.checked { color: var(--taupe-3); }
+
+/* Inline-edit row (highlighted while editing an item) */
+.edit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--sage-soft);
+  border-bottom: 1px solid var(--cream-3);
+}
 
 input[type="checkbox"] {
   accent-color: var(--sage-dark);
@@ -685,6 +794,9 @@ input[type="checkbox"] {
   display: flex; align-items: center; gap: var(--space-2);
   background: var(--paper);
 }
+.chat-title { font-family: var(--font-serif); font-size: 17px; }
+.chat-greeting { font-family: var(--font-serif); font-size: 18px; margin-bottom: var(--space-2); }
+.chat-session-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .chat-sessions {
   border-bottom: 1px solid var(--line);
@@ -805,6 +917,7 @@ input[type="checkbox"] {
 }
 .pending-status {
   font-size: 12px; font-style: italic;
+  display: inline-flex; align-items: center; gap: 4px;
 }
 .pending-status.accepted { color: var(--sage-dark); font-style: normal; }
 .pending-status.rejected { color: var(--taupe-2); }

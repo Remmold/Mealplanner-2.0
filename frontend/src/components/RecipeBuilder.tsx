@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
+import { Check, Plus, RefreshCw, Sparkles, X } from "lucide-react";
 import {
   fetchIngredientCategories,
   fetchIngredients,
@@ -17,6 +18,10 @@ import {
   type RecipeNutrition,
   type UsdaSearchResult,
 } from "../api";
+import {
+  Button, Card, Chip, Divider, Empty, ErrorBanner, Field, IconButton,
+  Input, List, ListRow, Select, Textarea,
+} from "./ui";
 
 interface RecipeItem {
   ingredient: Ingredient;
@@ -262,55 +267,52 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
         <p>Pick ingredients from your pantry, or describe a dish and let the kitchen think it up for you.</p>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      <ErrorBanner>{error}</ErrorBanner>
 
       {/* Saved recipes */}
       <div className="col gap-2">
-        <h3 className="muted small" style={{ textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>
-          Your recipes
-        </h3>
+        <h3 className="muted small overline m-0">Your recipes</h3>
         <div className="row wrap gap-2">
-          <button onClick={newRecipe} className="btn btn-primary btn-sm">+ New recipe</button>
+          <Button onClick={newRecipe} variant="primary" size="sm"><Plus size={14} /> New recipe</Button>
           {recipes.map((r) => (
-            <span key={r.id} className={`chip ${r.id === activeRecipeId ? "chip-active" : ""}`}>
-              <span onClick={() => loadRecipeIntoEditor(r)}>{r.name}</span>
-              <span className="chip-x" onClick={(e) => { e.stopPropagation(); handleDelete(r.id); }}>×</span>
-            </span>
+            <Chip
+              key={r.id}
+              active={r.id === activeRecipeId}
+              onClick={() => loadRecipeIntoEditor(r)}
+              onRemove={() => handleDelete(r.id)}
+            >
+              {r.name}
+            </Chip>
           ))}
           {recipes.length === 0 && <span className="muted small">No saved recipes yet.</span>}
         </div>
       </div>
 
       {/* AI generation */}
-      <div className="card-warm">
+      <Card variant="warm">
         <div className="row gap-3">
-          <div style={{ fontSize: 22 }}>✦</div>
+          <Sparkles size={22} />
           <div className="flex-1 col-2">
-            <strong style={{ fontFamily: "var(--font-serif)", fontSize: 16 }}>Generate a recipe</strong>
+            <h4 className="m-0">Generate a recipe</h4>
             <span className="small muted">Try "Thai red curry for 4" or "quick weeknight pasta with what's in season"</span>
           </div>
         </div>
         <div className="row gap-2 mt-3">
-          <input
-            className="input"
+          <Input
             placeholder="What are we cooking?"
             value={genPrompt}
             onChange={(e) => setGenPrompt(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !generating && handleGenerate()}
             disabled={generating}
           />
-          <button
-            onClick={handleGenerate}
-            disabled={generating || !genPrompt.trim()}
-            className="btn btn-accent"
-          >
+          <Button onClick={handleGenerate} disabled={generating || !genPrompt.trim()} variant="accent">
             {generating ? "Thinking..." : "Generate"}
-          </button>
+          </Button>
         </div>
-      </div>
+      </Card>
 
       {/* Editor: name, servings, save */}
-      <div className="card">
+      <Card>
         {activeRecipeId && (
           <div className="recipe-hero">
             {imagePath ? (
@@ -324,157 +326,149 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                 <span className="tiny muted">Generating image…</span>
               </div>
             )}
-            <button
+            <Button
               onClick={handleRegenerateImage}
               disabled={regenerating}
-              className="btn btn-xs recipe-hero-regen"
+              size="xs"
+              className="recipe-hero-regen"
               title="Generate a new image"
             >
-              {regenerating ? "…" : "↻ Regenerate image"}
-            </button>
+              {regenerating ? "…" : <><RefreshCw size={12} /> Regenerate image</>}
+            </Button>
           </div>
         )}
         <div className="row gap-3 wrap">
-          <input
-            className="input-title flex-1"
+          <Input
+            variant="title"
+            className="flex-1"
             value={recipeName}
             onChange={(e) => { setRecipeName(e.target.value); markDirty(); }}
           />
-          <label className="field">
+          <Field>
             Servings
-            <input
+            <Input
               type="number"
               min={1}
-              className="input input-num"
+              numeric
               value={servings}
               onChange={(e) => { setServings(Math.max(1, Number(e.target.value) || 1)); markDirty(); }}
             />
-          </label>
-          <button
-            onClick={saveRecipe}
-            disabled={saving || (!dirty && activeRecipeId !== null)}
-            className="btn btn-primary"
-          >
+          </Field>
+          <Button onClick={saveRecipe} disabled={saving || (!dirty && activeRecipeId !== null)} variant="primary">
             {saving ? "Saving..." : activeRecipeId ? "Save" : "Create"}
-          </button>
+          </Button>
         </div>
 
-        <div className="divider" />
+        <Divider />
 
-        <div className="row gap-5" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div className="row gap-5 wrap items-start">
           {/* Left: pantry picker */}
-          <div className="flex-1" style={{ minWidth: 320 }}>
+          <div className="flex-1 min-w-320">
             <div className="row between mb-2">
-              <h3 style={{ margin: 0 }}>Pantry</h3>
-              <button onClick={() => setUsdaOpen(!usdaOpen)} className="btn btn-ghost btn-sm">
-                {usdaOpen ? "Close USDA" : "+ Find more"}
-              </button>
+              <h3 className="m-0">Pantry</h3>
+              <Button onClick={() => setUsdaOpen(!usdaOpen)} variant="ghost" size="sm">
+                {usdaOpen ? "Close USDA" : <><Plus size={14} /> Find more</>}
+              </Button>
             </div>
 
             {usdaOpen && (
-              <div className="card-soft mb-3">
+              <Card variant="soft" className="mb-3">
                 <div className="row gap-2 mb-2">
-                  <input
-                    className="input"
+                  <Input
                     placeholder="Search USDA — cod, feta, tahini..."
                     value={usdaQuery}
                     onChange={(e) => setUsdaQuery(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleUsdaSearch()}
                   />
-                  <button onClick={handleUsdaSearch} disabled={usdaLoading} className="btn btn-sm">
+                  <Button onClick={handleUsdaSearch} disabled={usdaLoading} size="sm">
                     {usdaLoading ? "..." : "Search"}
-                  </button>
+                  </Button>
                 </div>
                 <div className="scroll-y maxh-360">
                   {usdaResults.map((r) => (
-                    <div key={r.fdc_id} className="list-row">
+                    <ListRow key={r.fdc_id}>
                       <div className="flex-1">
                         <div>{r.name}</div>
                         <div className="tiny muted">→ {r.mapped_category}{r.food_group ? ` · ${r.food_group}` : ""}</div>
                       </div>
-                      <button
-                        onClick={() => promoteToPantry(r)}
-                        disabled={r.in_pantry}
-                        className="btn btn-xs"
-                      >
-                        {r.in_pantry ? "✓ In pantry" : "+ Add"}
-                      </button>
-                    </div>
+                      <Button onClick={() => promoteToPantry(r)} disabled={r.in_pantry} size="xs">
+                        {r.in_pantry ? <><Check size={12} /> In pantry</> : <><Plus size={12} /> Add</>}
+                      </Button>
+                    </ListRow>
                   ))}
                   {usdaResults.length === 0 && usdaQuery && !usdaLoading && (
                     <p className="muted small mt-2">No results — press Search.</p>
                   )}
                 </div>
-              </div>
+              </Card>
             )}
 
             <div className="row gap-2 mb-3">
-              <select
-                className="select"
+              <Select
+                className="w-auto"
                 value={selectedCat}
                 onChange={(e) => setSelectedCat(e.target.value)}
-                style={{ width: "auto" }}
               >
                 <option value="">All categories</option>
                 {categories.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <input
-                className="input flex-1"
+              </Select>
+              <Input
+                className="flex-1"
                 placeholder="Filter by name..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
 
-            <div className="list scroll-y maxh-480">
+            <List className="scroll-y maxh-480">
               {filtered.map((ing) => {
                 const added = items.some((i) => i.ingredient.fdc_id === ing.fdc_id);
                 return (
-                  <div key={ing.fdc_id} className={`list-row ${added ? "disabled" : ""}`}>
+                  <ListRow key={ing.fdc_id} disabled={added}>
                     <div className="flex-1">
-                      <div style={{ fontWeight: 500 }}>{ing.name}</div>
+                      <div className="fw-500">{ing.name}</div>
                       <div className="tiny muted">{ing.energy_kcal_100g ?? "?"} kcal · {ing.proteins_100g ?? "?"}g protein /100g</div>
                     </div>
-                    <button onClick={() => addItem(ing)} disabled={added} className="btn btn-xs">
-                      {added ? "Added" : "+"}
-                    </button>
-                  </div>
+                    <Button onClick={() => addItem(ing)} disabled={added} size="xs">
+                      {added ? "Added" : <Plus size={14} />}
+                    </Button>
+                  </ListRow>
                 );
               })}
-              {filtered.length === 0 && <div className="empty">No ingredients match.</div>}
-            </div>
+              {filtered.length === 0 && <Empty>No ingredients match.</Empty>}
+            </List>
           </div>
 
           {/* Right: current recipe */}
-          <div className="flex-1" style={{ minWidth: 320 }}>
+          <div className="flex-1 min-w-320">
             <h3>Ingredients <span className="muted small">({items.length})</span></h3>
             {items.length === 0 && (
-              <div className="empty">Pick ingredients from your pantry.</div>
+              <Empty>Pick ingredients from your pantry.</Empty>
             )}
 
             <div className="col-2">
               {items.map((item) => (
-                <div key={item.ingredient.fdc_id} className="row gap-2" style={{
-                  background: "var(--cream-2)", padding: "8px 12px", borderRadius: "var(--r-sm)",
-                }}>
-                  <div className="flex-1" style={{ fontWeight: 500 }}>{item.ingredient.name}</div>
-                  <input
+                <div key={item.ingredient.fdc_id} className="row gap-2 inset">
+                  <div className="flex-1 fw-500">{item.ingredient.name}</div>
+                  <Input
                     type="number"
-                    className="input input-num"
+                    numeric
                     value={item.quantity_g}
                     onChange={(e) => updateQuantity(item.ingredient.fdc_id, Number(e.target.value) || 0)}
                     min={0}
                   />
                   <span className="small muted">g</span>
-                  <button onClick={() => removeItem(item.ingredient.fdc_id)} className="icon-btn">×</button>
+                  <IconButton onClick={() => removeItem(item.ingredient.fdc_id)} aria-label="Remove">
+                    <X size={14} />
+                  </IconButton>
                 </div>
               ))}
             </div>
 
             {nutrition && (
-              <div className="card-accent mt-4">
+              <Card variant="accent" className="mt-4">
                 <h4>Nutrition</h4>
-                <table className="table" style={{ background: "transparent" }}>
+                <table className="table">
                   <tbody>
                     {[
                       ["Weight", nutrition.total_weight_g, "g"],
@@ -489,56 +483,58 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                     ].map(([label, val, unit]) => (
                       <tr key={String(label)}>
                         <td>{label}</td>
-                        <td className="right" style={{ fontWeight: 600 }}>{val} {unit}</td>
+                        <td className="right fw-600">{val} {unit}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
                 {nutrition.items_missing.length > 0 && (
-                  <p className="small mt-2" style={{ color: "var(--terracotta-dark)" }}>
+                  <p className="small mt-2 text-warm">
                     Missing data for some items.
                   </p>
                 )}
-              </div>
+              </Card>
             )}
           </div>
         </div>
 
         {/* Instructions */}
-        <div className="divider" />
+        <Divider />
         <div className="col-2">
           <div className="row between">
-            <h3 style={{ margin: 0 }}>Instructions</h3>
-            <button
+            <h3 className="m-0">Instructions</h3>
+            <Button
               onClick={() => { setInstructions((prev) => [...prev, ""]); markDirty(); }}
-              className="btn btn-sm"
+              size="sm"
             >
-              + Step
-            </button>
+              <Plus size={14} /> Step
+            </Button>
           </div>
           {instructions.length === 0 && (
-            <div className="empty">No steps yet — add one or generate a recipe.</div>
+            <Empty>No steps yet — add one or generate a recipe.</Empty>
           )}
-          <ol className="col-2" style={{ paddingLeft: 24, margin: 0 }}>
+          <ol className="col-2 m-0 pl-24">
             {instructions.map((step, i) => (
-              <li key={i} className="row gap-2" style={{ alignItems: "flex-start" }}>
+              <li key={i} className="row gap-2 items-start">
                 <AutoGrowTextarea
-                  className="textarea flex-1"
+                  className="flex-1"
                   value={step}
                   onChange={(v) => {
                     const next = [...instructions]; next[i] = v;
                     setInstructions(next); markDirty();
                   }}
                 />
-                <button
+                <IconButton
                   onClick={() => { setInstructions((prev) => prev.filter((_, j) => j !== i)); markDirty(); }}
-                  className="icon-btn"
-                >×</button>
+                  aria-label="Remove step"
+                >
+                  <X size={14} />
+                </IconButton>
               </li>
             ))}
           </ol>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }
@@ -559,13 +555,12 @@ function AutoGrowTextarea({
     el.style.height = `${el.scrollHeight}px`;
   }, [value]);
   return (
-    <textarea
+    <Textarea
       ref={ref}
-      className={className}
+      className={["textarea-autogrow", className].filter(Boolean).join(" ")}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       rows={1}
-      style={{ overflow: "hidden", resize: "none" }}
     />
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ArrowRight, Check, Hand, Menu, TriangleAlert, X } from "lucide-react";
 import {
   listChatSessions,
   createChatSession,
@@ -15,6 +16,7 @@ import {
   type ProposedAction,
   type Recipe,
 } from "../api";
+import { Button, Empty, ErrorBanner, IconButton, Textarea } from "./ui";
 
 type PendingStatus = "pending" | "accepting" | "rejecting" | "accepted" | "rejected" | "failed";
 
@@ -183,34 +185,38 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
   return (
     <div className="chat-drawer">
       <div className="chat-header">
-        <div className="row gap-2" style={{ flex: 1, alignItems: "center" }}>
-          <button onClick={() => setShowSessions(!showSessions)} className="icon-btn" title="Sessions">≡</button>
-          <strong style={{ fontFamily: "var(--font-serif)", fontSize: 17 }}>Hearth assistant</strong>
+        <div className="row gap-2 flex-1">
+          <IconButton onClick={() => setShowSessions(!showSessions)} title="Sessions">
+            <Menu size={16} />
+          </IconButton>
+          <strong className="chat-title">Hearth assistant</strong>
         </div>
-        <button onClick={startNewSession} className="btn btn-ghost btn-sm">New</button>
-        <button onClick={onClose} className="icon-btn" title="Close">×</button>
+        <Button onClick={startNewSession} variant="ghost" size="sm">New</Button>
+        <IconButton onClick={onClose} title="Close">
+          <X size={16} />
+        </IconButton>
       </div>
 
       {showSessions && (
         <div className="chat-sessions">
-          {sessions.length === 0 && <div className="empty small">No previous chats.</div>}
+          {sessions.length === 0 && <Empty className="small">No previous chats.</Empty>}
           {sessions.map((s) => (
             <div
               key={s.id}
               className={`chat-session-row ${s.id === activeId ? "active" : ""}`}
               onClick={() => loadSession(s.id)}
             >
-              <div className="flex-1" style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {s.title}
-                </div>
+              <div className="flex-1">
+                <div className="chat-session-title">{s.title}</div>
                 <div className="tiny muted">{s.message_count} messages</div>
               </div>
-              <button
+              <IconButton
                 onClick={(e) => { e.stopPropagation(); removeSession(s.id); }}
-                className="icon-btn"
-                style={{ width: 22, height: 22, fontSize: 12 }}
-              >×</button>
+                className="icon-btn-sm"
+                aria-label="Delete chat"
+              >
+                <X size={12} />
+              </IconButton>
             </div>
           ))}
         </div>
@@ -219,7 +225,7 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
       <div className="chat-body" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="chat-welcome">
-            <p style={{ fontFamily: "var(--font-serif)", fontSize: 18, marginBottom: 8 }}>Hi there 👋</p>
+            <p className="chat-greeting">Hi there <Hand size={18} /></p>
             <p className="muted small">
               I can manage your recipes, plans and pantry. Try:
             </p>
@@ -250,9 +256,9 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
                   <div className="chat-pending-header">
                     <span>{m.pending.length} proposed action{m.pending.length === 1 ? "" : "s"}</span>
                     {stillPending.length > 1 && (
-                      <button onClick={() => acceptAll(stillPending)} className="btn btn-xs btn-primary">
+                      <Button onClick={() => acceptAll(stillPending)} size="xs" variant="primary">
                         Accept all
-                      </button>
+                      </Button>
                     )}
                   </div>
                   {m.pending.map((c) => (
@@ -263,14 +269,14 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
                       </div>
                       {c.status === "pending" && (
                         <div className="pending-actions">
-                          <button onClick={() => handleReject(c)} className="btn btn-xs">Reject</button>
-                          <button onClick={() => handleAccept(c)} className="btn btn-xs btn-primary">Accept</button>
+                          <Button onClick={() => handleReject(c)} size="xs">Reject</Button>
+                          <Button onClick={() => handleAccept(c)} size="xs" variant="primary">Accept</Button>
                         </div>
                       )}
                       {c.status === "accepting" && <span className="pending-status muted">Applying…</span>}
                       {c.status === "rejecting" && <span className="pending-status muted">Rejecting…</span>}
                       {c.status === "accepted" && !c.preview && (
-                        <span className="pending-status accepted">✓ {c.result || "Done"}</span>
+                        <span className="pending-status accepted"><Check size={14} /> {c.result || "Done"}</span>
                       )}
                       {c.status === "accepted" && c.preview && (
                         <div className="pending-preview">
@@ -289,19 +295,20 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
                               {c.preview.servings} servings · {c.preview.ingredients.length} ingredients · {c.preview.instructions.length} steps
                             </div>
                           </div>
-                          <button
+                          <Button
                             onClick={() => navigateTo({ tab: "recipe", recipe_id: c.preview!.id })}
-                            className="btn btn-xs btn-primary"
+                            size="xs"
+                            variant="primary"
                           >
-                            View →
-                          </button>
+                            View <ArrowRight size={12} />
+                          </Button>
                         </div>
                       )}
                       {c.status === "rejected" && (
-                        <span className="pending-status rejected">× Rejected</span>
+                        <span className="pending-status rejected"><X size={14} /> Rejected</span>
                       )}
                       {c.status === "failed" && (
-                        <span className="pending-status failed">⚠ {c.result || "Failed"}</span>
+                        <span className="pending-status failed"><TriangleAlert size={14} /> {c.result || "Failed"}</span>
                       )}
                     </div>
                   ))}
@@ -319,12 +326,11 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
           </div>
         )}
 
-        {error && <div className="error">{error}</div>}
+        <ErrorBanner>{error}</ErrorBanner>
       </div>
 
       <div className="chat-input-row">
-        <textarea
-          className="textarea"
+        <Textarea
           placeholder="Ask the assistant…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -334,9 +340,9 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
           rows={2}
           disabled={sending}
         />
-        <button onClick={send} disabled={sending || !input.trim()} className="btn btn-primary">
+        <Button onClick={send} disabled={sending || !input.trim()} variant="primary">
           Send
-        </button>
+        </Button>
       </div>
     </div>
   );

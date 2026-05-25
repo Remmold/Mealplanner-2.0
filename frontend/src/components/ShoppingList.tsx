@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Star, X } from "lucide-react";
 import {
   fetchRecipes,
   generateShoppingList,
@@ -8,6 +9,7 @@ import {
   type ShoppingList as ShoppingListType,
 } from "../api";
 import ShoppingTemplate from "./ShoppingTemplate";
+import { Button, Card, Empty, ErrorBanner, Field, Input, Pill } from "./ui";
 
 interface Selection { recipe: Recipe; portions: number; }
 
@@ -121,14 +123,16 @@ export default function ShoppingList() {
   if (view === "template") {
     return (
       <div className="col gap-3">
-        <div className="row between" style={{ alignItems: "baseline" }}>
+        <div className="row between items-baseline">
           <div>
-            <h2 style={{ margin: 0 }}>Shopping template</h2>
+            <h2 className="m-0">Shopping template</h2>
             <span className="small muted">
               Baseline items — preprinted into every weekly list. Edits here are permanent.
             </span>
           </div>
-          <button onClick={() => setView("list")} className="btn btn-ghost btn-sm">← Back to list</button>
+          <Button onClick={() => setView("list")} variant="ghost" size="sm">
+            <ArrowLeft size={14} /> Back to list
+          </Button>
         </div>
         <ShoppingTemplate />
       </div>
@@ -143,42 +147,34 @@ export default function ShoppingList() {
       </div>
 
       <div className="row gap-2">
-        <button onClick={() => setView("template")} className="btn btn-ghost btn-sm">
-          Manage shopping template →
-        </button>
+        <Button onClick={() => setView("template")} variant="ghost" size="sm">
+          Manage shopping template <ArrowRight size={14} />
+        </Button>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      <ErrorBanner>{error}</ErrorBanner>
 
-      <div className="row gap-5" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
+      <div className="row gap-5 wrap items-start">
         {/* Left: pick recipes */}
-        <div className="flex-1" style={{ minWidth: 320 }}>
-          <div className="card">
-            <div className="row between mb-2" style={{ alignItems: "baseline" }}>
-              <h4 style={{ margin: 0 }}>Pick recipes</h4>
+        <div className="flex-1 min-w-320">
+          <Card>
+            <div className="row between mb-2 items-baseline">
+              <h4 className="m-0">Pick recipes</h4>
               <span className="tiny muted">
                 {Object.keys(selections).length} selected · {recipes.length} total
               </span>
             </div>
             {recipes.length === 0 ? (
-              <div className="empty">No recipes saved yet.</div>
+              <Empty>No recipes saved yet.</Empty>
             ) : (
               <>
-                <input
-                  className="input mb-2"
+                <Input
+                  className="mb-2"
                   placeholder="Filter recipes…"
                   value={recipeFilter}
                   onChange={(e) => setRecipeFilter(e.target.value)}
                 />
-                <div
-                  style={{
-                    maxHeight: 340,
-                    overflowY: "auto",
-                    border: "1px solid var(--line)",
-                    borderRadius: "var(--r-sm)",
-                    padding: 4,
-                  }}
-                >
+                <div className="scroll-box">
                   {recipes
                     .filter((r) => r.name.toLowerCase().includes(recipeFilter.toLowerCase()))
                     .map((r) => {
@@ -187,15 +183,7 @@ export default function ShoppingList() {
                         <div
                           key={r.id}
                           onClick={() => toggleRecipe(r)}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            padding: "4px 8px",
-                            background: sel ? "var(--sage-soft)" : "transparent",
-                            borderRadius: "var(--r-sm)",
-                            cursor: "pointer",
-                          }}
+                          className={`pick-row ${sel ? "selected" : ""}`}
                         >
                           <input
                             type="checkbox"
@@ -203,21 +191,20 @@ export default function ShoppingList() {
                             onChange={() => toggleRecipe(r)}
                             onClick={(e) => e.stopPropagation()}
                           />
-                          <span className="flex-1 small" style={{ fontWeight: sel ? 500 : 400 }}>
+                          <span className={`flex-1 small ${sel ? "fw-500" : ""}`}>
                             {r.name}
                           </span>
                           {sel ? (
-                            <label className="field" onClick={(e) => e.stopPropagation()}>
-                              <input
+                            <Field onClick={(e) => e.stopPropagation()}>
+                              <Input
                                 type="number"
                                 min={1}
-                                className="input input-num"
-                                style={{ width: 52 }}
+                                numeric
                                 value={sel.portions}
                                 onChange={(e) => updatePortions(r.id, Number(e.target.value) || 1)}
                               />
                               <span className="tiny">pt</span>
-                            </label>
+                            </Field>
                           ) : (
                             <span className="tiny muted">{r.servings}s</span>
                           )}
@@ -227,7 +214,7 @@ export default function ShoppingList() {
                 </div>
               </>
             )}
-            <label className="row gap-2 mt-2" style={{ alignItems: "center" }}>
+            <label className="row gap-2 mt-2">
               <input
                 type="checkbox"
                 checked={includeTemplate}
@@ -235,50 +222,56 @@ export default function ShoppingList() {
               />
               <span className="small">Include household template (baseline items)</span>
             </label>
-            <button
+            <Button
               onClick={handleGenerate}
               disabled={loading || (Object.keys(selections).length === 0 && !includeTemplate)}
-              className="btn btn-primary btn-block mt-3"
+              variant="primary"
+              block
+              className="mt-3"
             >
               {loading ? "Generating..." : "Generate shopping list"}
-            </button>
-          </div>
+            </Button>
+          </Card>
 
           <div className="mt-3">
-            <button onClick={() => setEditLayout(!editLayout)} className="btn btn-ghost btn-sm">
-              {editLayout ? "Close store layout" : "Edit store layout →"}
-            </button>
+            <Button onClick={() => setEditLayout(!editLayout)} variant="ghost" size="sm">
+              {editLayout ? "Close store layout" : <>Edit store layout <ArrowRight size={14} /></>}
+            </Button>
             {editLayout && (
-              <div className="card-soft mt-2">
-                <p className="tiny muted" style={{ margin: "0 0 8px" }}>
+              <Card variant="soft" className="mt-2">
+                <p className="tiny muted mb-2">
                   Order items match on your list. Arrange to match your store's aisles.
                 </p>
                 <div className="col-2">
                   {layout.map((cat, i) => (
-                    <div key={cat} className="row gap-2" style={{ padding: 2 }}>
-                      <span className="muted tiny" style={{ width: 24 }}>{i + 1}.</span>
+                    <div key={cat} className="row gap-2">
+                      <span className="muted tiny w-24">{i + 1}.</span>
                       <span className="flex-1 small">{cat}</span>
-                      <button onClick={() => moveCategory(i, -1)} disabled={i === 0} className="btn btn-xs">↑</button>
-                      <button onClick={() => moveCategory(i, 1)} disabled={i === layout.length - 1} className="btn btn-xs">↓</button>
+                      <Button onClick={() => moveCategory(i, -1)} disabled={i === 0} size="xs" aria-label="Move up">
+                        <ArrowUp size={14} />
+                      </Button>
+                      <Button onClick={() => moveCategory(i, 1)} disabled={i === layout.length - 1} size="xs" aria-label="Move down">
+                        <ArrowDown size={14} />
+                      </Button>
                     </div>
                   ))}
-                  <button onClick={saveLayout} className="btn btn-primary btn-sm mt-2">Save layout</button>
+                  <Button onClick={saveLayout} variant="primary" size="sm" className="mt-2">Save layout</Button>
                 </div>
-              </div>
+              </Card>
             )}
           </div>
         </div>
 
         {/* Right: generated list */}
-        <div className="flex-1" style={{ minWidth: 320 }}>
-          {!list && <div className="card empty">No list yet — pick some recipes.</div>}
+        <div className="flex-1 min-w-320">
+          {!list && <Card className="empty">No list yet — pick some recipes.</Card>}
           {list && (
-            <div className="card">
+            <Card>
               <div className="row between mb-3">
-                <h3 style={{ margin: 0 }}>Your list</h3>
-                <span className="pill">{checkedCount} / {totalItems} done</span>
+                <h3 className="m-0">Your list</h3>
+                <Pill>{checkedCount} / {totalItems} done</Pill>
               </div>
-              {visibleCategories.length === 0 && <div className="empty">No items.</div>}
+              {visibleCategories.length === 0 && <Empty>No items.</Empty>}
               {visibleCategories.map((cat) => (
                 <div key={cat.category} className="mb-4">
                   <div className="shop-cat-header">
@@ -291,8 +284,7 @@ export default function ShoppingList() {
                     return (
                       <label
                         key={item.fdc_id}
-                        className={`shop-row ${isChecked ? "checked" : ""}`}
-                        style={fromTemplate ? { borderLeft: "3px solid var(--sage, #6b8e23)", paddingLeft: 8 } : undefined}
+                        className={`shop-row ${isChecked ? "checked" : ""} ${fromTemplate ? "from-template" : ""}`}
                       >
                         <input
                           type="checkbox"
@@ -303,25 +295,24 @@ export default function ShoppingList() {
                           {item.name}
                           {fromTemplate && (
                             <span
-                              className="tiny muted"
-                              style={{ marginLeft: 6 }}
+                              className="ml-1"
                               title={item.source === "both" ? "From template + recipes" : "From household template"}
                             >
-                              ★
+                              <Star size={12} className="muted" />
                             </span>
                           )}
                           {item.note && (
-                            <span className="tiny muted" style={{ marginLeft: 8 }}>— {item.note}</span>
+                            <span className="tiny muted ml-2">— {item.note}</span>
                           )}
                         </span>
                         {editingQty === item.fdc_id ? (
-                          <label className="field" onClick={(e) => e.preventDefault()}>
-                            <input
+                          <Field onClick={(e) => e.preventDefault()}>
+                            <Input
                               type="number"
                               min={0}
                               step="any"
                               autoFocus
-                              className="input input-num"
+                              numeric
                               value={editDraft}
                               onChange={(e) => setEditDraft(e.target.value)}
                               onBlur={() => {
@@ -337,67 +328,67 @@ export default function ShoppingList() {
                               }}
                             />
                             <span className="tiny">{item.display_unit}</span>
-                          </label>
+                          </Field>
                         ) : (
                           <span
-                            className={`shop-qty ${isChecked ? "checked" : ""}`}
+                            className={`shop-qty clickable ${isChecked ? "checked" : ""}`}
                             onClick={(e) => {
                               e.preventDefault();
                               const current = qtyOverride[item.fdc_id] ?? item.display_quantity;
                               setEditDraft(String(current));
                               setEditingQty(item.fdc_id);
                             }}
-                            style={{ cursor: "pointer" }}
                             title="Click to alter quantity for this week"
                           >
                             {qtyOverride[item.fdc_id] ?? item.display_quantity} {item.display_unit}
                             {qtyOverride[item.fdc_id] !== undefined && (
-                              <span className="tiny muted" style={{ marginLeft: 4 }}>·edited</span>
+                              <span className="tiny muted ml-1">·edited</span>
                             )}
                           </span>
                         )}
                         {item.display_unit !== "g" && qtyOverride[item.fdc_id] === undefined && (
                           <span className="tiny muted">({Math.round(item.quantity_g)} g)</span>
                         )}
-                        <button
+                        <Button
                           type="button"
                           onClick={(e) => { e.preventDefault(); hideForWeek(item.fdc_id); }}
-                          className="btn btn-ghost btn-xs"
+                          variant="ghost"
+                          size="xs"
                           title="Skip this week (won't change the template)"
                         >
-                          ✕
-                        </button>
+                          <X size={14} />
+                        </Button>
                       </label>
                     );
                   })}
                 </div>
               ))}
               {hiddenItems.length > 0 && (
-                <div className="card-soft mt-3">
+                <Card variant="soft" className="mt-3">
                   <div className="row between mb-2">
                     <strong className="small">Skipped this week ({hiddenItems.length})</strong>
                     <span className="tiny muted">won't affect the template</span>
                   </div>
                   <div className="col-2">
                     {hiddenItems.map((it) => (
-                      <div key={it.fdc_id} className="row gap-2" style={{ alignItems: "center" }}>
-                        <span className="flex-1 tiny muted" style={{ textDecoration: "line-through" }}>
+                      <div key={it.fdc_id} className="row gap-2">
+                        <span className="flex-1 tiny muted line-through">
                           {it.name} — {it.display_quantity} {it.display_unit}
                         </span>
-                        <button onClick={() => restoreItem(it.fdc_id)} className="btn btn-ghost btn-xs">
+                        <Button onClick={() => restoreItem(it.fdc_id)} variant="ghost" size="xs">
                           Restore
-                        </button>
+                        </Button>
                       </div>
                     ))}
                   </div>
-                </div>
+                </Card>
               )}
               {list.missing_recipes.length > 0 && (
-                <p className="small" style={{ color: "var(--terracotta-dark)" }}>
+                <p className="small text-warm">
                   Some recipes not found: {list.missing_recipes.join(", ")}
                 </p>
               )}
-            </div>
+            </Card>
           )}
         </div>
       </div>

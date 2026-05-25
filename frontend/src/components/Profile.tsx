@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Plus, X } from "lucide-react";
 import {
   fetchProfile,
   patchProfile,
@@ -8,6 +9,7 @@ import {
   type HouseholdProfile,
   type ProfilePatch,
 } from "../api";
+import { Button, Card, Empty, ErrorBanner, Field, IconButton, Input, Select } from "./ui";
 
 const LIST_FIELDS: { key: keyof HouseholdProfile; label: string; placeholder: string }[] = [
   { key: "dietary", label: "Dietary", placeholder: "vegetarian, pescatarian, gluten-free" },
@@ -134,128 +136,123 @@ export default function Profile() {
         </p>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      <ErrorBanner>{error}</ErrorBanner>
 
-      <div className="row gap-4" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
+      <div className="row gap-4 wrap items-start">
         {/* Structured fields */}
-        <div className="flex-1" style={{ minWidth: 340 }}>
-          <div className="card">
+        <div className="flex-1 min-w-340">
+          <Card>
             <h3>Basics</h3>
             <div className="col-2">
-              <label className="field">
+              <Field>
                 Family size
-                <input
-                  type="number" min={1}
-                  className="input input-num"
+                <Input
+                  type="number" min={1} numeric
                   value={draft.family_size ?? ""}
                   onChange={(e) => updateDraft("family_size", e.target.value === "" ? null : Math.max(1, Number(e.target.value)))}
                 />
-              </label>
-              <label className="field">
+              </Field>
+              <Field>
                 Typical cook-time (min)
-                <input
-                  type="number" min={5}
-                  className="input input-num"
+                <Input
+                  type="number" min={5} numeric
                   value={draft.typical_cook_time_min ?? ""}
                   onChange={(e) => updateDraft("typical_cook_time_min", e.target.value === "" ? null : Math.max(5, Number(e.target.value)))}
                 />
-              </label>
-              <label className="field">
+              </Field>
+              <Field>
                 Batch-cook preference
-                <select
-                  className="select"
+                <Select
+                  className="w-auto"
                   value={draft.batch_cook_preference ?? ""}
                   onChange={(e) => updateDraft("batch_cook_preference", e.target.value || null)}
-                  style={{ width: "auto" }}
                 >
                   {BATCH_OPTIONS.map((o) => (
                     <option key={o} value={o}>{o || "(unset)"}</option>
                   ))}
-                </select>
-              </label>
-              <label className="field">
+                </Select>
+              </Field>
+              <Field>
                 Budget
-                <select
-                  className="select"
+                <Select
+                  className="w-auto"
                   value={draft.budget_level ?? ""}
                   onChange={(e) => updateDraft("budget_level", e.target.value || null)}
-                  style={{ width: "auto" }}
                 >
                   {BUDGET_OPTIONS.map((o) => (
                     <option key={o} value={o}>{o || "(unset)"}</option>
                   ))}
-                </select>
-              </label>
+                </Select>
+              </Field>
             </div>
-          </div>
+          </Card>
 
-          <div className="card mt-4">
+          <Card className="mt-4">
             <h3>Tastes & constraints</h3>
             <p className="small muted">Comma-separated. Allergies are strict; the assistant never includes them.</p>
             <div className="col-2">
               {LIST_FIELDS.map((f) => (
-                <label key={f.key as string} className="field" style={{ flexDirection: "column", alignItems: "flex-start" }}>
+                <Field key={f.key as string} className="field-col">
                   <span className="small">{f.label}</span>
-                  <input
-                    className="input"
+                  <Input
                     placeholder={f.placeholder}
                     value={listDrafts[f.key as string] ?? ""}
                     onChange={(e) => updateListDraft(f.key as string, e.target.value)}
-                    style={{ width: "100%" }}
                   />
-                </label>
+                </Field>
               ))}
             </div>
-          </div>
+          </Card>
 
           <div className="row gap-2 mt-3">
-            <button onClick={save} disabled={!dirty || saving} className="btn btn-primary">
+            <Button onClick={save} disabled={!dirty || saving} variant="primary">
               {saving ? "Saving..." : "Save profile"}
-            </button>
-            <button onClick={handleReset} className="btn btn-danger btn-sm" style={{ marginLeft: "auto" }}>
+            </Button>
+            <Button onClick={handleReset} variant="danger" size="sm" className="ml-auto">
               Reset everything
-            </button>
+            </Button>
           </div>
         </div>
 
         {/* Notes */}
-        <div className="flex-1" style={{ minWidth: 340 }}>
-          <div className="card">
+        <div className="flex-1 min-w-340">
+          <Card>
             <h3>Assistant notes</h3>
             <p className="small muted">
               Observations the assistant has recorded (or you've added). Things that don't fit a field.
             </p>
 
             {profile && profile.notes.length === 0 && (
-              <div className="empty">No notes yet — chat with the assistant and it'll learn.</div>
+              <Empty>No notes yet — chat with the assistant and it'll learn.</Empty>
             )}
             <div className="col-2">
               {profile?.notes.map((n, i) => (
-                <div key={i} className="row gap-2" style={{
-                  padding: 10, background: "var(--cream-2)", borderRadius: "var(--r-sm)",
-                  alignItems: "flex-start",
-                }}>
+                <div key={i} className="row gap-2 inset items-start">
                   <span className="flex-1 small">{n}</span>
-                  <button onClick={() => removeNote(i)} className="icon-btn">×</button>
+                  <IconButton onClick={() => removeNote(i)} aria-label="Remove note">
+                    <X size={14} />
+                  </IconButton>
                 </div>
               ))}
             </div>
 
             <div className="row gap-2 mt-3">
-              <input
-                className="input flex-1"
+              <Input
+                className="flex-1"
                 placeholder="Add a note..."
                 value={newNote}
                 onChange={(e) => setNewNote(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && addNote()}
               />
-              <button onClick={addNote} disabled={!newNote.trim()} className="btn btn-sm">+ Note</button>
+              <Button onClick={addNote} disabled={!newNote.trim()} size="sm">
+                <Plus size={14} /> Note
+              </Button>
             </div>
 
             {profile?.updated_at && (
               <p className="tiny muted mt-3">Last updated {profile.updated_at}</p>
             )}
-          </div>
+          </Card>
         </div>
       </div>
     </div>

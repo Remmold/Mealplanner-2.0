@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Plus, ShoppingCart, Sparkles, X } from "lucide-react";
 import {
   fetchMealPlans,
   createMealPlan,
@@ -13,6 +14,7 @@ import {
   type Recipe,
   type ShoppingList,
 } from "../api";
+import { Button, Card, Chip, Divider, Empty, ErrorBanner, Field, IconButton, Input, Modal, Textarea } from "./ui";
 
 const DAYS = 7;
 const SLOTS = ["breakfast", "lunch", "dinner"] as const;
@@ -201,64 +203,57 @@ export default function MealPlan() {
         <p>Drop saved recipes into the days you want to cook them. Generate a single, store-ordered shopping list for the whole week.</p>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      <ErrorBanner>{error}</ErrorBanner>
 
       {/* Plans bar */}
       <div className="col gap-2">
-        <h3 className="muted small" style={{ textTransform: "uppercase", letterSpacing: "0.05em", margin: 0 }}>
-          Your plans
-        </h3>
+        <h3 className="muted small overline m-0">Your plans</h3>
         <div className="row wrap gap-2">
-          <button onClick={newPlan} className="btn btn-primary btn-sm">+ New plan</button>
-          <button onClick={() => setGenOpen(true)} className="btn btn-accent btn-sm">✦ Generate week with AI</button>
+          <Button onClick={newPlan} variant="primary" size="sm"><Plus size={14} /> New plan</Button>
+          <Button onClick={() => setGenOpen(true)} variant="accent" size="sm"><Sparkles size={14} /> Generate week with AI</Button>
           {plans.map((p) => (
-            <span key={p.id} className={`chip ${p.id === activeId ? "chip-active" : ""}`}>
-              <span onClick={() => loadPlan(p)}>{p.name}</span>
-              <span className="chip-x" onClick={(e) => { e.stopPropagation(); removePlan(p.id); }}>×</span>
-            </span>
+            <Chip
+              key={p.id}
+              active={p.id === activeId}
+              onClick={() => loadPlan(p)}
+              onRemove={() => removePlan(p.id)}
+            >
+              {p.name}
+            </Chip>
           ))}
           {plans.length === 0 && <span className="muted small">No plans yet.</span>}
         </div>
       </div>
 
       {/* Editor card */}
-      <div className="card">
+      <Card>
         <div className="row gap-3 wrap">
-          <input
-            className="input-title flex-1"
+          <Input
+            variant="title"
+            className="flex-1 min-w-240"
             value={planName}
             onChange={(e) => { setPlanName(e.target.value); setDirty(true); }}
-            style={{ minWidth: 240 }}
           />
-          <label className="field">
+          <Field>
             Start date
-            <input
+            <Input
               type="date"
-              className="input"
+              className="w-auto"
               value={startDate}
               onChange={(e) => { setStartDate(e.target.value); setDirty(true); }}
-              style={{ width: "auto" }}
             />
-          </label>
-          <button
-            onClick={savePlan}
-            disabled={!dirty && activeId !== null}
-            className="btn btn-primary"
-          >
+          </Field>
+          <Button onClick={savePlan} disabled={!dirty && activeId !== null} variant="primary">
             {activeId ? "Save" : "Create"}
-          </button>
-          <button
-            onClick={generateShopping}
-            disabled={!activeId || dirty}
-            className="btn btn-accent"
-          >
-            🛒 Shopping list
-          </button>
+          </Button>
+          <Button onClick={generateShopping} disabled={!activeId || dirty} variant="accent">
+            <ShoppingCart size={16} /> Shopping list
+          </Button>
         </div>
 
-        <div className="divider" />
+        <Divider />
 
-        <div style={{ overflowX: "auto" }}>
+        <div className="scroll-x">
           <table className="week-grid">
             <thead>
               <tr>
@@ -278,20 +273,23 @@ export default function MealPlan() {
                       <td key={date + slot}>
                         {cellEntries.map((e) => (
                           <div key={e.id} className="cell-entry">
-                            <div style={{ fontWeight: 500, marginBottom: 2 }}>{e.recipe_name}</div>
+                            <div className="cell-entry-name">{e.recipe_name}</div>
                             <div className="row gap-2">
-                              <input
+                              <Input
                                 type="number" min={1} value={e.portions}
                                 onChange={(ev) => updateEntryPortions(e.id, Number(ev.target.value) || 1)}
-                                className="input"
-                                style={{ width: 50, padding: "2px 4px", fontSize: 12 }}
+                                className="input-mini"
                               />
                               <span className="tiny muted">portions</span>
-                              <button onClick={() => removeEntry(e.id)} className="icon-btn" style={{ marginLeft: "auto", width: 22, height: 22, fontSize: 12 }}>×</button>
+                              <IconButton onClick={() => removeEntry(e.id)} className="icon-btn-sm ml-auto" aria-label="Remove">
+                                <X size={12} />
+                              </IconButton>
                             </div>
                           </div>
                         ))}
-                        <button onClick={() => setPickerCell({ date, slot })} className="cell-add">+</button>
+                        <button onClick={() => setPickerCell({ date, slot })} className="cell-add" aria-label="Add recipe">
+                          <Plus size={14} />
+                        </button>
                       </td>
                     );
                   })}
@@ -300,177 +298,167 @@ export default function MealPlan() {
             </tbody>
           </table>
         </div>
-      </div>
+      </Card>
 
       {/* AI weekly plan generator modal */}
-      {genOpen && (
-        <div className="modal-backdrop" onClick={() => !generating && setGenOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
-            <h3>✦ Generate a week</h3>
-            <p className="small muted">
-              Describe what you want — diet, vibe, constraints. The kitchen will draft a plan and create
-              any new recipes it needs.
-            </p>
+      <Modal open={genOpen} onClose={() => { if (!generating) setGenOpen(false); }} className="modal-lg">
+        <h3 className="row gap-2"><Sparkles size={18} /> Generate a week</h3>
+        <p className="small muted">
+          Describe what you want — diet, vibe, constraints. The kitchen will draft a plan and create
+          any new recipes it needs.
+        </p>
 
-            <div className="col-2 mt-3">
-              <label className="field" style={{ flexDirection: "column", alignItems: "flex-start" }}>
-                <span className="small">Brief</span>
-                <textarea
-                  className="textarea"
-                  placeholder="e.g. Mediterranean-leaning week, vegetarian Mondays, family of 4, batch-cook on Sunday"
-                  value={genPrompt}
-                  onChange={(e) => setGenPrompt(e.target.value)}
-                  rows={3}
-                  disabled={generating}
-                  style={{ width: "100%" }}
-                />
-              </label>
+        <div className="col-2 mt-3">
+          <Field className="field-col">
+            <span className="small">Brief</span>
+            <Textarea
+              placeholder="e.g. Mediterranean-leaning week, vegetarian Mondays, family of 4, batch-cook on Sunday"
+              value={genPrompt}
+              onChange={(e) => setGenPrompt(e.target.value)}
+              rows={3}
+              disabled={generating}
+            />
+          </Field>
 
-              <div className="row gap-3 wrap">
-                <label className="field">
-                  Start
-                  <input
-                    type="date" className="input"
-                    value={genStart}
-                    onChange={(e) => setGenStart(e.target.value)}
-                    disabled={generating}
-                  />
-                </label>
-                <label className="field">
-                  Days
-                  <input
-                    type="number" min={1} max={14}
-                    className="input input-num"
-                    value={genDays}
-                    onChange={(e) => setGenDays(Math.max(1, Math.min(14, Number(e.target.value) || 7)))}
-                    disabled={generating}
-                  />
-                </label>
-                <label className="field">
-                  Servings
-                  <input
-                    type="number" min={1}
-                    className="input input-num"
-                    value={genServings}
-                    onChange={(e) => setGenServings(Math.max(1, Number(e.target.value) || 4))}
-                    disabled={generating}
-                  />
-                </label>
-              </div>
-
-              <div className="card-soft" style={{ padding: 12 }}>
-                <div className="small muted mb-2">Per-slot settings</div>
-                <div className="col-2">
-                  {(["breakfast", "lunch", "dinner"] as Slot[]).map((s) => {
-                    const cfg = slotSettings[s];
-                    return (
-                      <div key={s} className="row gap-3 wrap" style={{ alignItems: "center" }}>
-                        <label className="field" style={{ minWidth: 100, textTransform: "capitalize" }}>
-                          <input
-                            type="checkbox"
-                            checked={cfg.enabled}
-                            onChange={() => setSlotSettings((prev) => ({
-                              ...prev, [s]: { ...prev[s], enabled: !prev[s].enabled },
-                            }))}
-                            disabled={generating}
-                          />
-                          {s}
-                        </label>
-                        <label className="field" title="Servings-sets per meal. >1 means batch cook this much per sitting.">
-                          Portions
-                          <input
-                            type="number" min={0.25} step={0.25}
-                            className="input input-num"
-                            value={cfg.portions}
-                            onChange={(e) => setSlotSettings((prev) => ({
-                              ...prev, [s]: { ...prev[s], portions: Number(e.target.value) || 1 },
-                            }))}
-                            disabled={generating || !cfg.enabled}
-                          />
-                        </label>
-                        <label className="field" title="Cap on distinct dishes in this slot across the whole week. Lower = more batch cooking.">
-                          Distinct
-                          <input
-                            type="number" min={1} max={14} placeholder="auto"
-                            className="input input-num"
-                            value={cfg.distinct}
-                            onChange={(e) => setSlotSettings((prev) => ({
-                              ...prev, [s]: { ...prev[s], distinct: e.target.value === "" ? "" : Math.max(1, Number(e.target.value)) },
-                            }))}
-                            disabled={generating || !cfg.enabled}
-                          />
-                        </label>
-                      </div>
-                    );
-                  })}
-                </div>
-                <p className="tiny muted mt-2" style={{ margin: 0 }}>
-                  <strong>Portions</strong>: meals per sitting (use 1 for regular, 2–3 for batch).
-                  <br />
-                  <strong>Distinct</strong>: how many different dishes in this slot across the week.
-                  E.g. dinner: distinct=3 on 7 days means 3 recipes × 2-3 days each (matlåda).
-                  Each slot gets its own recipes — breakfast and dinner won't share dishes.
-                </p>
-              </div>
-            </div>
-
-            <div className="row gap-2 mt-4">
-              <button onClick={runWeeklyGenerator} disabled={generating} className="btn btn-accent flex-1">
-                {generating ? "Drafting your week..." : "Generate"}
-              </button>
-              <button onClick={() => setGenOpen(false)} disabled={generating} className="btn btn-ghost">
-                Cancel
-              </button>
-            </div>
-            {generating && (
-              <div className="card-soft mt-3">
-                <div className="row gap-2">
-                  <div className="chat-typing"><span></span><span></span><span></span></div>
-                  <div className="flex-1">
-                    <div style={{ fontWeight: 500 }}>Drafting your week…</div>
-                    <div className="tiny muted">
-                      {genElapsed}s elapsed · planner runs first, then recipes generate in parallel. Usually 30–90s total.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+          <div className="row gap-3 wrap">
+            <Field>
+              Start
+              <Input
+                type="date"
+                value={genStart}
+                onChange={(e) => setGenStart(e.target.value)}
+                disabled={generating}
+              />
+            </Field>
+            <Field>
+              Days
+              <Input
+                type="number" min={1} max={14} numeric
+                value={genDays}
+                onChange={(e) => setGenDays(Math.max(1, Math.min(14, Number(e.target.value) || 7)))}
+                disabled={generating}
+              />
+            </Field>
+            <Field>
+              Servings
+              <Input
+                type="number" min={1} numeric
+                value={genServings}
+                onChange={(e) => setGenServings(Math.max(1, Number(e.target.value) || 4))}
+                disabled={generating}
+              />
+            </Field>
           </div>
+
+          <Card variant="soft" className="p-3">
+            <div className="small muted mb-2">Per-slot settings</div>
+            <div className="col-2">
+              {(["breakfast", "lunch", "dinner"] as Slot[]).map((s) => {
+                const cfg = slotSettings[s];
+                return (
+                  <div key={s} className="row gap-3 wrap">
+                    <Field className="min-w-100 capitalize">
+                      <input
+                        type="checkbox"
+                        checked={cfg.enabled}
+                        onChange={() => setSlotSettings((prev) => ({
+                          ...prev, [s]: { ...prev[s], enabled: !prev[s].enabled },
+                        }))}
+                        disabled={generating}
+                      />
+                      {s}
+                    </Field>
+                    <Field title="Servings-sets per meal. >1 means batch cook this much per sitting.">
+                      Portions
+                      <Input
+                        type="number" min={0.25} step={0.25} numeric
+                        value={cfg.portions}
+                        onChange={(e) => setSlotSettings((prev) => ({
+                          ...prev, [s]: { ...prev[s], portions: Number(e.target.value) || 1 },
+                        }))}
+                        disabled={generating || !cfg.enabled}
+                      />
+                    </Field>
+                    <Field title="Cap on distinct dishes in this slot across the whole week. Lower = more batch cooking.">
+                      Distinct
+                      <Input
+                        type="number" min={1} max={14} placeholder="auto" numeric
+                        value={cfg.distinct}
+                        onChange={(e) => setSlotSettings((prev) => ({
+                          ...prev, [s]: { ...prev[s], distinct: e.target.value === "" ? "" : Math.max(1, Number(e.target.value)) },
+                        }))}
+                        disabled={generating || !cfg.enabled}
+                      />
+                    </Field>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="tiny muted m-0">
+              <strong>Portions</strong>: meals per sitting (use 1 for regular, 2–3 for batch).
+              <br />
+              <strong>Distinct</strong>: how many different dishes in this slot across the week.
+              E.g. dinner: distinct=3 on 7 days means 3 recipes × 2-3 days each (matlåda).
+              Each slot gets its own recipes — breakfast and dinner won't share dishes.
+            </p>
+          </Card>
         </div>
-      )}
+
+        <div className="row gap-2 mt-4">
+          <Button onClick={runWeeklyGenerator} disabled={generating} variant="accent" className="flex-1">
+            {generating ? "Drafting your week..." : "Generate"}
+          </Button>
+          <Button onClick={() => setGenOpen(false)} disabled={generating} variant="ghost">
+            Cancel
+          </Button>
+        </div>
+        {generating && (
+          <Card variant="soft" className="mt-3">
+            <div className="row gap-2">
+              <div className="chat-typing"><span></span><span></span><span></span></div>
+              <div className="flex-1">
+                <div className="fw-500">Drafting your week…</div>
+                <div className="tiny muted">
+                  {genElapsed}s elapsed · planner runs first, then recipes generate in parallel. Usually 30–90s total.
+                </div>
+              </div>
+            </div>
+          </Card>
+        )}
+      </Modal>
 
       {/* Recipe picker modal */}
-      {pickerCell && (
-        <div className="modal-backdrop" onClick={() => setPickerCell(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <Modal open={!!pickerCell} onClose={() => setPickerCell(null)}>
+        {pickerCell && (
+          <>
             <h3>Pick a recipe</h3>
-            <p className="small muted">{formatDay(pickerCell.date)} · <span style={{ textTransform: "capitalize" }}>{pickerCell.slot}</span></p>
-            {recipes.length === 0 && <div className="empty">No saved recipes.</div>}
+            <p className="small muted">{formatDay(pickerCell.date)} · <span className="capitalize">{pickerCell.slot}</span></p>
+            {recipes.length === 0 && <Empty>No saved recipes.</Empty>}
             <div className="col-2 mt-3">
               {recipes.map((r) => (
-                <div key={r.id} onClick={() => addRecipeToCell(r)} className="recipe-card" style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                <div key={r.id} onClick={() => addRecipeToCell(r)} className="recipe-card horizontal">
                   {r.image_path ? (
                     <img src={`/api/recipe-images/${r.image_path}`} alt="" className="recipe-thumb" />
                   ) : (
                     <div className="recipe-thumb" />
                   )}
                   <div className="flex-1">
-                    <div style={{ fontWeight: 600 }}>{r.name}</div>
+                    <div className="fw-600">{r.name}</div>
                     <div className="tiny muted">{r.servings} servings · {r.ingredients.length} ingredients</div>
                   </div>
                 </div>
               ))}
             </div>
-            <button onClick={() => setPickerCell(null)} className="btn btn-ghost mt-3">Cancel</button>
-          </div>
-        </div>
-      )}
+            <Button onClick={() => setPickerCell(null)} variant="ghost" className="mt-3">Cancel</Button>
+          </>
+        )}
+      </Modal>
 
       {/* Generated shopping list */}
       {shopping && (
-        <div className="card">
+        <Card>
           <h3>Shopping list</h3>
-          {shopping.categories.length === 0 && <div className="empty">No items.</div>}
+          {shopping.categories.length === 0 && <Empty>No items.</Empty>}
           {shopping.categories.map((cat) => (
             <div key={cat.category} className="mb-3">
               <div className="shop-cat-header">
@@ -488,7 +476,7 @@ export default function MealPlan() {
               ))}
             </div>
           ))}
-        </div>
+        </Card>
       )}
     </div>
   );
