@@ -10,6 +10,7 @@ things the assistant picks up over time ("they hate rice but love bulgur").
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -42,6 +43,49 @@ PROFILE_FIELDS: dict[str, str] = {
     "cuisines": "Preferred cuisines in rough priority order.",
     "budget_level": "'thrifty' | 'moderate' | 'splurge'.",
 }
+
+# Per-field types, used to coerce/validate values coming from the chat agent
+# (which passes everything as free-text strings).
+LIST_FIELDS = {"dietary", "allergies", "dislikes", "likes", "cuisines", "kitchen_equipment"}
+INT_FIELDS = {"family_size", "typical_cook_time_min"}
+ENUM_FIELDS: dict[str, set[str]] = {
+    "batch_cook_preference": {"none", "moderate", "heavy"},
+    "budget_level": {"thrifty", "moderate", "splurge"},
+}
+
+
+def coerce_profile_value(field: str, value: Any) -> Any:
+    """Coerce a raw field value to the type the profile expects.
+
+    Raises ValueError with a user-facing message when the value can't be
+    represented — e.g. a qualitative word ('easy') for an integer field. Callers
+    surface that message to the agent so it self-corrects instead of queueing a
+    proposal that would later fail on accept.
+    """
+    if field not in PROFILE_FIELDS:
+        raise ValueError(f"Unknown field '{field}'. Valid: {', '.join(PROFILE_FIELDS)}")
+    if field in LIST_FIELDS:
+        items = value if isinstance(value, list) else str(value).split(",")
+        return [str(s).strip() for s in items if str(s).strip()]
+    if field in INT_FIELDS:
+        s = str(value).strip()
+        try:
+            return int(s)
+        except (ValueError, TypeError):
+            m = re.search(r"\d+", s)  # tolerate "30 minutes", "~45 min"
+            if m:
+                return int(m.group())
+            unit = " of minutes" if field == "typical_cook_time_min" else ""
+            raise ValueError(
+                f"{field} must be a whole number{unit} (got {value!r}). If the user only "
+                f"described it qualitatively, record a note or ask for a concrete number instead."
+            )
+    if field in ENUM_FIELDS:
+        v = str(value).strip().lower()
+        if v not in ENUM_FIELDS[field]:
+            raise ValueError(f"{field} must be one of {sorted(ENUM_FIELDS[field])} (got {value!r}).")
+        return v
+    return str(value).strip()
 
 
 class HouseholdProfile(BaseModel):

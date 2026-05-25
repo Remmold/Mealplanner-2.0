@@ -17,7 +17,7 @@ import json
 from api.database import get_connection
 from api.ingredients import load_all_curated_meta
 from api.pending_actions import PendingProposer
-from api.profile import PROFILE_FIELDS
+from api.profile import coerce_profile_value
 from api.recipe_db import get_recipe_db
 
 
@@ -363,14 +363,21 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
 
         Supported fields: family_size (int), dietary/allergies/dislikes/likes/
         cuisines/kitchen_equipment (comma-separated list), typical_cook_time_min
-        (int), batch_cook_preference ('none'|'moderate'|'heavy'), budget_level
-        ('thrifty'|'moderate'|'splurge')."""
-        if field not in PROFILE_FIELDS:
-            return f"Unknown field '{field}'. Valid: {', '.join(PROFILE_FIELDS)}"
+        (int minutes), batch_cook_preference ('none'|'moderate'|'heavy'),
+        budget_level ('thrifty'|'moderate'|'splurge').
+
+        Only set typical_cook_time_min/family_size when you have a concrete
+        number. If the user describes cooking qualitatively ('easy', 'quick',
+        'simple'), that is NOT a time — record it with propose_profile_note or
+        ask for a number instead."""
+        try:
+            coerced = coerce_profile_value(field, value)
+        except ValueError as e:
+            return str(e)
         return _preview(
             "profile.field",
-            f"Set profile.{field} to {value!r}",
-            {"field": field, "value": value},
+            f"Set profile.{field} to {coerced!r}",
+            {"field": field, "value": coerced},
         )
 
     @agent.tool_plain

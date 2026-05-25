@@ -269,22 +269,17 @@ def _exec_plan_update_portions(household_id: str, p: dict) -> ExecResult:
 
 
 def _exec_profile_field(household_id: str, p: dict) -> ExecResult:
-    from api.profile import load_profile, _save_profile, HouseholdProfile, PROFILE_FIELDS
+    from api.profile import load_profile, _save_profile, HouseholdProfile, coerce_profile_value
     field = p["field"]; value = p["value"]
-    if field not in PROFILE_FIELDS:
-        return f"Unknown field '{field}'.", {}
+    try:
+        coerced = coerce_profile_value(field, value)
+    except ValueError as e:
+        return str(e), {}
     current = load_profile(household_id)
     data = current.model_dump(exclude={"updated_at"})
-    list_fields = {"dietary", "allergies", "dislikes", "likes", "cuisines", "kitchen_equipment"}
-    int_fields = {"family_size", "typical_cook_time_min"}
-    if field in list_fields:
-        data[field] = [s.strip() for s in str(value).split(",") if s.strip()]
-    elif field in int_fields:
-        data[field] = int(value)
-    else:
-        data[field] = value
+    data[field] = coerced
     _save_profile(household_id, HouseholdProfile(**data))
-    return f"Set profile.{field} to {data[field]}.", {}
+    return f"Set profile.{field} to {coerced}.", {}
 
 
 def _exec_profile_note(household_id: str, p: dict) -> ExecResult:
