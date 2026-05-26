@@ -201,13 +201,26 @@ async def generate_meal_plan(
     2. For every "new recipe" slot, we call the existing recipe generator
        (concurrently is overkill — sequential keeps log readable and respects
        OpenAI rate limits).
-    Then assemble a meal plan and persist it."""
+    Then assemble a meal plan and persist it.
+
+    Credit accounting: places a `hold` for the worst-case cost (1 for the
+    planner + one per filled slot, capping at days * slot_configs). On
+    success we finalize the hold with the actual recipes-generated count;
+    on failure we release it so the household isn't charged for a half-baked
+    plan.
+    """
+    from api.credits import finalize_hold, hold, release_hold
     from api.recipe_gen import generate_recipe
 
     if body.days < 1 or body.days > 14:
         raise HTTPException(400, "days must be 1..14")
     if not body.slot_configs:
         raise HTTPException(400, "slot_configs must not be empty")
+
+    # Pre-flight credit reservation. Caps at days * slots so a 7-day, 3-slot
+    # request never claims more than 22 credits (1 planner + 21 fan-out).
+    max_cost = 1.0 + float(body.days * len(body.slot_configs))
+    hold_id = await hold(household_id, "weekly_plan", max_cost)
 
     slot_by_name: dict[str, SlotConfig] = {sc.slot: sc for sc in body.slot_configs}
 
@@ -295,6 +308,11 @@ async def generate_meal_plan(
         )
     except Exception as e:
         log.exception("[plan-gen] planner failed")
+        # Refund the hold so the user isn't charged for a failed planner call.
+        try:
+            await release_hold(hold_id)
+        except Exception:
+            log.exception("[plan-gen] hold release failed (continuing)")
         raise HTTPException(500, f"Plan generation failed: {e}")
 
     # Validate existing recipe ids
@@ -436,6 +454,13 @@ async def generate_meal_plan(
         "[plan-gen] DONE in %.1fs total — plan '%s' with %d entries",
         time.monotonic() - overall_start, out.name, len(out.entries),
     )
+
+    # Finalize the hold with the actual cost: 1 (planner) + one debit per
+    # successfully-generated recipe. Refund the difference.
+    actual_recipes = len([1 for _, g in results if g is not None]) if 'results' in locals() else 0
+    actual_cost = 1.0 + float(actual_recipes)
+    await finalize_hold(hold_id, actual_cost)
+
     return out
 
 

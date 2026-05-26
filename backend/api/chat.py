@@ -253,6 +253,12 @@ def delete_session(sid: str):
 
 @router.post("/sessions/{sid}/messages", response_model=SendMessageResponse)
 async def send_message(sid: str, body: SendMessageRequest, household_id: str = Depends(get_current_household_id)):
+    from api.credits import debit, require_credits
+
+    # Gate: caller must have credits AND the global budget mustn't be tripped.
+    # Raises 402 (insufficient credits) or 503 (global kill-switch) cleanly.
+    await require_credits(household_id, "chat_turn")
+
     with get_recipe_db() as conn:
         row = conn.execute(
             "SELECT title, message_history FROM chat_sessions WHERE id = ? AND household_id = ?",
@@ -282,6 +288,9 @@ async def send_message(sid: str, body: SendMessageRequest, household_id: str = D
         result = await agent.run(body.content, message_history=prior_history)
     except Exception as e:
         raise HTTPException(500, f"Agent failed: {e}")
+
+    # Record the credit cost after a successful turn. (We don't punish failures.)
+    await debit(household_id, "chat_turn", ref_id=sid)
 
     reply_text = str(result.output) if result.output is not None else ""
 

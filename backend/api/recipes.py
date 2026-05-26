@@ -148,14 +148,19 @@ async def create_recipe(
 @router.post("/generate", response_model=GeneratedRecipeOut)
 async def generate_recipe_endpoint(
     body: GenerateRecipeRequest,
-    _household_id: str = Depends(get_current_household_id),
+    household_id: str = Depends(get_current_household_id),
 ):
+    from api.credits import debit, require_credits
     from api.recipe_gen import generate_recipe
+
+    await require_credits(household_id, "recipe_gen")
 
     try:
         result = await generate_recipe(body.prompt)
     except Exception as e:
         raise HTTPException(500, f"Recipe generation failed: {e}")
+
+    await debit(household_id, "recipe_gen")
 
     return GeneratedRecipeOut(
         name=result.name,

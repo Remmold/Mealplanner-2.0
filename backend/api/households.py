@@ -47,6 +47,7 @@ class MeResponse(BaseModel):
     user_id: str
     email: Optional[str]
     household: Optional[HouseholdInfo]
+    credit_balance: Optional[float] = None  # null when the user has no household
 
 
 class CreateHouseholdRequest(BaseModel):
@@ -102,6 +103,7 @@ async def get_me(user: CurrentUser = Depends(get_current_user)) -> MeResponse:
             user.user_id,
         )
     household = None
+    credit_balance: Optional[float] = None
     if row is not None:
         household = HouseholdInfo(
             id=str(row["household_id"]),
@@ -110,7 +112,18 @@ async def get_me(user: CurrentUser = Depends(get_current_user)) -> MeResponse:
             locale=row["locale"],
             member_count=row["member_count"],
         )
-    return MeResponse(user_id=user.user_id, email=user.email, household=household)
+        # Surface the current credit balance so the frontend can show "X credits"
+        # in the header without a second round trip. This also lazily issues the
+        # monthly grant if it hasn't been minted this calendar month yet.
+        from api.credits import get_balance_for
+        credit_balance = await get_balance_for(household.id)
+
+    return MeResponse(
+        user_id=user.user_id,
+        email=user.email,
+        household=household,
+        credit_balance=credit_balance,
+    )
 
 
 @router.post("/households", response_model=HouseholdInfo, status_code=201)
