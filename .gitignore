@@ -238,3 +238,12 @@ frontend/node_modules/
 # Claude Code working notes (not part of the project)
 CLAUDE.md
 .claude/settings.local.json
+
+# Supabase CLI local state (project ref, version pins, etc.)
+supabase/.temp/
+supabase/.branches/
+
+# The Python "lib/" build-artifact ignore (further up) catches frontend/src/lib/.
+# Re-allow the frontend source dir.
+!frontend/src/lib/
+!frontend/src/lib/**

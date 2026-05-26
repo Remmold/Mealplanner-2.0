@@ -1,0 +1,51 @@
+# Supabase project configuration.
+#
+# This file is consumed by the Supabase CLI. The `project_id` is populated
+# automatically when you run `supabase link --project-ref <ref>` against the
+# hosted project. Until then, this file documents the local-dev defaults and
+# the database/auth shape we expect.
+#
+# Migrations live in supabase/migrations/ and are applied via
+# `supabase db push` (against the linked remote) or `supabase db reset`
+# (against the local dev DB).
+
+project_id = "lzwzfqnawcxotdaihgqf"
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[api]
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[auth]
+enable_signup = true
+enable_anonymous_sign_ins = false
+site_url = "http://localhost:5173"
+additional_redirect_urls = [
+    "http://localhost:5173",
+    "https://hearth.darkfallcompanion.se",
+]
+jwt_expiry = 3600
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false  # magic links don't need an extra confirm step
+
+# Google OAuth — populate client_id/secret in the Supabase dashboard, or via
+# env-substitution here when ready:
+# [auth.external.google]
+# enabled = true
+# client_id  = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID)"
+# secret     = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
+# redirect_uri = ""  # leave empty; defaults to <project>.supabase.co/auth/v1/callback
+
+[storage]
+enabled = true
+file_size_limit = "5MiB"
+image_transformation = { enabled = true }
