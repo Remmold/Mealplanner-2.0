@@ -1,7 +1,11 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from api import catalog_cache
 from api.database import get_connection
+from api.db import close_pool, get_pool, init_pool
 from api.recipes import router as recipes_router
 from api.shopping import router as shopping_router
 from api.ingredients import router as ingredients_router, load_all_curated_meta
@@ -10,6 +14,8 @@ from api.chat import router as chat_router
 from api.profile import router as profile_router
 from api.pending_actions import router as pending_router
 from api.image_gen import router as image_router
+from api.households import router as households_router
+from api.accounts import router as accounts_router
 from api.models import (
     AggregatedNutrition,
     Ingredient,
@@ -21,7 +27,23 @@ from api.models import (
     RecipeNutrition,
 )
 
-app = FastAPI(title="Mealplanner API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Init the asyncpg pool when DATABASE_URL is configured. Required for the
+    # new auth-gated endpoints + the catalog cache.
+    import os
+    if os.environ.get("DATABASE_URL"):
+        await init_pool()
+        try:
+            await catalog_cache.load_all()
+        except Exception as e:
+            print(f"[catalog] failed to load (run scripts/migrate_reference_data?): {e}")
+    yield
+    await close_pool()
+
+
+app = FastAPI(title="Mealplanner API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +52,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# New Supabase-backed routers (auth + households + GDPR).
+app.include_router(households_router)
+app.include_router(accounts_router)
+
+# Existing SQLite/DuckDB-backed routers — kept running until step 2 of the
+# real-product roadmap migrates them onto Postgres.
 app.include_router(recipes_router)
 app.include_router(shopping_router)
 app.include_router(ingredients_router)
@@ -38,6 +66,11 @@ app.include_router(chat_router)
 app.include_router(profile_router)
 app.include_router(pending_router)
 app.include_router(image_router)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
 SUMMARY_COLUMNS = """
@@ -189,9 +222,9 @@ def list_ingredient_categories():
     return sorted({m["category"] for m in meta.values()})
 
 
-# READ: List curated common ingredients with USDA nutrition data (dbt seed ∪ pantry).
+# READ: List curated pantry ingredients with USDA nutrition data (Postgres-backed).
 @app.get("/ingredients", response_model=list[Ingredient])
-def list_ingredients(
+async def list_ingredients(
     search: str | None = Query(None, description="Filter by name"),
     category: str | None = Query(None, description="Filter by ingredient category"),
 ):
@@ -200,16 +233,21 @@ def list_ingredients(
         return []
 
     fdc_ids = list(meta.keys())
-    placeholders = ", ".join(["?"] * len(fdc_ids))
-    with get_connection() as conn:
-        rows = conn.execute(
-            f"SELECT fdc_id, energy_kcal_100g, proteins_100g, carbohydrates_100g, sugars_100g, "
-            f"fat_100g, saturated_fat_100g, fiber_100g, salt_100g "
-            f"FROM {INGREDIENT_SCHEMA}.{INGREDIENT_TABLE} "
-            f"WHERE fdc_id IN ({placeholders})",
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT fdc_id, energy_kcal, protein_g, carbs_g, sugar_g,
+                   fat_g, saturated_fat_g, fiber_g, salt_g
+            FROM hearth.usda_ingredients
+            WHERE fdc_id = ANY($1::int[])
+            """,
             fdc_ids,
-        ).fetchall()
-    nutri = {r[0]: r for r in rows}
+        )
+    nutri = {r["fdc_id"]: r for r in rows}
+
+    def _f(v):  # numeric -> float | None
+        return float(v) if v is not None else None
 
     search_lc = search.lower() if search else None
     results: list[Ingredient] = []
@@ -226,55 +264,67 @@ def list_ingredients(
             name=info["simple_name"],
             food_group=info["category"],
             subcategory=info["subcategory"] or None,
-            energy_kcal_100g=n[1], proteins_100g=n[2], carbohydrates_100g=n[3],
-            sugars_100g=n[4], fat_100g=n[5], saturated_fat_100g=n[6],
-            fiber_100g=n[7], salt_100g=n[8],
+            energy_kcal_100g=_f(n["energy_kcal"]),
+            proteins_100g=_f(n["protein_g"]),
+            carbohydrates_100g=_f(n["carbs_g"]),
+            sugars_100g=_f(n["sugar_g"]),
+            fat_100g=_f(n["fat_g"]),
+            saturated_fat_100g=_f(n["saturated_fat_g"]),
+            fiber_100g=_f(n["fiber_g"]),
+            salt_100g=_f(n["salt_g"]),
         ))
     results.sort(key=lambda i: (i.food_group, i.name.lower()))
     return results
 
 
-# READ: Aggregate nutritional values for generic ingredients scaled by quantity (in grams).
+# READ: Aggregate nutritional values for ingredients scaled by quantity (in grams).
 @app.post("/ingredients/aggregate", response_model=RecipeNutrition)
-def aggregate_recipe(items: list[RecipeItem]):
+async def aggregate_recipe(items: list[RecipeItem]):
     if not items:
         raise HTTPException(400, "At least one item is required")
 
     fdc_ids = [item.fdc_id for item in items]
     qty_map = {item.fdc_id: item.quantity_g for item in items}
 
-    placeholders = ", ".join(["?"] * len(fdc_ids))
-    with get_connection() as conn:
-        rows = conn.execute(
-            f"SELECT fdc_id, energy_kcal_100g, proteins_100g, carbohydrates_100g, "
-            f"sugars_100g, fat_100g, saturated_fat_100g, fiber_100g, salt_100g "
-            f"FROM {INGREDIENT_SCHEMA}.{INGREDIENT_TABLE} "
-            f"WHERE fdc_id IN ({placeholders})",
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT fdc_id, energy_kcal, protein_g, carbs_g, sugar_g,
+                   fat_g, saturated_fat_g, fiber_g, salt_g
+            FROM hearth.usda_ingredients
+            WHERE fdc_id = ANY($1::int[])
+            """,
             fdc_ids,
-        ).fetchall()
+        )
 
-    found_ids = set()
+    found_ids: set[int] = set()
     totals = dict(
         total_energy_kcal=0.0, total_proteins_g=0.0, total_carbohydrates_g=0.0,
         total_sugars_g=0.0, total_fat_g=0.0, total_saturated_fat_g=0.0,
         total_fiber_g=0.0, total_salt_g=0.0, total_weight_g=0.0,
     )
-    nutrient_keys = [
-        "total_energy_kcal", "total_proteins_g", "total_carbohydrates_g",
-        "total_sugars_g", "total_fat_g", "total_saturated_fat_g",
-        "total_fiber_g", "total_salt_g",
+    col_map = [
+        ("total_energy_kcal",      "energy_kcal"),
+        ("total_proteins_g",       "protein_g"),
+        ("total_carbohydrates_g",  "carbs_g"),
+        ("total_sugars_g",         "sugar_g"),
+        ("total_fat_g",            "fat_g"),
+        ("total_saturated_fat_g",  "saturated_fat_g"),
+        ("total_fiber_g",          "fiber_g"),
+        ("total_salt_g",           "salt_g"),
     ]
 
     for row in rows:
-        fdc_id = row[0]
+        fdc_id = row["fdc_id"]
         found_ids.add(fdc_id)
         qty = qty_map[fdc_id]
         factor = qty / 100.0
         totals["total_weight_g"] += qty
-        for i, key in enumerate(nutrient_keys):
-            val = row[i + 1]
+        for total_key, col in col_map:
+            val = row[col]
             if val is not None:
-                totals[key] += val * factor
+                totals[total_key] += float(val) * factor
 
     totals = {k: round(v, 1) for k, v in totals.items()}
 

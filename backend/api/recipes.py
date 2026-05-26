@@ -1,10 +1,16 @@
-"""Recipe CRUD endpoints."""
+"""Recipe CRUD endpoints (SQLite-backed for now, scoped to the authenticated household).
+
+The user's household_id is resolved from their JWT via Depends(get_current_household_id),
+not from a query parameter. SQLite stays the storage for v1; the Postgres
+migration of recipe data is its own task.
+"""
 
 import json
+import sqlite3
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from api.database import get_connection as get_duckdb
+from api.db import get_current_household_id, get_pool
 from api.models import (
     GenerateRecipeRequest,
     GeneratedRecipeOut,
@@ -13,47 +19,52 @@ from api.models import (
     RecipeOut,
     RecipeUpdate,
 )
-from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db, new_id
+from api.recipe_db import get_recipe_db, new_id
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
-def _load_ingredient_names(fdc_ids: list[int]) -> dict[int, str]:
-    """Look up simple_name from curated union (dbt seed ∪ pantry), falling back to USDA name.
+async def _usda_names_for(fdc_ids: list[int]) -> dict[int, str]:
+    """Fetch USDA `description` for the given fdc_ids from Postgres."""
+    if not fdc_ids:
+        return {}
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT fdc_id, description FROM hearth.usda_ingredients WHERE fdc_id = ANY($1::int[])",
+            list({int(f) for f in fdc_ids}),
+        )
+    return {r["fdc_id"]: r["description"] for r in rows}
 
-    Aliases are dereferenced: if a recipe stores an alias fdc_id, the user still
-    sees the canonical display name.
+
+async def _load_ingredient_names(fdc_ids: list[int]) -> dict[int, str]:
+    """Look up simple_name from the curated pantry (Postgres cache),
+    falling back to USDA description. Aliases are dereferenced via the
+    cache so recipes that stored an alias fdc_id still display correctly.
     """
     if not fdc_ids:
         return {}
-    from api.ingredients import load_all_curated_meta, load_aliases, resolve_fdc_id
+    from api.ingredients import load_all_curated_meta, resolve_fdc_id
+
     meta = load_all_curated_meta()
-    aliases = load_aliases()
 
     result: dict[int, str] = {}
     for fid in fdc_ids:
-        canonical = resolve_fdc_id(fid, aliases)
+        canonical = resolve_fdc_id(fid)
         if canonical in meta:
             result[fid] = meta[canonical]["simple_name"]
 
-    # Fall back to raw USDA name for ids not in curated (e.g. used by LLM gen before promotion)
     missing = [fid for fid in fdc_ids if fid not in result]
     if missing:
-        canonical_missing = [resolve_fdc_id(f, aliases) for f in missing]
-        placeholders = ", ".join(["?"] * len(canonical_missing))
-        with get_duckdb() as conn:
-            rows = conn.execute(
-                f"SELECT fdc_id, name FROM usda.ingredients WHERE fdc_id IN ({placeholders})",
-                canonical_missing,
-            ).fetchall()
-        usda_names = {r[0]: r[1] for r in rows}
+        canonical_missing = [resolve_fdc_id(f) for f in missing]
+        usda_names = await _usda_names_for(canonical_missing)
         for orig, canonical in zip(missing, canonical_missing):
             if canonical in usda_names:
                 result[orig] = usda_names[canonical]
     return result
 
 
-def _build_recipe_out(conn, recipe_id: str) -> RecipeOut:
+async def _build_recipe_out(conn: sqlite3.Connection, recipe_id: str) -> RecipeOut:
     row = conn.execute("SELECT * FROM recipes WHERE id = ?", [recipe_id]).fetchone()
     if not row:
         raise HTTPException(404, "Recipe not found")
@@ -64,7 +75,7 @@ def _build_recipe_out(conn, recipe_id: str) -> RecipeOut:
     ).fetchall()
 
     fdc_ids = [ing["fdc_id"] for ing in db_ingredients]
-    names = _load_ingredient_names(fdc_ids)
+    names = await _load_ingredient_names(fdc_ids)
 
     try:
         instructions = json.loads(row["instructions"]) if row["instructions"] else []
@@ -91,18 +102,33 @@ def _build_recipe_out(conn, recipe_id: str) -> RecipeOut:
     )
 
 
+async def _enforce_recipe_in_household(
+    conn: sqlite3.Connection, recipe_id: str, household_id: str
+) -> None:
+    row = conn.execute(
+        "SELECT household_id FROM recipes WHERE id = ?", [recipe_id]
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Recipe not found")
+    if row["household_id"] != household_id:
+        raise HTTPException(403, "Recipe belongs to a different household")
+
+
 @router.get("", response_model=list[RecipeOut])
-def list_recipes(household_id: str = DEFAULT_HOUSEHOLD_ID):
+async def list_recipes(household_id: str = Depends(get_current_household_id)):
     with get_recipe_db() as conn:
         rows = conn.execute(
             "SELECT id FROM recipes WHERE household_id = ? ORDER BY updated_at DESC",
             [household_id],
         ).fetchall()
-        return [_build_recipe_out(conn, row["id"]) for row in rows]
+        return [await _build_recipe_out(conn, row["id"]) for row in rows]
 
 
 @router.post("", response_model=RecipeOut, status_code=201)
-def create_recipe(body: RecipeCreate, household_id: str = DEFAULT_HOUSEHOLD_ID):
+async def create_recipe(
+    body: RecipeCreate,
+    household_id: str = Depends(get_current_household_id),
+):
     recipe_id = new_id()
 
     with get_recipe_db() as conn:
@@ -116,11 +142,14 @@ def create_recipe(body: RecipeCreate, household_id: str = DEFAULT_HOUSEHOLD_ID):
                 "INSERT INTO recipe_ingredients (id, recipe_id, fdc_id, quantity_g) VALUES (?, ?, ?, ?)",
                 [new_id(), recipe_id, ing.fdc_id, ing.quantity_g],
             )
-        return _build_recipe_out(conn, recipe_id)
+        return await _build_recipe_out(conn, recipe_id)
 
 
 @router.post("/generate", response_model=GeneratedRecipeOut)
-async def generate_recipe_endpoint(body: GenerateRecipeRequest):
+async def generate_recipe_endpoint(
+    body: GenerateRecipeRequest,
+    _household_id: str = Depends(get_current_household_id),
+):
     from api.recipe_gen import generate_recipe
 
     try:
@@ -139,17 +168,23 @@ async def generate_recipe_endpoint(body: GenerateRecipeRequest):
 
 
 @router.get("/{recipe_id}", response_model=RecipeOut)
-def get_recipe(recipe_id: str):
+async def get_recipe(
+    recipe_id: str,
+    household_id: str = Depends(get_current_household_id),
+):
     with get_recipe_db() as conn:
-        return _build_recipe_out(conn, recipe_id)
+        await _enforce_recipe_in_household(conn, recipe_id, household_id)
+        return await _build_recipe_out(conn, recipe_id)
 
 
 @router.put("/{recipe_id}", response_model=RecipeOut)
-def update_recipe(recipe_id: str, body: RecipeUpdate):
+async def update_recipe(
+    recipe_id: str,
+    body: RecipeUpdate,
+    household_id: str = Depends(get_current_household_id),
+):
     with get_recipe_db() as conn:
-        existing = conn.execute("SELECT id FROM recipes WHERE id = ?", [recipe_id]).fetchone()
-        if not existing:
-            raise HTTPException(404, "Recipe not found")
+        await _enforce_recipe_in_household(conn, recipe_id, household_id)
 
         if body.name is not None:
             conn.execute(
@@ -182,13 +217,14 @@ def update_recipe(recipe_id: str, body: RecipeUpdate):
                 [recipe_id],
             )
 
-        return _build_recipe_out(conn, recipe_id)
+        return await _build_recipe_out(conn, recipe_id)
 
 
 @router.delete("/{recipe_id}", status_code=204)
-def delete_recipe(recipe_id: str):
+async def delete_recipe(
+    recipe_id: str,
+    household_id: str = Depends(get_current_household_id),
+):
     with get_recipe_db() as conn:
-        existing = conn.execute("SELECT id FROM recipes WHERE id = ?", [recipe_id]).fetchone()
-        if not existing:
-            raise HTTPException(404, "Recipe not found")
+        await _enforce_recipe_in_household(conn, recipe_id, household_id)
         conn.execute("DELETE FROM recipes WHERE id = ?", [recipe_id])

@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.db import get_current_household_id
 from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db, new_id
 
 router = APIRouter(prefix="/chat/pending", tags=["chat"])
@@ -339,10 +340,15 @@ def _load_pending(pid: str) -> dict | None:
 
 
 @router.post("/{pid}/accept", response_model=ResolveResponse)
-async def accept_pending(pid: str):
+async def accept_pending(
+    pid: str,
+    household_id: str = Depends(get_current_household_id),
+):
     p = _load_pending(pid)
     if not p:
         raise HTTPException(404, "Pending action not found")
+    if p["household_id"] != household_id:
+        raise HTTPException(403, "Pending action belongs to a different household")
     if p["status"] != "pending":
         raise HTTPException(409, f"Already {p['status']}")
 
@@ -369,10 +375,15 @@ async def accept_pending(pid: str):
 
 
 @router.post("/{pid}/reject", response_model=ResolveResponse)
-def reject_pending(pid: str):
+def reject_pending(
+    pid: str,
+    household_id: str = Depends(get_current_household_id),
+):
     p = _load_pending(pid)
     if not p:
         raise HTTPException(404, "Pending action not found")
+    if p["household_id"] != household_id:
+        raise HTTPException(403, "Pending action belongs to a different household")
     if p["status"] != "pending":
         raise HTTPException(409, f"Already {p['status']}")
     with get_recipe_db() as conn:
@@ -385,7 +396,11 @@ def reject_pending(pid: str):
 
 
 @router.get("/sessions/{sid}", response_model=list[PendingActionOut])
-def list_pending_for_session(sid: str, only_pending: bool = False):
+def list_pending_for_session(
+    sid: str,
+    only_pending: bool = False,
+    _household_id: str = Depends(get_current_household_id),
+):
     """List proposals for a session. Used on chat reload so pending items persist
     across page refreshes."""
     q = (

@@ -11,10 +11,11 @@ from pathlib import Path
 log = logging.getLogger("mealplan.generate")
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
+from api.db import get_current_household_id
 from api.models import (
     MealPlanCreate,
     MealPlanEntryOut,
@@ -77,7 +78,7 @@ def _replace_entries(conn, plan_id: str, entries):
 
 
 @router.get("", response_model=list[MealPlanOut])
-def list_meal_plans(household_id: str = DEFAULT_HOUSEHOLD_ID):
+def list_meal_plans(household_id: str = Depends(get_current_household_id)):
     with get_recipe_db() as conn:
         rows = conn.execute(
             "SELECT id FROM meal_plans WHERE household_id = ? ORDER BY start_date DESC",
@@ -87,7 +88,7 @@ def list_meal_plans(household_id: str = DEFAULT_HOUSEHOLD_ID):
 
 
 @router.post("", response_model=MealPlanOut, status_code=201)
-def create_meal_plan(body: MealPlanCreate, household_id: str = DEFAULT_HOUSEHOLD_ID):
+def create_meal_plan(body: MealPlanCreate, household_id: str = Depends(get_current_household_id)):
     plan_id = new_id()
     with get_recipe_db() as conn:
         conn.execute(
@@ -190,7 +191,7 @@ def _list_existing_recipes_for_planner(household_id: str) -> str:
 @router.post("/generate", response_model=MealPlanOut)
 async def generate_meal_plan(
     body: GenerateMealPlanRequest,
-    household_id: str = DEFAULT_HOUSEHOLD_ID,
+    household_id: str = Depends(get_current_household_id),
 ):
     """LLM-powered weekly plan generator.
 
@@ -441,7 +442,7 @@ async def generate_meal_plan(
 @router.post("/{plan_id}/shopping-list", response_model=ShoppingListOut)
 def shopping_list_from_plan(
     plan_id: str,
-    household_id: str = DEFAULT_HOUSEHOLD_ID,
+    household_id: str = Depends(get_current_household_id),
     include_template: bool = True,
 ):
     """Consolidate all entries in a plan into a single shopping list.

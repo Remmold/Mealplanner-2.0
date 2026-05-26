@@ -3,9 +3,10 @@
 import math
 from collections import defaultdict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from api.database import get_connection as get_duckdb
+from api.db import get_current_household_id
 from api.models import (
     ShoppingListCategory,
     ShoppingListItem,
@@ -28,7 +29,7 @@ def _round_up(value: float, step: float) -> float:
 @router.post("/generate", response_model=ShoppingListOut)
 def generate_shopping_list(
     selections: list[ShoppingRecipeSelection],
-    household_id: str = DEFAULT_HOUSEHOLD_ID,
+    household_id: str = Depends(get_current_household_id),
     include_template: bool = True,
 ):
     # Load alias map up-front so ingredient ids collapse to their canonical form
@@ -166,7 +167,7 @@ def generate_shopping_list(
 
 
 @router.get("/store-layout", response_model=list[str])
-def get_store_layout(household_id: str = DEFAULT_HOUSEHOLD_ID):
+def get_store_layout(household_id: str = Depends(get_current_household_id)):
     """Return category names in current store order."""
     with get_recipe_db() as conn:
         rows = conn.execute(
@@ -179,7 +180,7 @@ def get_store_layout(household_id: str = DEFAULT_HOUSEHOLD_ID):
 @router.put("/store-layout", response_model=list[str])
 def update_store_layout(
     categories: list[str],
-    household_id: str = DEFAULT_HOUSEHOLD_ID,
+    household_id: str = Depends(get_current_household_id),
 ):
     """Replace the household's store layout with the given ordered list."""
     if not categories:
@@ -243,7 +244,7 @@ def _template_item_out(fdc_id: int, quantity_g: float, note: str | None) -> Shop
 
 
 @router.get("/template", response_model=list[ShoppingTemplateItemOut])
-def list_template(household_id: str = DEFAULT_HOUSEHOLD_ID):
+def list_template(household_id: str = Depends(get_current_household_id)):
     """Return the household's persistent baseline items, enriched for display."""
     with get_recipe_db() as conn:
         rows = conn.execute(
@@ -258,7 +259,7 @@ def list_template(household_id: str = DEFAULT_HOUSEHOLD_ID):
 @router.post("/template", response_model=ShoppingTemplateItemOut, status_code=201)
 def upsert_template_item(
     body: ShoppingTemplateItemIn,
-    household_id: str = DEFAULT_HOUSEHOLD_ID,
+    household_id: str = Depends(get_current_household_id),
 ):
     """Add or replace a baseline item. Keyed on fdc_id — re-posting overwrites qty/note."""
     if body.quantity_g <= 0:
@@ -280,7 +281,7 @@ def upsert_template_item(
 def update_template_item(
     fdc_id: int,
     body: ShoppingTemplateItemIn,
-    household_id: str = DEFAULT_HOUSEHOLD_ID,
+    household_id: str = Depends(get_current_household_id),
 ):
     """Update an existing baseline item's quantity/note."""
     if body.fdc_id != fdc_id:
@@ -302,7 +303,7 @@ def update_template_item(
 @router.delete("/template/{fdc_id}", status_code=204)
 def delete_template_item(
     fdc_id: int,
-    household_id: str = DEFAULT_HOUSEHOLD_ID,
+    household_id: str = Depends(get_current_household_id),
 ):
     with get_recipe_db() as conn:
         conn.execute(

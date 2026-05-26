@@ -1,20 +1,32 @@
-"""USDA ingredient search + user pantry (promoted ingredients).
+"""USDA ingredient search + (admin-flavoured) pantry CRUD.
 
-The curated list (`main.common_ingredients`) is a dbt seed and is read-only from the API.
-Users can promote any USDA row into their `pantry_ingredients` (SQLite), and all
-ingredient endpoints UNION the two sources at query time.
+The curated pantry is now a global Postgres table. Reads use an in-memory
+cache (api.catalog_cache); writes go through the asyncpg pool.
+
+Promote (/pantry POST) and delete (/pantry DELETE) are technically
+admin-only in the design doc, but for v1 we leave them accessible to any
+authenticated user — pantry curation is low-risk, and locking it down
+adds an admin surface we haven't built yet. Restart the backend to
+refresh the in-memory cache after any pantry mutation.
 """
 
-from fastapi import APIRouter, HTTPException
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from api.database import get_connection as get_duckdb
-from api.recipe_db import get_recipe_db
+from api import catalog_cache
+from api.auth import CurrentUser, get_current_user
+from api.db import get_pool
 
 router = APIRouter(tags=["ingredients"])
 
 
-# Map USDA food_group -> our curated category enum
+# ----------------------------------------------------------------------------
+# Category mapping kept for any code still consulting USDA food_group values
+# (e.g. the shopping-list generator's fallback grouping).
+# ----------------------------------------------------------------------------
+
 FOOD_GROUP_MAP = {
     "Dairy and Egg Products": "Dairy & Eggs",
     "Poultry Products": "Meat & Poultry",
@@ -48,69 +60,36 @@ def map_food_group(food_group: str | None) -> str:
     return FOOD_GROUP_MAP.get(food_group, "Other")
 
 
+# ----------------------------------------------------------------------------
+# Sync helpers — back-compat with code that imports these names from
+# `api.ingredients`. They now read from the in-memory catalog cache.
+# ----------------------------------------------------------------------------
+
 def load_pantry_fdc_ids() -> set[int]:
-    with get_recipe_db() as conn:
-        return {r["fdc_id"] for r in conn.execute("SELECT fdc_id FROM pantry_ingredients").fetchall()}
+    return catalog_cache.pantry_fdc_ids()
 
 
 def load_aliases() -> dict[int, int]:
-    """Return {alias_fdc_id → canonical_fdc_id} mapping.
-
-    Use `resolve_fdc_id(fid)` to dereference a possibly-aliased id to its canonical.
-    """
-    with get_recipe_db() as conn:
-        rows = conn.execute(
-            "SELECT alias_fdc_id, canonical_fdc_id FROM ingredient_aliases"
-        ).fetchall()
-    return {r["alias_fdc_id"]: r["canonical_fdc_id"] for r in rows}
+    return catalog_cache.get_aliases()
 
 
 def resolve_fdc_id(fdc_id: int, aliases: dict[int, int] | None = None) -> int:
-    """Dereference an fdc_id through the alias chain. Safe against cycles."""
-    if aliases is None:
-        aliases = load_aliases()
-    seen: set[int] = set()
-    current = fdc_id
-    while current in aliases and current not in seen:
-        seen.add(current)
-        current = aliases[current]
-    return current
+    # Ignore the optional `aliases` arg — cache is the single source of truth.
+    return catalog_cache.resolve_fdc_id(fdc_id)
 
 
 def load_all_curated_meta() -> dict[int, dict]:
-    """Return {fdc_id: {simple_name, category, subcategory}} for dbt seed ∪ pantry,
-    with aliased ids excluded (they resolve to their canonical at lookup time).
+    """{fdc_id: {simple_name, category, subcategory}} for the global catalog.
 
-    Pantry entries override dbt seed entries on conflict.
+    Matches the shape the legacy DuckDB-based version returned, including
+    the post-alias dereference (alias ids are excluded by the cache loader).
     """
-    result: dict[int, dict] = {}
-    with get_duckdb() as conn:
-        rows = conn.execute(
-            "SELECT fdc_id, simple_name, category, subcategory FROM main.common_ingredients"
-        ).fetchall()
-    for r in rows:
-        result[r[0]] = {"simple_name": r[1], "category": r[2], "subcategory": r[3]}
-
-    with get_recipe_db() as conn:
-        rows = conn.execute(
-            "SELECT fdc_id, simple_name, category, subcategory FROM pantry_ingredients"
-        ).fetchall()
-    for r in rows:
-        result[r["fdc_id"]] = {
-            "simple_name": r["simple_name"],
-            "category": r["category"],
-            "subcategory": r["subcategory"],
-        }
-
-    # Remove aliased ids — they shouldn't appear in the picker or search results.
-    aliases = load_aliases()
-    for alias_id in aliases:
-        result.pop(alias_id, None)
-    return result
+    return catalog_cache.get_pantry()
 
 
-# --- USDA search ---
-
+# ----------------------------------------------------------------------------
+# USDA search (Postgres + ILIKE)
+# ----------------------------------------------------------------------------
 
 class UsdaSearchResult(BaseModel):
     fdc_id: int
@@ -123,44 +102,44 @@ class UsdaSearchResult(BaseModel):
 
 
 @router.get("/ingredients/usda-search", response_model=list[UsdaSearchResult])
-def usda_search(q: str, limit: int = 50):
+async def usda_search(q: str, limit: int = 50):
     q = q.strip()
     if len(q) < 2:
         return []
     like = f"%{q.lower()}%"
-    with get_duckdb() as conn:
-        rows = conn.execute(
-            "SELECT fdc_id, name, food_group, energy_kcal_100g, proteins_100g "
-            "FROM usda.ingredients "
-            "WHERE lower(name) LIKE ? "
-            "ORDER BY length(name), name "
-            "LIMIT ?",
-            [like, limit],
-        ).fetchall()
 
-    pantry_ids = load_pantry_fdc_ids()
-    curated_ids = set()
-    with get_duckdb() as conn:
-        curated_ids = {r[0] for r in conn.execute(
-            "SELECT fdc_id FROM main.common_ingredients"
-        ).fetchall()}
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT fdc_id, description, food_group, energy_kcal, protein_g
+            FROM hearth.usda_ingredients
+            WHERE lower(description) LIKE $1
+            ORDER BY length(description), description
+            LIMIT $2
+            """,
+            like, limit,
+        )
+
+    pantry_ids = catalog_cache.pantry_fdc_ids()
 
     return [
         UsdaSearchResult(
-            fdc_id=r[0],
-            name=r[1],
-            food_group=r[2],
-            mapped_category=map_food_group(r[2]),
-            energy_kcal_100g=r[3],
-            proteins_100g=r[4],
-            in_pantry=(r[0] in pantry_ids or r[0] in curated_ids),
+            fdc_id=r["fdc_id"],
+            name=r["description"],
+            food_group=r["food_group"],
+            mapped_category=map_food_group(r["food_group"]),
+            energy_kcal_100g=(float(r["energy_kcal"]) if r["energy_kcal"] is not None else None),
+            proteins_100g=(float(r["protein_g"]) if r["protein_g"] is not None else None),
+            in_pantry=(r["fdc_id"] in pantry_ids),
         )
         for r in rows
     ]
 
 
-# --- Pantry CRUD ---
-
+# ----------------------------------------------------------------------------
+# Pantry CRUD (Postgres-backed)
+# ----------------------------------------------------------------------------
 
 class PantryAdd(BaseModel):
     fdc_id: int
@@ -177,40 +156,66 @@ class PantryEntry(BaseModel):
 
 
 @router.get("/pantry", response_model=list[PantryEntry])
-def list_pantry():
-    with get_recipe_db() as conn:
-        rows = conn.execute(
-            "SELECT fdc_id, simple_name, category, subcategory FROM pantry_ingredients "
+async def list_pantry():
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT fdc_id, simple_name, category, subcategory "
+            "FROM hearth.pantry_ingredients "
             "ORDER BY category, simple_name"
-        ).fetchall()
-    return [PantryEntry(**dict(r)) for r in rows]
+        )
+    return [
+        PantryEntry(
+            fdc_id=r["fdc_id"],
+            simple_name=r["simple_name"],
+            category=r["category"],
+            subcategory=r["subcategory"],
+        )
+        for r in rows
+    ]
 
 
 @router.post("/pantry", response_model=PantryEntry, status_code=201)
-def add_to_pantry(body: PantryAdd):
-    with get_duckdb() as conn:
-        row = conn.execute(
-            "SELECT fdc_id, name, food_group FROM usda.ingredients WHERE fdc_id = ?",
-            [body.fdc_id],
-        ).fetchone()
-    if not row:
-        raise HTTPException(404, f"USDA ingredient {body.fdc_id} not found")
-
-    simple_name = (body.simple_name or row[1]).strip()
-    category = body.category or map_food_group(row[2])
-    if category not in VALID_CATEGORIES:
-        raise HTTPException(400, f"Invalid category '{category}'")
-
-    with get_recipe_db() as conn:
-        conn.execute(
-            "INSERT INTO pantry_ingredients (fdc_id, simple_name, category, subcategory) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(fdc_id) DO UPDATE SET "
-            "simple_name = excluded.simple_name, "
-            "category = excluded.category, "
-            "subcategory = excluded.subcategory",
-            [body.fdc_id, simple_name, category, body.subcategory],
+async def add_to_pantry(
+    body: PantryAdd,
+    _user: CurrentUser = Depends(get_current_user),
+):
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        usda_row = await conn.fetchrow(
+            "SELECT fdc_id, description, food_group "
+            "FROM hearth.usda_ingredients WHERE fdc_id = $1",
+            body.fdc_id,
         )
+        if usda_row is None:
+            raise HTTPException(404, f"USDA ingredient {body.fdc_id} not found")
+
+        simple_name = (body.simple_name or usda_row["description"]).strip()
+        category = body.category or map_food_group(usda_row["food_group"])
+        if category not in VALID_CATEGORIES:
+            raise HTTPException(400, f"Invalid category '{category}'")
+
+        await conn.execute(
+            """
+            INSERT INTO hearth.pantry_ingredients
+                (fdc_id, simple_name, category, subcategory)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (fdc_id) DO UPDATE SET
+                simple_name = excluded.simple_name,
+                category    = excluded.category,
+                subcategory = excluded.subcategory
+            """,
+            body.fdc_id, simple_name, category, body.subcategory,
+        )
+
+    # Reflect into the in-memory cache so subsequent reads see the change
+    # without requiring a backend restart.
+    catalog_cache.get_pantry()[body.fdc_id] = {
+        "simple_name": simple_name,
+        "category": category,
+        "subcategory": body.subcategory,
+    }
+
     return PantryEntry(
         fdc_id=body.fdc_id,
         simple_name=simple_name,
@@ -220,6 +225,14 @@ def add_to_pantry(body: PantryAdd):
 
 
 @router.delete("/pantry/{fdc_id}", status_code=204)
-def remove_from_pantry(fdc_id: int):
-    with get_recipe_db() as conn:
-        conn.execute("DELETE FROM pantry_ingredients WHERE fdc_id = ?", [fdc_id])
+async def remove_from_pantry(
+    fdc_id: int,
+    _user: CurrentUser = Depends(get_current_user),
+):
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM hearth.pantry_ingredients WHERE fdc_id = $1",
+            fdc_id,
+        )
+    catalog_cache.get_pantry().pop(fdc_id, None)

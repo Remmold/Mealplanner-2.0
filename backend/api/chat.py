@@ -18,12 +18,13 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
 from api.agent_tools import register_all
+from api.db import get_current_household_id
 from api.pending_actions import PendingProposer
 from api.profile import is_profile_sparse, load_profile, render_profile_context
 from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db, new_id
@@ -188,7 +189,7 @@ def _derive_title(first_user_msg: str) -> str:
 
 
 @router.get("/sessions", response_model=list[ChatSessionSummary])
-def list_sessions(household_id: str = DEFAULT_HOUSEHOLD_ID):
+def list_sessions(household_id: str = Depends(get_current_household_id)):
     with get_recipe_db() as conn:
         rows = conn.execute(
             "SELECT s.id, s.title, s.created_at, s.updated_at, "
@@ -208,7 +209,7 @@ def list_sessions(household_id: str = DEFAULT_HOUSEHOLD_ID):
 
 
 @router.post("/sessions", response_model=ChatSessionDetail, status_code=201)
-def create_session(household_id: str = DEFAULT_HOUSEHOLD_ID):
+def create_session(household_id: str = Depends(get_current_household_id)):
     sid = new_id()
     with get_recipe_db() as conn:
         conn.execute(
@@ -251,7 +252,7 @@ def delete_session(sid: str):
 
 
 @router.post("/sessions/{sid}/messages", response_model=SendMessageResponse)
-async def send_message(sid: str, body: SendMessageRequest, household_id: str = DEFAULT_HOUSEHOLD_ID):
+async def send_message(sid: str, body: SendMessageRequest, household_id: str = Depends(get_current_household_id)):
     with get_recipe_db() as conn:
         row = conn.execute(
             "SELECT title, message_history FROM chat_sessions WHERE id = ? AND household_id = ?",

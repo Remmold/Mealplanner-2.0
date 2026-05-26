@@ -13,9 +13,10 @@ import json
 import re
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from api.db import get_current_household_id
 from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db
 
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -208,12 +209,12 @@ class ProfilePatch(BaseModel):
 
 
 @router.get("", response_model=HouseholdProfile)
-def get_profile(household_id: str = DEFAULT_HOUSEHOLD_ID):
+def get_profile(household_id: str = Depends(get_current_household_id)):
     return load_profile(household_id)
 
 
 @router.patch("", response_model=HouseholdProfile)
-def patch_profile(body: ProfilePatch, household_id: str = DEFAULT_HOUSEHOLD_ID):
+def patch_profile(body: ProfilePatch, household_id: str = Depends(get_current_household_id)):
     current = load_profile(household_id)
     data = current.model_dump(exclude={"updated_at"})
 
@@ -230,7 +231,7 @@ def patch_profile(body: ProfilePatch, household_id: str = DEFAULT_HOUSEHOLD_ID):
 
 
 @router.delete("", status_code=204)
-def reset_profile(household_id: str = DEFAULT_HOUSEHOLD_ID):
+def reset_profile(household_id: str = Depends(get_current_household_id)):
     with get_recipe_db() as conn:
         conn.execute("DELETE FROM household_profiles WHERE household_id = ?", [household_id])
     return None

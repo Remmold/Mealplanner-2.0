@@ -17,9 +17,10 @@ import urllib.parse
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
+from api.db import get_current_household_id
 from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db
 
 log = logging.getLogger("image_gen")
@@ -140,7 +141,7 @@ def serve_recipe_image(filename: str):
 
 
 @router.post("/recipes/{recipe_id}/image/regenerate")
-async def regenerate_image(recipe_id: str, household_id: str = DEFAULT_HOUSEHOLD_ID):
+async def regenerate_image(recipe_id: str, household_id: str = Depends(get_current_household_id)):
     with get_recipe_db() as conn:
         row = conn.execute(
             "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
