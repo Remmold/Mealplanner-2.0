@@ -536,56 +536,285 @@ flags, quality scores.
 
 ## 9. Real-product roadmap (post-demo direction)
 
-> Decided 2026-05-25. The school demo is a checkpoint, not the destination:
-> Hearth is being taken to a **real, public, monetized product**. This section
-> records the resolved decisions so the roadmap in §6 is superseded by a
-> concrete plan. Implementation has not started — this is the agreed shape.
+> Decided 2026-05-25, expanded 2026-05-26. The school demo is a checkpoint,
+> not the destination: Hearth becomes a **real, public, monetized product**.
+> This section supersedes §6 (Roadmap) as the concrete plan. Implementation
+> started 2026-05-26 with the first Supabase migrations.
 
 ### 9.1 End-state shape
 
 | Area | Decision |
 |---|---|
-| **Backend** | FastAPI stays the application server, deployed as a **container on an existing Azure VM**. No Edge Functions rewrite. |
+| **Backend** | FastAPI in a Docker container on an existing **Azure VM**. No Edge Functions rewrite. |
 | **Supabase role** | **Postgres + Auth + Storage only.** A free Supabase project is provisioned. |
-| **Data topology** | User data + **USDA (~8k rows)** + the `common_ingredients` seed move to **Postgres** — this collapses the cross-store nutrition join into one SQL query. **OFF is cut from production** (12GB dump, 900MB DuckDB, dlt/dbt OFF pipeline, and the dormant Products/Categories/Nutrition pages stay in the repo as the data-engineering showcase, not hosted). |
-| **Tenant isolation** | **Postgres RLS with the user's Supabase JWT propagated per request.** Tenant-owned (RLS): recipes, recipe_ingredients, meal_plans, meal_plan_entries, household_profiles, chat_sessions, chat_messages, pending_actions, store_layout, shopping_list_template. Public-read reference: USDA, curated catalog, `ingredient_aliases`, `ingredient_units`. |
-| **Ingredient catalog** | **Global, read-only to users.** Users build recipes from the 819 curated items + direct search over all 8k USDA (no writes — recipes can reference any `fdc_id`). Promote / dedup / rename become **admin-only** tools. No per-user pantry table in v1. |
-| **Auth** | **Google OAuth + email magic link** (passwordless — no password storage or reset flows). Each signup creates a household; onboarding seeds the profile. |
-| **Monetization** | Free tier = the **full manual app**. **All AI is gated.** Paid via **usage credits** (Stripe **one-time** Checkout, not subscriptions): a credit ledger in Postgres, per-action cost priced above token cost, **estimate-and-hold** before the variable-cost weekly planner (refund on failure). Cost can never exceed revenue. |
-| **Mobile** | **Responsive web only** for now. PWA + offline shopping list is a deliberate, reversible later upgrade (accepted risk: blank list on dropped in-store signal). |
-| **Quality bar** | **Critical-path test suite**: RLS tenant isolation, credit-ledger correctness, Stripe webhook idempotency, shopping consolidation. **Supabase CLI migrations** replace the `PRAGMA table_info` checks. |
+| **Data topology** | User data + **USDA (~8k rows)** + the `common_ingredients` seed live in **Postgres** (kills the cross-store nutrition join). **OFF is cut from production** (12GB dump, 900MB DuckDB, dlt/dbt pipeline, dormant Products/Categories/Nutrition pages stay in the repo as a data-engineering showcase, not hosted). |
+| **Tenant isolation** | Postgres **RLS with the user's Supabase JWT propagated per request.** Tenant-owned: recipes, recipe_ingredients, meal_plans, meal_plan_entries, household_profiles, chat_sessions, chat_messages, pending_actions, store_layout, shopping_list_template, credit_ledger, household_invites. Public-read reference: USDA, curated catalog, `ingredient_aliases`, `ingredient_units`. |
+| **Catalog** | **Global, read-only to users.** Recipes can reference any `fdc_id` from the 819 curated or 8k USDA. Promote/dedup/rename are **admin-only**. No per-user pantry table in v1. |
+| **Auth** | **Google OAuth + email magic link** (passwordless). |
+| **Public URL** | Subdomain of **darkfallcompanion.se** (e.g. `hearth.darkfallcompanion.se`), single origin, Caddy auto-TLS. `/api/*` reverse-proxied to FastAPI; everything else serves the Vite build. |
+| **Image storage** | **Supabase Storage** bucket `recipe-images/{household_id}/{recipe_id}.jpg` with per-household RLS. |
+| **Monetization** | Free = full manual app. **All AI is gated.** Paid via **usage credits** (Stripe one-time Checkout, not subscriptions). |
+| **Mobile** | Responsive web only in v1. PWA + offline shopping list deferred. |
+| **Quality bar** | **Critical-path test suite**: RLS isolation, credit-ledger correctness, Stripe webhook idempotency, shopping consolidation. **Supabase CLI migrations** replace `PRAGMA table_info`. |
+| **i18n** | **Bilingual SE/EN from day one** via `react-i18next`. UI chrome + AI outputs + emails + legal docs translated; USDA ingredient names stay English in v1. Locale on `household_members.locale`, default from browser. |
 
-### 9.2 First milestone — the capped-AI free beta
+### 9.2 Identity & legal entity
 
-Stripe/credits are **deferred**. Ship a beta to validate the AI magic with real
-users at a **bounded cost**, then add billing once usage proves demand. Build
-order:
+- **Enskild firma** for v1 — the operator is the data controller, named in
+  PP/ToS. Convert to **Aktiebolag (AB)** once revenue/risk justifies the
+  25,000 SEK capital + admin overhead (~50–100k SEK ARR or first employee).
+- Public face: `hearth.darkfallcompanion.se` until a dedicated domain is
+  bought (one-day DNS swap when revenue covers it).
 
-1. Auth (Google + magic link) + user↔household mapping + onboarding.
-2. Migrate user data + USDA + the seed into Postgres; wire FastAPI to Supabase.
-3. RLS policies + JWT propagation; cut OFF from the deploy.
-4. **Hard quota caps on every AI call** — this is what makes a "free AI beta"
-   safe. Without it the beta is an open bar tab.
-5. Responsive pass across all views.
-6. Critical-path tests.
-7. Deploy the container to the Azure VM.
+### 9.3 Multi-user household model
 
-*Then later:* credit ledger + Stripe Checkout + webhook + entitlement gates flip
-the caps into a paywall.
+- **Multi-user per household, one active household per user (v1).**
+- **`public.households(id, name, created_at, updated_at)`** — tenant root.
+  Lives in `public.*` (Supabase's default PostgREST-exposed schema) so any
+  future second app in this project can FK to it without a schema rewrite
+  (see §9.13).
+- **`public.household_members(household_id, user_id, role, locale,
+  joined_at)`** — `UNIQUE(user_id)` enforces 1-household-per-user in v1
+  (drop the unique later to enable multi-membership without a join-table
+  migration). `role` is constrained to `{'owner', 'member'}` via CHECK.
+  A partial unique index enforces at most one owner per household. `locale`
+  is per-membership (a Swedish user joining an English-speaking household
+  may want EN for that household).
+- **`public.household_invites(token, household_id, created_by, expires_at,
+  used_at, used_by, created_at)`** — cryptographically-random URL-safe
+  tokens (32 bytes), default 7-day expiry, consumed in a service-role
+  transaction.
+- **Invite flow:** owner clicks Invite → server inserts a row with a fresh
+  token + 7-day expiry → returns
+  `https://hearth.darkfallcompanion.se/join/<token>` → owner shares freely.
+  Recipient clicks → auth (or signup) → server consumes the token
+  atomically (validate not expired/used → mark used → insert
+  `household_members` with role `member`).
+- **RBAC (owner + member):**
+  - **Owner-only:** kick another member, transfer ownership, delete
+    household.
+  - **Member:** everything else (create recipes, plans, invites, edit
+    profile, generate AI).
+  - **Last member leaves auto-deletes the household** and cascades all
+    tenant resources.
+- **Helpers** (`public.is_member_of(uuid)`, `public.is_household_owner(uuid)`,
+  `public.user_household_ids()`) are `SECURITY DEFINER` so they bypass RLS
+  on `household_members` when called from RLS policies — without this, a
+  policy that queries `household_members` would recurse into its own RLS.
 
-### 9.3 Landmines to watch (not open decisions — known traps)
+### 9.4 Onboarding & first-session UX
 
-- **RLS + connection pooling.** Must `SET LOCAL request.jwt.claims` inside each
-  request's transaction. Supabase's transaction-mode pooler (pgBouncer) keeps no
-  session state — get this pattern right early or RLS silently won't apply.
-- **The beta cap must count tokens, not calls.** Chat resends growing history
-  each turn; the weekly planner fans out to ~21 generations. A per-*call* cap
-  won't bound cost — cap tokens/credit-equivalent, and cap the planner fan-out
-  specifically.
-- **Recipe images.** Pollinations images save to local disk; on the VM they
-  persist only until the container is recreated. Mount a volume or push to
-  Supabase Storage, or every image is lost on redeploy.
-- **Supabase free tier pauses after ~7 days of inactivity.** Fine during active
-  dev; sporadic early-beta traffic can hit a paused DB.
-- **Existing single-household SQLite data.** Migration-time decision still open:
-  seed it as the owner's admin household, or start Postgres clean.
+- **New signup (no invite):** Google or magic link → "Create new household
+  or join via invite" → name household → **5-question profile wizard
+  (skippable per Q + "skip all" escape)**: family size, dietary
+  restrictions, allergies, favourite cuisines, typical cook time → drop to
+  the meal-plan view.
+- **Signup via invite link:** Google/magic link → token consumed → joined →
+  **skip the wizard** (household profile already exists, inherited).
+- Sample data and tutorial overlays are **not** included; the empty plan
+  view is the call to action.
+
+### 9.5 Capped-AI beta + credit ledger
+
+The credit ledger is built **now** (not deferred to Stripe) so the beta and
+the paid tier share one mechanism.
+
+- New table (see `supabase/migrations/0003_credit_ledger.sql`):
+  `credit_ledger(id, household_id, delta, reason, action_type, ref_id,
+  created_at)` — append-only. Balance = `SUM(delta)` per household.
+- **Monthly grant**: a lazy check on the first action of a new calendar
+  month inserts `+N (reason='monthly_grant')`. Grant size is configurable
+  (initial: 30 credits).
+- **Action costs (weighted)**: recipe gen ≈ 1, chat turn ≈ 0.5, weekly
+  planner ≈ 7 (estimate from days × slots).
+- **Variable-cost flow** (planner): insert a `hold` row of −estimate →
+  execute fan-out → on success, replace hold with the exact `debit`; on
+  failure, delete the hold (refund).
+- **Default LLM**: **gpt-4o-mini** for everything in beta.
+- **Cap-hit UX**: hard block + "resets on {date}" message + "Notify me
+  when paid launches" waitlist signup.
+- **Global budget kill-switch**: env var `MONTHLY_BUDGET_USD`. A
+  middleware on AI endpoints checks month-to-date spend (derived from
+  ledger debits × cost-per-credit) and returns 503 when crossed. Manual
+  app keeps working.
+- **Stripe later:** inserts `+N (reason='purchase')` rows tied to a
+  `stripe_charge_id`. Same ledger, same enforcement, no rewrite.
+
+### 9.6 Infra, deploy, backups
+
+- **Deployment**: GitHub Actions on push to `main` → run critical-path
+  tests → build Docker image → push to GHCR → SSH to VM → run Supabase
+  migrations → `docker compose pull && docker compose up -d` → `/health`
+  check gates the workflow.
+- **Repo secrets**: `SSH_PRIVATE_KEY`, `VM_HOST`, `SUPABASE_ACCESS_TOKEN`,
+  `SUPABASE_DB_PASSWORD`, `OPENAI_API_KEY`, `MONTHLY_BUDGET_USD`.
+- **Backups**: Supabase free tier's daily snapshots (7-day retention) +
+  weekly `pg_dump --format=custom` cron on the VM (encrypted dumps, 4–8
+  weeks kept locally; later sync to Azure Blob).
+- **Observability**: explicitly deferred — pre-launch checklist item, not
+  a launch-blocker today. Revisit before going public.
+
+### 9.7 Compliance & data lifecycle
+
+- **Standard pre-launch GDPR**: bilingual PP + ToS pages (template-drafted,
+  reviewed by the operator), self-serve account-deletion + data-export
+  endpoints, signed Supabase + OpenAI DPAs. **No analytics/cookies in v1
+  → no cookie banner.**
+- **Account deletion semantics**: drops `auth.users` row + the user's
+  `household_members` row + any user-personal preferences. The household's
+  recipes/plans/profile stay with remaining members. **Last member exit
+  cascades the entire household** (recipes, plans, chat, etc.).
+- **Data export**: one-click endpoint returns a JSON bundle of every
+  household-scoped resource the user can read (recipes, plans, profile,
+  templates, chat history). RLS already constrains the read set.
+
+### 9.8 Operational gates
+
+- **Signup**: open with Google OAuth + magic link. The per-user credit
+  grant + global budget kill-switch are the cost brakes.
+- **AI access check**: every AI endpoint asserts (1) authenticated,
+  (2) member of a household, (3) global kill-switch not tripped,
+  (4) sufficient credit balance (or a successful hold for variable-cost
+  ops).
+- **dbt**: retired from prod. The 86-row `common_ingredients` seed
+  becomes a one-time migration. dbt stays in the repo with the dormant
+  OFF pipeline.
+
+### 9.9 Internationalization (SE/EN bilingual)
+
+- Library: `react-i18next` with `en.json` + `sv.json`. Locale stored on
+  `household_members.locale` (default from browser `Accept-Language`).
+- **Translated**: all UI chrome, profile field labels, error messages,
+  email templates, PP/ToS, LLM system prompts that produce user-facing text.
+- **Not translated in v1**: USDA ingredient names (8k rows). Display as
+  USDA's English; revisit if Swedish users complain.
+- LLM behaviour: pass the requesting user's locale into the recipe-gen
+  and chat agents' system prompts; outputs (recipe names, instructions,
+  chat replies) in that language. PydanticAI schemas are
+  language-agnostic; content varies.
+
+### 9.10 Build sequence — capped-AI beta
+
+Stripe is **deferred** until usage proves demand. The beta validates the
+AI magic at a bounded cost.
+
+1. **Auth + household + onboarding** ← in progress (2026-05-26).
+   1. `public.*` core: `households`, `household_members`,
+      `household_invites`, `SECURITY DEFINER` helpers
+      (`is_member_of`, `is_household_owner`, `user_household_ids`).
+      ✅ migration 0001 committed.
+   2. `hearth` schema + Hearth tenant tables (recipes, meal_plans,
+      household_profiles, chat_*, pending_actions, store_layout,
+      shopping_list_template, plus catalog: usda_ingredients,
+      pantry_ingredients, ingredient_aliases, ingredient_units).
+      FKs to `public.households`. ✅ migration 0002 committed.
+   3. `hearth.credit_ledger` + `household_credit_balance` /
+      `household_month_spend` views. ✅ migration 0003 committed.
+   4. RLS on `public.households` / `household_members` /
+      `household_invites` + every `hearth.*` tenant table. Reference
+      data: authenticated read. ✅ migration 0004 committed.
+   5. Supabase dashboard: enable Google OAuth + email magic link,
+      set Site URL + Redirect URLs (`http://localhost:5173`,
+      `https://hearth.darkfallcompanion.se`), create `recipe-images`
+      private Storage bucket with per-household RLS. (Manual steps.)
+   6. FastAPI: install `supabase-py`, add JWT verification middleware
+      that propagates the user's claims into each transaction (RLS
+      gold standard).
+   7. New endpoints: `GET /me` (membership + household), `POST /households`
+      (create + insert self as owner-member atomically), `POST
+      /households/join/{token}` (consume invite token in a service-role
+      transaction; insert member row), `POST /households/{id}/invites`
+      (generate new tokenized invite), `DELETE
+      /households/{id}/invites/{token}` (revoke), `DELETE
+      /households/{id}/members/{user_id}` (owner kick — delete the
+      member row), `DELETE /accounts/me` (GDPR — drops `auth.users`;
+      cascades follow), `GET /accounts/me/export` (GDPR JSON dump).
+   8. Frontend: `@supabase/supabase-js` AuthProvider; sign-in screen;
+      create/join household screen; profile wizard (5 questions);
+      meal-plan landing.
+   9. Frontend: `react-i18next` scaffold with `en.json` + `sv.json`.
+2. Migrate USDA + seed into Postgres (start clean — no existing-SQLite
+   transform; existing recipes do not migrate).
+3. JWT propagation everywhere; verify RLS isolation in a test.
+4. Hard AI quota caps via the credit ledger; build global kill-switch.
+5. Responsive pass across every view.
+6. Critical-path tests: RLS, ledger, shopping consolidation.
+7. Bilingual PP/ToS pages; account deletion + export endpoints.
+8. CI/CD wiring; deploy to the VM behind Caddy at the subdomain.
+
+*Then later:* credit purchase flow via Stripe; flip the cap into a paywall.
+
+### 9.11 Landmines (known traps, not open decisions)
+
+- **RLS + connection pooling**: must `SET LOCAL request.jwt.claims`
+  inside each request's transaction; Supabase's transaction-mode pooler
+  keeps no session state. Get this pattern right or RLS silently
+  doesn't apply.
+- **The beta cap must count tokens-equivalent, not calls.** Chat resends
+  growing history each turn; the weekly planner fans out to ~21 gens.
+  Per-*call* caps under-bound cost.
+- **Supabase free tier pauses after ~7 days of inactivity.** Sporadic
+  early-beta traffic can hit a paused DB.
+- **Account-linking when same email used in Google + magic link.**
+  Supabase Auth handles automatic linking when emails match, but it must
+  be enabled in dashboard settings; test the path explicitly.
+- **Invite tokens are auth-equivalent**: cryptographically-random,
+  single-use, expiry < 14 days, never logged in plaintext.
+
+### 9.12 Explicitly cut from v1
+
+| Cut | Reason |
+|---|---|
+| **Recipe sharing / community / discovery feed** | Whole second product; validate core loop first. If beta users explicitly ask, build post-Stripe. |
+| **PWA + offline shopping list** | Responsive web only; PWA bolts on cheaply later. Accepted risk: in-store signal drop. |
+| **Multi-membership** (a user in N households) | One household per user; add member table later if needed. |
+| **Per-user pantry / catalog writes** | Catalog is global admin-curated. Personal renames defer to v1.1 if requested. |
+| **OFF in production** | 12GB liability for a non-core feature. Kept in repo as data-eng showcase. |
+| **dbt in production** | Job evaporates with OFF cut. Seed becomes one-time SQL migration. |
+| **Subscription pricing** | Usage credits only — one-time Stripe Checkout, no subscription lifecycle. |
+| **Cookie banner / analytics** | No analytics tracking in v1. |
+| **USDA name translation** | English names remain in Swedish UI. Revisit on user feedback. |
+
+### 9.13 Multi-app forward compatibility
+
+Hearth lives alone in this Supabase project today, but the schema is laid
+out so a future second app's adoption is a non-event. (A habit-tracker
+side-project that may eventually merge with Hearth is the canonical
+example — design decisions were taken with that in mind.)
+
+**Schema layout:**
+- `public.*` — **shared core only.** Today: `households`,
+  `household_members`, `household_invites`, plus the `SECURITY DEFINER`
+  helpers (`is_member_of`, `is_household_owner`, `user_household_ids`).
+  Convention: minimal surface area, no app-specific columns, both
+  current and future apps can rely on the shape.
+- `hearth.*` — Hearth-specific everything (recipes, meal plans,
+  household_profiles meal-prefs blob, chat_*, pending_actions,
+  store_layout, shopping_list_template, credit_ledger, USDA + pantry
+  catalog).
+- `<future_app>.*` — when a second app joins, it gets its own schema
+  and uses the existing `public.household_members` for membership.
+  No coordination needed beyond agreeing on the role enum.
+
+**Why this layout:**
+- Supabase auto-exposes `public.*` via PostgREST. Keeping it minimal
+  limits accidental API surface.
+- Each app evolves its own schema independently without coordinating
+  schema migrations.
+- A shared `households` + membership means one user = one identity
+  across all apps from day one — no "link your accounts" flow at
+  merge time.
+
+**When a second app starts:**
+1. Create its schema; add tenant tables FK-ing to `public.households`.
+2. Add RLS policies using `public.is_member_of(household_id)`.
+3. Reuse the existing tokenized invite flow (or add its own with
+   different lifetimes — same `household_invites` table works).
+4. No changes to Hearth required.
+
+**App-specific user state**: per-user app-specific fields (e.g. a
+gamification XP counter for a habit app) go in
+`<app>.<app>_user_state(user_id uuid pk references auth.users)`, *not*
+in `public.profiles`. The `public.*` schema deliberately has no
+`profiles` table — user identity is `auth.users`; per-membership state
+is on `household_members`; everything app-specific is app-scoped.
