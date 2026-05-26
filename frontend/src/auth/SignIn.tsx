@@ -3,6 +3,8 @@ import type { FormEvent } from "react";
 import { Mail } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { Button, Card, ErrorBanner, Field, Input } from "../components/ui";
+import PrivacyPolicy from "../legal/PrivacyPolicy";
+import TermsOfService from "../legal/TermsOfService";
 
 interface Props {
   redirectTo?: string;
@@ -13,6 +15,7 @@ export default function SignIn({ redirectTo }: Props) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [legalOpen, setLegalOpen] = useState<"privacy" | "terms" | null>(null);
 
   const target = redirectTo ?? window.location.origin;
 
@@ -94,6 +97,16 @@ export default function SignIn({ redirectTo }: Props) {
           </>
         )}
       </Card>
+
+      <p className="muted text-center auth-legal-foot">
+        By signing in you accept our{" "}
+        <button type="button" className="link-button" onClick={() => setLegalOpen("terms")}>Terms</button>
+        {" "}and{" "}
+        <button type="button" className="link-button" onClick={() => setLegalOpen("privacy")}>Privacy Policy</button>.
+      </p>
+
+      <PrivacyPolicy open={legalOpen === "privacy"} onClose={() => setLegalOpen(null)} />
+      <TermsOfService open={legalOpen === "terms"} onClose={() => setLegalOpen(null)} />
     </div>
   );
 }

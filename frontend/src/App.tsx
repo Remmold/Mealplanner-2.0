@@ -4,6 +4,9 @@ import { onNavigate } from "./api";
 import { useAuth } from "./auth/AuthProvider";
 import SignIn from "./auth/SignIn";
 import CreateOrJoinHousehold from "./auth/CreateOrJoinHousehold";
+import ProfileWizard, { wizardWasDismissed } from "./auth/ProfileWizard";
+import PrivacyPolicy from "./legal/PrivacyPolicy";
+import TermsOfService from "./legal/TermsOfService";
 import { Button } from "./components/ui";
 import RecipeBuilder from "./components/RecipeBuilder";
 import ShoppingList from "./components/ShoppingList";
@@ -52,6 +55,8 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("recipe");
   const [chatOpen, setChatOpen] = useState(false);
   const [initialRecipeId, setInitialRecipeId] = useState<string | null>(null);
+  const [showWizardDismissed, setShowWizardDismissed] = useState(wizardWasDismissed);
+  const [legalOpen, setLegalOpen] = useState<"privacy" | "terms" | null>(null);
 
   useEffect(() => {
     return onNavigate((intent) => {
@@ -79,6 +84,10 @@ export default function App() {
     );
   }
 
+  if (!showWizardDismissed) {
+    return <ProfileWizard onComplete={() => setShowWizardDismissed(true)} />;
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -98,10 +107,26 @@ export default function App() {
               </button>
             ))}
           </nav>
-          <Button variant="ghost" size="sm" onClick={signOut} className="ml-auto">
-            <LogOut size={14} />
-            <span className="ml-1">Sign out</span>
-          </Button>
+          <div className="ml-auto auth-header-tail">
+            {me.credit_balance !== null && (
+              <span
+                className={
+                  "credit-pill" + (me.credit_balance <= 5 ? " credit-pill-low" : "")
+                }
+                title={
+                  me.credit_balance <= 0
+                    ? "Out of credits — resets on the 1st"
+                    : `${me.credit_balance.toFixed(1)} AI credits remaining`
+                }
+              >
+                {me.credit_balance.toFixed(1)} credits
+              </span>
+            )}
+            <Button variant="ghost" size="sm" onClick={signOut}>
+              <LogOut size={14} />
+              <span className="ml-1">Sign out</span>
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -118,8 +143,18 @@ export default function App() {
       </main>
 
       <footer className="app-footer">
-        Hearth · Mealplanner 2.0
+        Hearth · Mealplanner 2.0 ·{" "}
+        <button type="button" className="link-button" onClick={() => setLegalOpen("privacy")}>
+          Privacy
+        </button>{" "}
+        ·{" "}
+        <button type="button" className="link-button" onClick={() => setLegalOpen("terms")}>
+          Terms
+        </button>
       </footer>
+
+      <PrivacyPolicy open={legalOpen === "privacy"} onClose={() => setLegalOpen(null)} />
+      <TermsOfService open={legalOpen === "terms"} onClose={() => setLegalOpen(null)} />
 
       {!chatOpen && (
         <button onClick={() => setChatOpen(true)} className="chat-launcher" title="Open assistant">

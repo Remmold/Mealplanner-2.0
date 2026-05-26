@@ -50,6 +50,7 @@ export interface MeResponse {
   user_id: string;
   email: string | null;
   household: HouseholdInfo | null;
+  credit_balance: number | null;
 }
 
 export interface InviteResponse {
@@ -104,4 +105,24 @@ export async function deleteAccount(): Promise<void> {
   if (!res.ok && res.status !== 204) {
     throw new Error(`delete account failed (${res.status})`);
   }
+}
+
+// ---- Profile (subset used by the onboarding wizard) ------------------------
+
+export interface ProfilePatch {
+  family_size?: number | null;
+  dietary?: string[];
+  allergies?: string[];
+  cuisines?: string[];
+  typical_cook_time_min?: number | null;
+}
+
+export async function patchProfile(body: ProfilePatch): Promise<unknown> {
+  return ok<unknown>(
+    await authFetch("/profile", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+    "patch profile",
+  );
 }

@@ -1041,3 +1041,71 @@ input[type="checkbox"] {
 }
 
 .text-center { text-align: center; }
+
+/* Chip wrapping grid — used by the profile wizard, can be reused. */
+.chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Bare-bones text-link button (for "skip all", terms-of-service links, etc.) */
+.link-button {
+  background: none;
+  border: none;
+  color: var(--taupe-2);
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 4px;
+  align-self: center;
+}
+.link-button:hover:not(:disabled) { color: var(--ink); }
+.link-button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Header credit-balance display */
+.auth-header-tail {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.credit-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  background: var(--honey-soft);
+  color: var(--terracotta-dark);
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: ui-monospace, "SF Mono", monospace;
+  border: 1px solid #ecdcb1;
+}
+.credit-pill-low {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: #efc4be;
+}
+
+/* Legal page modals (Privacy / Terms) */
+.legal-toggle {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.legal-content {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: var(--space-3);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.legal-content h3 { margin-top: 0; font-family: var(--font-serif); }
+.legal-content h4 { margin-top: var(--space-4); font-family: var(--font-serif); font-size: 15px; }
+.legal-content ul { padding-left: 1.2em; }
+.legal-content li { margin-bottom: var(--space-1); }
+.legal-content a { color: var(--sage-dark); text-decoration: underline; }
+
+.auth-legal-foot {
+  font-size: 12px;
+}
