@@ -1,6 +1,10 @@
-import { useEffect, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { LogOut, Sparkles } from "lucide-react";
 import { onNavigate } from "./api";
+import { useAuth } from "./auth/AuthProvider";
+import SignIn from "./auth/SignIn";
+import CreateOrJoinHousehold from "./auth/CreateOrJoinHousehold";
+import { Button } from "./components/ui";
 import RecipeBuilder from "./components/RecipeBuilder";
 import ShoppingList from "./components/ShoppingList";
 import MealPlan from "./components/MealPlan";
@@ -16,7 +20,35 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "profile",    label: "Household" },
 ];
 
+// Pull `/join/<token>` off the URL on mount. Returns null if the path is
+// anything else. Mutates history so the token doesn't sit in the address bar.
+function consumeJoinTokenFromUrl(): string | null {
+  const match = /^\/join\/([^/?#]+)/.exec(window.location.pathname);
+  if (!match) return null;
+  const token = decodeURIComponent(match[1]);
+  window.history.replaceState({}, "", "/");
+  return token;
+}
+
+function LoadingShell() {
+  return (
+    <div className="auth-shell">
+      <div className="brand auth-brand">
+        <span className="brand-mark">Hearth</span>
+        <span className="brand-tag">your kitchen, planned</span>
+      </div>
+      <p className="muted">Loading…</p>
+    </div>
+  );
+}
+
 export default function App() {
+  const { loading, session, me, signOut } = useAuth();
+
+  // Snapshot the join token at app mount; it's an auth gate, not a route.
+  const initialJoinToken = useMemo(consumeJoinTokenFromUrl, []);
+  const [pendingInviteToken, setPendingInviteToken] = useState<string | null>(initialJoinToken);
+
   const [tab, setTab] = useState<Tab>("recipe");
   const [chatOpen, setChatOpen] = useState(false);
   const [initialRecipeId, setInitialRecipeId] = useState<string | null>(null);
@@ -33,6 +65,19 @@ export default function App() {
       }
     });
   }, []);
+
+  if (loading) return <LoadingShell />;
+  if (!session) return <SignIn />;
+  if (!me) return <LoadingShell />;
+
+  if (!me.household) {
+    return (
+      <CreateOrJoinHousehold
+        pendingInviteToken={pendingInviteToken}
+        onPendingTokenConsumed={() => setPendingInviteToken(null)}
+      />
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -53,6 +98,10 @@ export default function App() {
               </button>
             ))}
           </nav>
+          <Button variant="ghost" size="sm" onClick={signOut} className="ml-auto">
+            <LogOut size={14} />
+            <span className="ml-1">Sign out</span>
+          </Button>
         </div>
       </header>
 

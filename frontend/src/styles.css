@@ -979,3 +979,65 @@ input[type="checkbox"] {
   display: flex; gap: var(--space-2); align-items: flex-end;
 }
 .chat-input-row .textarea { flex: 1; }
+
+/* ============================================================
+   Auth & onboarding pages
+   ============================================================ */
+
+.auth-shell {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  gap: var(--space-5);
+}
+
+.auth-brand {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-1);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.auth-divider {
+  text-align: center;
+  font-size: 11px;
+  color: var(--taupe-2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  position: relative;
+  margin: var(--space-2) 0;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: calc(50% - 24px);
+  height: 1px;
+  background: var(--line);
+}
+.auth-divider::before { left: 0; }
+.auth-divider::after  { right: 0; }
+
+.auth-icon {
+  color: var(--sage);
+}
+
+.auth-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.text-center { text-align: center; }

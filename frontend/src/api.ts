@@ -1,4 +1,23 @@
+import { supabase } from "./lib/supabase";
+
 const BASE = "/api";
+
+// ------------------------------------------------------------------
+// Auth-injecting fetch wrapper. Every request to the backend carries the
+// authenticated user's Supabase JWT so the backend can resolve the
+// current household via Depends(get_current_household_id).
+// Pre-pends BASE so call sites just pass the path ("/recipes", etc.).
+// ------------------------------------------------------------------
+async function authFetch(path: string, init?: RequestInit): Promise<Response> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return authFetch(`${path}`, { ...init, headers });
+}
 
 // ------------------------------------------------------------------
 // Cross-component refresh signal
@@ -107,25 +126,25 @@ export interface AggregatedNutrition {
 
 export async function fetchProducts(params: Record<string, string>): Promise<PaginatedProducts> {
   const qs = new URLSearchParams(params).toString();
-  const res = await fetch(`${BASE}/products?${qs}`);
+  const res = await authFetch(`/products?${qs}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchProduct(code: string): Promise<Product> {
-  const res = await fetch(`${BASE}/products/${encodeURIComponent(code)}`);
+  const res = await authFetch(`/products/${encodeURIComponent(code)}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchCategories(): Promise<string[]> {
-  const res = await fetch(`${BASE}/categories`);
+  const res = await authFetch(`/categories`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchSubcategories(): Promise<string[]> {
-  const res = await fetch(`${BASE}/subcategories`);
+  const res = await authFetch(`/subcategories`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -133,7 +152,7 @@ export async function fetchSubcategories(): Promise<string[]> {
 export async function aggregateNutrition(
   items: { code: string; quantity_g: number }[]
 ): Promise<AggregatedNutrition> {
-  const res = await fetch(`${BASE}/nutrition/aggregate`, {
+  const res = await authFetch(`/nutrition/aggregate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(items),
@@ -174,14 +193,14 @@ export interface RecipeNutrition {
 }
 
 export async function fetchIngredientCategories(): Promise<string[]> {
-  const res = await fetch(`${BASE}/ingredients/categories`);
+  const res = await authFetch(`/ingredients/categories`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchIngredients(params?: Record<string, string>): Promise<Ingredient[]> {
   const qs = params ? new URLSearchParams(params).toString() : "";
-  const res = await fetch(`${BASE}/ingredients${qs ? `?${qs}` : ""}`);
+  const res = await authFetch(`/ingredients${qs ? `?${qs}` : ""}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -189,7 +208,7 @@ export async function fetchIngredients(params?: Record<string, string>): Promise
 export async function aggregateRecipe(
   items: { fdc_id: number; quantity_g: number }[]
 ): Promise<RecipeNutrition> {
-  const res = await fetch(`${BASE}/ingredients/aggregate`, {
+  const res = await authFetch(`/ingredients/aggregate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(items),
@@ -224,18 +243,18 @@ export function recipeImageUrl(recipe: Pick<Recipe, "image_path">): string | nul
 }
 
 export async function regenerateRecipeImage(recipeId: string): Promise<void> {
-  const res = await fetch(`${BASE}/recipes/${recipeId}/image/regenerate`, { method: "POST" });
+  const res = await authFetch(`/recipes/${recipeId}/image/regenerate`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
 export async function fetchRecipes(): Promise<Recipe[]> {
-  const res = await fetch(`${BASE}/recipes`);
+  const res = await authFetch(`/recipes`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchRecipe(id: string): Promise<Recipe> {
-  const res = await fetch(`${BASE}/recipes/${id}`);
+  const res = await authFetch(`/recipes/${id}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -246,7 +265,7 @@ export async function createRecipe(
   instructions: string[] = [],
   servings: number = 4
 ): Promise<Recipe> {
-  const res = await fetch(`${BASE}/recipes`, {
+  const res = await authFetch(`/recipes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, ingredients, instructions, servings }),
@@ -264,7 +283,7 @@ export async function updateRecipe(
     servings?: number;
   }
 ): Promise<Recipe> {
-  const res = await fetch(`${BASE}/recipes/${id}`, {
+  const res = await authFetch(`/recipes/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -274,7 +293,7 @@ export async function updateRecipe(
 }
 
 export async function deleteRecipe(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/recipes/${id}`, { method: "DELETE" });
+  const res = await authFetch(`/recipes/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
@@ -293,7 +312,7 @@ export interface GeneratedRecipe {
 }
 
 export async function generateRecipe(prompt: string): Promise<GeneratedRecipe> {
-  const res = await fetch(`${BASE}/recipes/generate`, {
+  const res = await authFetch(`/recipes/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt }),
@@ -331,7 +350,7 @@ export async function generateShoppingList(
   includeTemplate: boolean = true,
 ): Promise<ShoppingList> {
   const qs = new URLSearchParams({ include_template: String(includeTemplate) }).toString();
-  const res = await fetch(`${BASE}/shopping-lists/generate?${qs}`, {
+  const res = await authFetch(`/shopping-lists/generate?${qs}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(selections),
@@ -353,7 +372,7 @@ export interface ShoppingTemplateItem {
 }
 
 export async function fetchShoppingTemplate(): Promise<ShoppingTemplateItem[]> {
-  const res = await fetch(`${BASE}/shopping-lists/template`);
+  const res = await authFetch(`/shopping-lists/template`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -363,7 +382,7 @@ export async function upsertShoppingTemplateItem(
   quantity_g: number,
   note: string | null = null,
 ): Promise<ShoppingTemplateItem> {
-  const res = await fetch(`${BASE}/shopping-lists/template`, {
+  const res = await authFetch(`/shopping-lists/template`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fdc_id, quantity_g, note }),
@@ -373,7 +392,7 @@ export async function upsertShoppingTemplateItem(
 }
 
 export async function deleteShoppingTemplateItem(fdc_id: number): Promise<void> {
-  const res = await fetch(`${BASE}/shopping-lists/template/${fdc_id}`, { method: "DELETE" });
+  const res = await authFetch(`/shopping-lists/template/${fdc_id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
@@ -384,13 +403,13 @@ export interface IngredientUnit {
 }
 
 export async function fetchIngredientUnits(): Promise<Record<number, IngredientUnit>> {
-  const res = await fetch(`${BASE}/shopping-lists/ingredient-units`);
+  const res = await authFetch(`/shopping-lists/ingredient-units`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchStoreLayout(): Promise<string[]> {
-  const res = await fetch(`${BASE}/shopping-lists/store-layout`);
+  const res = await authFetch(`/shopping-lists/store-layout`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -416,7 +435,7 @@ export interface PantryEntry {
 
 export async function searchUsda(query: string, limit = 50): Promise<UsdaSearchResult[]> {
   const qs = new URLSearchParams({ q: query, limit: String(limit) }).toString();
-  const res = await fetch(`${BASE}/ingredients/usda-search?${qs}`);
+  const res = await authFetch(`/ingredients/usda-search?${qs}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -426,7 +445,7 @@ export async function addToPantry(
   simple_name?: string,
   category?: string
 ): Promise<PantryEntry> {
-  const res = await fetch(`${BASE}/pantry`, {
+  const res = await authFetch(`/pantry`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ fdc_id, simple_name, category }),
@@ -436,7 +455,7 @@ export async function addToPantry(
 }
 
 export async function updateStoreLayout(categories: string[]): Promise<string[]> {
-  const res = await fetch(`${BASE}/shopping-lists/store-layout`, {
+  const res = await authFetch(`/shopping-lists/store-layout`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(categories),
@@ -474,7 +493,7 @@ export interface MealPlanEntryInput {
 }
 
 export async function fetchMealPlans(): Promise<MealPlan[]> {
-  const res = await fetch(`${BASE}/meal-plans`);
+  const res = await authFetch(`/meal-plans`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -484,7 +503,7 @@ export async function createMealPlan(
   start_date: string,
   entries: MealPlanEntryInput[] = []
 ): Promise<MealPlan> {
-  const res = await fetch(`${BASE}/meal-plans`, {
+  const res = await authFetch(`/meal-plans`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, start_date, entries }),
@@ -497,7 +516,7 @@ export async function updateMealPlan(
   id: string,
   data: { name?: string; start_date?: string; entries?: MealPlanEntryInput[] }
 ): Promise<MealPlan> {
-  const res = await fetch(`${BASE}/meal-plans/${id}`, {
+  const res = await authFetch(`/meal-plans/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -507,7 +526,7 @@ export async function updateMealPlan(
 }
 
 export async function deleteMealPlan(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/meal-plans/${id}`, { method: "DELETE" });
+  const res = await authFetch(`/meal-plans/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
@@ -526,7 +545,7 @@ export interface GenerateMealPlanInput {
 }
 
 export async function generateMealPlan(input: GenerateMealPlanInput): Promise<MealPlan> {
-  const res = await fetch(`${BASE}/meal-plans/generate`, {
+  const res = await authFetch(`/meal-plans/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -536,7 +555,7 @@ export async function generateMealPlan(input: GenerateMealPlanInput): Promise<Me
 }
 
 export async function mealPlanShoppingList(id: string): Promise<ShoppingList> {
-  const res = await fetch(`${BASE}/meal-plans/${id}/shopping-list`, { method: "POST" });
+  const res = await authFetch(`/meal-plans/${id}/shopping-list`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -585,37 +604,37 @@ export interface ResolveResponse {
 }
 
 export async function acceptPending(id: string): Promise<ResolveResponse> {
-  const res = await fetch(`${BASE}/chat/pending/${id}/accept`, { method: "POST" });
+  const res = await authFetch(`/chat/pending/${id}/accept`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function rejectPending(id: string): Promise<ResolveResponse> {
-  const res = await fetch(`${BASE}/chat/pending/${id}/reject`, { method: "POST" });
+  const res = await authFetch(`/chat/pending/${id}/reject`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function listChatSessions(): Promise<ChatSessionSummary[]> {
-  const res = await fetch(`${BASE}/chat/sessions`);
+  const res = await authFetch(`/chat/sessions`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function createChatSession(): Promise<ChatSessionDetail> {
-  const res = await fetch(`${BASE}/chat/sessions`, { method: "POST" });
+  const res = await authFetch(`/chat/sessions`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function getChatSession(id: string): Promise<ChatSessionDetail> {
-  const res = await fetch(`${BASE}/chat/sessions/${id}`);
+  const res = await authFetch(`/chat/sessions/${id}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function deleteChatSession(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/chat/sessions/${id}`, { method: "DELETE" });
+  const res = await authFetch(`/chat/sessions/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
@@ -652,13 +671,13 @@ export type ProfilePatch = Partial<{
 }>;
 
 export async function fetchProfile(): Promise<HouseholdProfile> {
-  const res = await fetch(`${BASE}/profile`);
+  const res = await authFetch(`/profile`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function patchProfile(patch: ProfilePatch): Promise<HouseholdProfile> {
-  const res = await fetch(`${BASE}/profile`, {
+  const res = await authFetch(`/profile`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -668,12 +687,12 @@ export async function patchProfile(patch: ProfilePatch): Promise<HouseholdProfil
 }
 
 export async function resetProfile(): Promise<void> {
-  const res = await fetch(`${BASE}/profile`, { method: "DELETE" });
+  const res = await authFetch(`/profile`, { method: "DELETE" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
 export async function sendChatMessage(id: string, content: string): Promise<SendMessageResponse> {
-  const res = await fetch(`${BASE}/chat/sessions/${id}/messages`, {
+  const res = await authFetch(`/chat/sessions/${id}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
