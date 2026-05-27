@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
-import { ChefHat, Check, Plus, RefreshCw, Sparkles, X } from "lucide-react";
+import { ArrowLeft, ChefHat, Check, Plus, RefreshCw, Sparkles, X } from "lucide-react";
 import CookMode from "./CookMode";
 import {
   fetchIngredientCategories,
@@ -65,6 +65,11 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
   const [usdaLoading, setUsdaLoading] = useState(false);
 
   const [cookOpen, setCookOpen] = useState(false);
+
+  // The editor is hidden until the user explicitly opens it (via + New recipe,
+  // clicking a saved-recipe chip, or AI generate). Default empty state shows
+  // only the list + the AI prompt — no phantom "Untitled Recipe" sitting there.
+  const [editorOpen, setEditorOpen] = useState(false);
 
   // Build a Recipe-shaped snapshot of the editor state for CookMode.
   // Uses current editor values so the cook view reflects unsaved tweaks.
@@ -163,6 +168,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     setImagePath(recipe.image_path ?? null);
     setImageBust(Date.now());
     setDirty(false);
+    setEditorOpen(true);
   }, [allIngredients]);
 
   function newRecipe() {
@@ -173,6 +179,20 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     setServings(4);
     setImagePath(null);
     setDirty(false);
+    setEditorOpen(true);
+  }
+
+  function closeEditor() {
+    if (dirty && !confirm("You have unsaved changes. Discard them?")) return;
+    setEditorOpen(false);
+    setActiveRecipeId(null);
+    setRecipeName("Untitled Recipe");
+    setItems([]);
+    setInstructions([]);
+    setServings(4);
+    setImagePath(null);
+    setDirty(false);
+    setError("");
   }
 
   async function handleRegenerateImage() {
@@ -203,6 +223,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
       }
       setItems(loaded);
       setDirty(true);
+      setEditorOpen(true);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -332,7 +353,17 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
         </div>
       </Card>
 
-      {/* Editor: name, servings, save */}
+      {/* Editor: name, ingredients, instructions, save.
+          Hidden by default — opens on "+ New recipe", chip click, or
+          successful AI generate. closeEditor() collapses it back. */}
+      {editorOpen && (
+      <>
+      <div className="row items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={closeEditor}>
+          <ArrowLeft size={14} />
+          <span className="ml-1">Back to recipes</span>
+        </Button>
+      </div>
       <Card>
         {activeRecipeId && (
           <div className="recipe-hero">
@@ -565,6 +596,8 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
           </ol>
         </div>
       </Card>
+      </>
+      )}
 
       <CookMode
         open={cookOpen}
