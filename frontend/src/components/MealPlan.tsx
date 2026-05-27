@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, ShoppingCart, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, ShoppingCart, Sparkles, X } from "lucide-react";
 import {
   fetchMealPlans,
   createMealPlan,
@@ -14,6 +14,7 @@ import {
   type Recipe,
   type ShoppingList,
 } from "../api";
+import { fetchProfile, type ProfileSummary } from "../lib/auth-api";
 import { Button, Card, Chip, Divider, Empty, ErrorBanner, Field, IconButton, Input, Modal, Textarea } from "./ui";
 
 const DAYS = 7;
@@ -51,6 +52,7 @@ export default function MealPlan() {
   const [genStart, setGenStart] = useState(isoDate(new Date()));
   const [genDays, setGenDays] = useState(7);
   const [genServings, setGenServings] = useState(4);
+  const [genAdvanced, setGenAdvanced] = useState(false);
   interface SlotSetting { enabled: boolean; portions: number; distinct: number | ""; }
   const [slotSettings, setSlotSettings] = useState<Record<Slot, SlotSetting>>({
     breakfast: { enabled: false, portions: 1, distinct: "" },
@@ -60,9 +62,18 @@ export default function MealPlan() {
   const [generating, setGenerating] = useState(false);
   const [genElapsed, setGenElapsed] = useState(0);
 
+  // Profile context the generator should respect. Loaded once on mount;
+  // refreshed when the chat agent edits the profile.
+  const [profile, setProfile] = useState<ProfileSummary | null>(null);
+
   useEffect(() => {
     reloadPlans();
     fetchRecipes().then(setRecipes).catch((e) => setError(String(e)));
+    fetchProfile().then((p) => {
+      setProfile(p);
+      // Pre-fill servings from family_size so the user doesn't have to.
+      if (p.family_size && p.family_size > 0) setGenServings(p.family_size);
+    }).catch(() => { /* sparse profile is fine */ });
   }, []);
 
   // Refresh when the chat agent mutates anything
@@ -70,6 +81,7 @@ export default function MealPlan() {
     return onDataChanged((kind) => {
       if (kind === "*" || kind === "meal_plans") reloadPlans();
       if (kind === "*" || kind === "recipes") fetchRecipes().then(setRecipes).catch(() => {});
+      if (kind === "*") fetchProfile().then(setProfile).catch(() => {});
     });
   }, []);
 
@@ -157,14 +169,16 @@ export default function MealPlan() {
         portions: Math.max(0.25, slotSettings[s].portions) || 1,
         distinct_meals: slotSettings[s].distinct === "" ? null : Number(slotSettings[s].distinct),
       }));
-    if (slot_configs.length === 0) { setError("Enable at least one slot"); return; }
-    if (!genPrompt.trim()) { setError("Describe what kind of week you want"); return; }
+    if (slot_configs.length === 0) { setError("Enable at least one slot in More options"); return; }
     setGenerating(true); setError(""); setGenElapsed(0);
     const t0 = Date.now();
     const timer = setInterval(() => setGenElapsed(Math.round((Date.now() - t0) / 1000)), 1000);
     try {
+      // Empty brief is fine — the planner falls back to the household profile.
+      // Send a generic anchor so the LLM has something to riff off.
+      const promptText = genPrompt.trim() || "A balanced week using the household's typical preferences.";
       const plan = await generateMealPlan({
-        prompt: genPrompt.trim(),
+        prompt: promptText,
         start_date: genStart,
         days: genDays,
         servings: genServings,
@@ -300,63 +314,75 @@ export default function MealPlan() {
         </div>
       </Card>
 
-      {/* AI weekly plan generator modal */}
+      {/* AI weekly plan generator modal — minimal by default. The system
+          leans on the household profile (built up via the chat agent's
+          discovery loop) so the user doesn't re-enter context every time. */}
       <Modal open={genOpen} onClose={() => { if (!generating) setGenOpen(false); }} className="modal-lg">
-        <h3 className="row gap-2"><Sparkles size={18} /> Generate a week</h3>
-        <p className="small muted">
-          Describe what you want — diet, vibe, constraints. The kitchen will draft a plan and create
-          any new recipes it needs.
-        </p>
+        <h3 className="row gap-2"><Sparkles size={18} /> Plan this week</h3>
 
-        <div className="col-2 mt-3">
-          <Field className="field-col">
-            <span className="small">Brief</span>
-            <Textarea
-              placeholder="e.g. Mediterranean-leaning week, vegetarian Mondays, family of 4, batch-cook on Sunday"
-              value={genPrompt}
-              onChange={(e) => setGenPrompt(e.target.value)}
-              rows={3}
-              disabled={generating}
-            />
-          </Field>
+        <ProfileContextCard profile={profile} />
 
-          <div className="row gap-3 wrap">
-            <Field>
-              Start
-              <Input
-                type="date"
-                value={genStart}
-                onChange={(e) => setGenStart(e.target.value)}
-                disabled={generating}
-              />
-            </Field>
-            <Field>
-              Days
-              <Input
-                type="number" min={1} max={14} numeric
-                value={genDays}
-                onChange={(e) => setGenDays(Math.max(1, Math.min(14, Number(e.target.value) || 7)))}
-                disabled={generating}
-              />
-            </Field>
-            <Field>
-              Servings
-              <Input
-                type="number" min={1} numeric
-                value={genServings}
-                onChange={(e) => setGenServings(Math.max(1, Number(e.target.value) || 4))}
-                disabled={generating}
-              />
-            </Field>
-          </div>
+        <Field className="field-col mt-3">
+          <span className="small muted">Anything special this week? <em>(optional)</em></span>
+          <Textarea
+            placeholder="e.g. 'batch-cook 3 dinners', 'meatless Monday', 'lighter than last week'"
+            value={genPrompt}
+            onChange={(e) => setGenPrompt(e.target.value)}
+            rows={2}
+            disabled={generating}
+          />
+        </Field>
 
-          <Card variant="soft" className="p-3">
-            <div className="small muted mb-2">Per-slot settings</div>
+        <button
+          type="button"
+          className="link-button mt-2 row items-center"
+          onClick={() => setGenAdvanced(!genAdvanced)}
+          disabled={generating}
+        >
+          {genAdvanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <span className="ml-1">More options</span>
+        </button>
+
+        {genAdvanced && (
+          <Card variant="soft" className="mt-2">
+            <div className="row gap-3 wrap">
+              <Field>
+                Start
+                <Input
+                  type="date"
+                  value={genStart}
+                  onChange={(e) => setGenStart(e.target.value)}
+                  disabled={generating}
+                />
+              </Field>
+              <Field>
+                Days
+                <Input
+                  type="number" min={1} max={14} numeric
+                  value={genDays}
+                  onChange={(e) => setGenDays(Math.max(1, Math.min(14, Number(e.target.value) || 7)))}
+                  disabled={generating}
+                />
+              </Field>
+              <Field>
+                Servings
+                <Input
+                  type="number" min={1} numeric
+                  value={genServings}
+                  onChange={(e) => setGenServings(Math.max(1, Number(e.target.value) || 4))}
+                  disabled={generating}
+                />
+              </Field>
+            </div>
+
+            <Divider />
+
+            <div className="small muted mb-2">Which slots? (dinner only by default)</div>
             <div className="col-2">
               {(["breakfast", "lunch", "dinner"] as Slot[]).map((s) => {
                 const cfg = slotSettings[s];
                 return (
-                  <div key={s} className="row gap-3 wrap">
+                  <div key={s} className="row gap-3 wrap items-center">
                     <Field className="min-w-100 capitalize">
                       <input
                         type="checkbox"
@@ -368,7 +394,7 @@ export default function MealPlan() {
                       />
                       {s}
                     </Field>
-                    <Field title="Servings-sets per meal. >1 means batch cook this much per sitting.">
+                    <Field title="Meals per sitting; >1 means batch-cook this much per sitting.">
                       Portions
                       <Input
                         type="number" min={0.25} step={0.25} numeric
@@ -394,19 +420,12 @@ export default function MealPlan() {
                 );
               })}
             </div>
-            <p className="tiny muted m-0">
-              <strong>Portions</strong>: meals per sitting (use 1 for regular, 2–3 for batch).
-              <br />
-              <strong>Distinct</strong>: how many different dishes in this slot across the week.
-              E.g. dinner: distinct=3 on 7 days means 3 recipes × 2-3 days each (matlåda).
-              Each slot gets its own recipes — breakfast and dinner won't share dishes.
-            </p>
           </Card>
-        </div>
+        )}
 
         <div className="row gap-2 mt-4">
           <Button onClick={runWeeklyGenerator} disabled={generating} variant="accent" className="flex-1">
-            {generating ? "Drafting your week..." : "Generate"}
+            {generating ? "Drafting your week..." : "Generate this week's plan"}
           </Button>
           <Button onClick={() => setGenOpen(false)} disabled={generating} variant="ghost">
             Cancel
@@ -479,5 +498,67 @@ export default function MealPlan() {
         </Card>
       )}
     </div>
+  );
+}
+
+
+/**
+ * The "Hearth knows X about your household" card shown above the generate
+ * prompt. Renders profile chips when there's something to show; nudges the
+ * user to chat with the assistant when the profile is sparse.
+ */
+function ProfileContextCard({ profile }: { profile: ProfileSummary | null }) {
+  if (!profile) {
+    return (
+      <Card variant="soft" className="mt-2">
+        <p className="small muted m-0">
+          Loading your household preferences…
+        </p>
+      </Card>
+    );
+  }
+
+  const chips: string[] = [];
+  if (profile.family_size && profile.family_size > 0) {
+    chips.push(`cooking for ${profile.family_size}`);
+  }
+  profile.dietary.forEach((d) => chips.push(d));
+  if (profile.allergies.length > 0) {
+    chips.push(`no ${profile.allergies.join(", ")}`);
+  }
+  if (profile.typical_cook_time_min) {
+    chips.push(`~${profile.typical_cook_time_min} min weeknights`);
+  }
+  profile.cuisines.slice(0, 4).forEach((c) => chips.push(c));
+  if (profile.batch_cook_preference && profile.batch_cook_preference !== "none") {
+    chips.push(`batch-cook ${profile.batch_cook_preference}`);
+  }
+
+  if (chips.length === 0) {
+    return (
+      <Card variant="soft" className="mt-2">
+        <p className="small m-0">
+          Your profile is empty — Hearth will guess from a typical household.
+        </p>
+        <p className="tiny muted m-0 mt-1">
+          Open the chat and tell it about your preferences (family size, diet,
+          allergies, favourite cuisines). It will remember for next time.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card variant="soft" className="mt-2">
+      <p className="tiny muted m-0">Hearth will use what we've learned so far:</p>
+      <div className="row wrap gap-2 mt-2">
+        {chips.map((c, i) => (
+          <Chip key={i} active>{c}</Chip>
+        ))}
+      </div>
+      <p className="tiny muted m-0 mt-2">
+        Wrong or missing? Open the chat and tell it — the assistant remembers.
+      </p>
+    </Card>
   );
 }

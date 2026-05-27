@@ -126,3 +126,20 @@ export async function patchProfile(body: ProfilePatch): Promise<unknown> {
     "patch profile",
   );
 }
+
+// What we actually surface in UI — minimal subset. The backend returns
+// more fields but the meal-plan generator only needs these to build the
+// "Hearth will use this context" hint.
+export interface ProfileSummary {
+  family_size: number | null;
+  dietary: string[];
+  allergies: string[];
+  cuisines: string[];
+  typical_cook_time_min: number | null;
+  batch_cook_preference: string | null;
+  notes: string[];
+}
+
+export async function fetchProfile(): Promise<ProfileSummary> {
+  return ok<ProfileSummary>(await authFetch("/profile"), "fetch profile");
+}
