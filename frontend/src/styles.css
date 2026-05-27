@@ -1109,3 +1109,206 @@ input[type="checkbox"] {
 .auth-legal-foot {
   font-size: 12px;
 }
+
+/* ============================================================
+   Cook mode — full-screen step-by-step cooking view.
+   Designed for kitchen viewing: big readable type, high contrast,
+   tap-friendly controls. Reachable via the "Start cooking" button on
+   RecipeBuilder; closes back to the editor.
+   ============================================================ */
+
+.cook-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--cream);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-5);
+  gap: var(--space-4);
+  overflow: hidden;
+}
+
+.cook-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.cook-header-title h2 {
+  font-family: var(--font-serif);
+  margin: 0;
+}
+.cook-header-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.cook-servings-adjuster {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--paper);
+}
+.cook-servings-value {
+  min-width: 60px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.1;
+}
+.cook-servings-value strong {
+  font-family: var(--font-serif);
+  font-size: 18px;
+}
+
+.cook-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+}
+
+.cook-step-card {
+  width: 100%;
+  max-width: 720px;
+  padding: var(--space-6);
+}
+.cook-step-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-4);
+}
+.cook-step-num {
+  font-family: var(--font-serif);
+  font-size: 48px;
+  font-weight: 600;
+  color: var(--terracotta);
+  line-height: 1;
+}
+.cook-step-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--sage-dark);
+  font-weight: 500;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.cook-step-text {
+  font-size: 22px;
+  line-height: 1.55;
+  margin: 0 0 var(--space-4);
+}
+
+.cook-timer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.cook-timer-display {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 92px;
+  padding: 4px 12px;
+  border-radius: var(--r-sm);
+  background: var(--honey-soft);
+  border: 1px solid #ecdcb1;
+}
+.cook-timer-display.cook-timer-done {
+  background: var(--sage-soft);
+  border-color: #cddec6;
+  color: var(--sage-dark);
+}
+
+.cook-nav {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: center;
+  align-items: center;
+}
+
+.cook-ingredients-toggle {
+  position: fixed;
+  left: var(--space-5);
+  bottom: var(--space-5);
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-radius: var(--r-pill);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+}
+.cook-ingredients-toggle:hover { background: var(--cream-2); }
+
+.cook-ingredients-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 70vh;
+  background: var(--paper);
+  border-top: 1px solid var(--line);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  z-index: 81;
+  animation: slideUp .2s ease-out;
+}
+@keyframes slideUp {
+  from { transform: translateY(40px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+.cook-ingredients-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cook-ingredients-header h3 {
+  font-family: var(--font-serif);
+  margin: 0;
+}
+
+.cook-ingredients-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  flex: 1;
+}
+.cook-ingredients-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--cream);
+  border-radius: var(--r-sm);
+}
+.cook-ing-name { color: var(--ink); }
+.cook-ing-qty {
+  font-family: var(--font-serif);
+  color: var(--terracotta-dark);
+  font-variant-numeric: tabular-nums;
+}

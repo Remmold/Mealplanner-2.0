@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
-import { Check, Plus, RefreshCw, Sparkles, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
+import { ChefHat, Check, Plus, RefreshCw, Sparkles, X } from "lucide-react";
+import CookMode from "./CookMode";
 import {
   fetchIngredientCategories,
   fetchIngredients,
@@ -62,6 +63,26 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
   const [usdaQuery, setUsdaQuery] = useState("");
   const [usdaResults, setUsdaResults] = useState<UsdaSearchResult[]>([]);
   const [usdaLoading, setUsdaLoading] = useState(false);
+
+  const [cookOpen, setCookOpen] = useState(false);
+
+  // Build a Recipe-shaped snapshot of the editor state for CookMode.
+  // Uses current editor values so the cook view reflects unsaved tweaks.
+  const cookRecipe = useMemo<Recipe>(() => ({
+    id: activeRecipeId ?? "",
+    household_id: "",
+    name: recipeName,
+    ingredients: items.map((it) => ({
+      fdc_id: it.ingredient.fdc_id,
+      quantity_g: it.quantity_g,
+      ingredient_name: it.ingredient.name,
+    })),
+    instructions,
+    servings,
+    image_path: imagePath,
+    created_at: "",
+    updated_at: "",
+  }), [activeRecipeId, recipeName, items, instructions, servings, imagePath]);
 
   useEffect(() => {
     fetchIngredientCategories().then(setCategories).catch(() => {});
@@ -357,6 +378,15 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
           <Button onClick={saveRecipe} disabled={saving || (!dirty && activeRecipeId !== null)} variant="primary">
             {saving ? "Saving..." : activeRecipeId ? "Save" : "Create"}
           </Button>
+          <Button
+            onClick={() => setCookOpen(true)}
+            disabled={items.length === 0 && instructions.length === 0}
+            variant="accent"
+            title="Open step-by-step cook mode"
+          >
+            <ChefHat size={14} />
+            <span className="ml-1">Start cooking</span>
+          </Button>
         </div>
 
         <Divider />
@@ -535,6 +565,12 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
           </ol>
         </div>
       </Card>
+
+      <CookMode
+        open={cookOpen}
+        recipe={cookRecipe}
+        onClose={() => setCookOpen(false)}
+      />
     </div>
   );
 }
