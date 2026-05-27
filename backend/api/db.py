@@ -18,6 +18,24 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 _pool: Optional[asyncpg.Pool] = None
 
 
+async def _init_conn(conn: asyncpg.Connection) -> None:
+    """Per-connection setup: register a JSONB codec so reads return dicts/lists
+    directly and writes accept Python objects. Without this, asyncpg treats
+    jsonb columns as opaque text and every call site has to json.dumps/loads."""
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+    await conn.set_type_codec(
+        "json",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+
+
 async def init_pool() -> None:
     """Create the global connection pool. Call once at app startup."""
     global _pool
@@ -30,6 +48,7 @@ async def init_pool() -> None:
         min_size=1,
         max_size=10,
         statement_cache_size=0,  # transaction-pooler-friendly
+        init=_init_conn,
     )
 
 
@@ -90,14 +109,9 @@ async def get_current_household_id(
 ) -> str:
     """Resolve the authenticated user's household_id (UUID string).
 
-    Used as a FastAPI dependency to replace the legacy `DEFAULT_HOUSEHOLD_ID`
-    query parameter on every household-scoped endpoint.
-
-    Also ensures the SQLite `households` table has a stub row for this
-    household_id, so the still-SQLite-backed routes (meal_plans, chat,
-    shopping_list_template, etc.) don't trip their FK constraints. This
-    bridge can be removed once those tables migrate to Postgres.
-    """
+    Used as a FastAPI dependency on every household-scoped endpoint. All
+    tenant tables now live in Postgres + RLS so we just look up the
+    membership row and return the id."""
     pool = get_pool()
     async with pool.acquire() as conn:
         hid = await conn.fetchval(
@@ -114,13 +128,4 @@ async def get_current_household_id(
             status_code=400,
             detail="You are not a member of any household. Create or join one first.",
         )
-
-    # Lazy stub-row insert for SQLite-backed legacy routes.
-    from api.recipe_db import get_recipe_db
-    with get_recipe_db() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO households (id, name) VALUES (?, ?)",
-            [hid, "household"],
-        )
-
     return hid

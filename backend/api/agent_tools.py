@@ -1,45 +1,41 @@
-"""Tool functions exposed to the chat agent.
+"""Tool functions exposed to the chat agent (Postgres-backed).
 
-Design: read tools run inline. Write tools do NOT mutate directly — they call
+Read tools run inline. Write tools do NOT mutate directly — they call
 `PendingProposer.propose(...)` so the user can Accept or Reject each action
-from the UI. This is the human-in-the-loop safety net: the agent can suggest
-as freely as it wants; nothing changes until the user agrees.
+from the UI.
 
-Tools still return human-readable strings so the LLM has something to reason
-over for subsequent turns (e.g. "I proposed creating recipe X; it's pending
-your approval").
+All reads use `user_tx(user)` so RLS auto-scopes to the user's household.
 """
 
 from __future__ import annotations
 
-import json
-
-from api.database import get_connection
+from api.auth import CurrentUser
+from api.db import user_tx
 from api.ingredients import load_all_curated_meta
 from api.pending_actions import PendingProposer
 from api.profile import coerce_profile_value
-from api.recipe_db import get_recipe_db
 
 
-def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
-    """Register all tools on a PydanticAI agent.
-
-    Mutating tools route through `proposer.propose(...)` instead of writing.
-    Read tools run inline."""
+def register_all(
+    agent,
+    household_id: str,
+    proposer: PendingProposer,
+    user: CurrentUser,
+) -> None:
+    """Register all tools on a PydanticAI agent."""
 
     # =========================================================
     # READ — run inline
     # =========================================================
 
     @agent.tool_plain
-    def list_recipes() -> str:
+    async def list_recipes() -> str:
         """List all saved recipes in the household. Returns id, name, servings."""
-        with get_recipe_db() as conn:
-            rows = conn.execute(
-                "SELECT id, name, servings FROM recipes WHERE household_id = ? "
-                "ORDER BY updated_at DESC",
-                [household_id],
-            ).fetchall()
+        async with user_tx(user) as conn:
+            rows = await conn.fetch(
+                "SELECT id::text AS id, name, servings FROM hearth.recipes "
+                "ORDER BY updated_at DESC"
+            )
         if not rows:
             return "No recipes saved yet."
         return "\n".join(
@@ -47,15 +43,14 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def search_recipes(query: str) -> str:
+    async def search_recipes(query: str) -> str:
         """Search saved recipes by name (case-insensitive substring)."""
-        with get_recipe_db() as conn:
-            rows = conn.execute(
-                "SELECT id, name, servings FROM recipes "
-                "WHERE household_id = ? AND lower(name) LIKE ? "
-                "ORDER BY updated_at DESC",
-                [household_id, f"%{query.lower()}%"],
-            ).fetchall()
+        async with user_tx(user) as conn:
+            rows = await conn.fetch(
+                "SELECT id::text AS id, name, servings FROM hearth.recipes "
+                "WHERE lower(name) LIKE $1 ORDER BY updated_at DESC",
+                f"%{query.lower()}%",
+            )
         if not rows:
             return f"No saved recipes match '{query}'."
         return "\n".join(
@@ -63,30 +58,33 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def get_recipe(recipe_id: str) -> str:
+    async def get_recipe(recipe_id: str) -> str:
         """Get full details of a saved recipe: name, servings, ingredients, instructions."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT * FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-            if not row:
+        async with user_tx(user) as conn:
+            row = await conn.fetchrow(
+                "SELECT id::text AS id, name, servings, instructions "
+                "FROM hearth.recipes WHERE id = $1::uuid",
+                recipe_id,
+            )
+            if row is None:
                 return f"Recipe {recipe_id} not found."
-            ingredients = conn.execute(
-                "SELECT fdc_id, quantity_g FROM recipe_ingredients WHERE recipe_id = ?",
-                [recipe_id],
-            ).fetchall()
+            ing_rows = await conn.fetch(
+                "SELECT fdc_id, quantity_g FROM hearth.recipe_ingredients "
+                "WHERE recipe_id = $1::uuid",
+                recipe_id,
+            )
 
         meta = load_all_curated_meta()
-        try:
-            instructions = json.loads(row["instructions"]) if row["instructions"] else []
-        except (json.JSONDecodeError, TypeError):
-            instructions = []
+        instructions = row["instructions"] if isinstance(row["instructions"], list) else []
 
         ing_lines = []
-        for ing in ingredients:
-            name = meta.get(ing["fdc_id"], {}).get("simple_name", f"unknown ({ing['fdc_id']})")
-            ing_lines.append(f"  - {name}: {ing['quantity_g']}g (fdc_id={ing['fdc_id']})")
+        for ing in ing_rows:
+            name = meta.get(ing["fdc_id"], {}).get(
+                "simple_name", f"unknown ({ing['fdc_id']})"
+            )
+            ing_lines.append(
+                f"  - {name}: {float(ing['quantity_g'])}g (fdc_id={ing['fdc_id']})"
+            )
 
         instr_lines = [f"  {i+1}. {s}" for i, s in enumerate(instructions)]
 
@@ -97,51 +95,63 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def list_meal_plans() -> str:
+    async def list_meal_plans() -> str:
         """List all meal plans for the household."""
-        with get_recipe_db() as conn:
-            rows = conn.execute(
-                "SELECT id, name, start_date FROM meal_plans WHERE household_id = ? "
-                "ORDER BY start_date DESC",
-                [household_id],
-            ).fetchall()
+        async with user_tx(user) as conn:
+            rows = await conn.fetch(
+                "SELECT id::text AS id, name, start_date FROM hearth.meal_plans "
+                "ORDER BY start_date DESC"
+            )
         if not rows:
             return "No meal plans yet."
         return "\n".join(
-            f"id={r['id']} | {r['name']} (starts {r['start_date']})" for r in rows
+            f"id={r['id']} | {r['name']} "
+            f"(starts {r['start_date'].isoformat() if r['start_date'] else ''})"
+            for r in rows
         )
 
     @agent.tool_plain
-    def get_meal_plan(plan_id: str) -> str:
+    async def get_meal_plan(plan_id: str) -> str:
         """Get full details of a meal plan: all entries with date, slot, recipe, portions."""
-        with get_recipe_db() as conn:
-            plan = conn.execute(
-                "SELECT * FROM meal_plans WHERE id = ? AND household_id = ?",
-                [plan_id, household_id],
-            ).fetchone()
-            if not plan:
+        async with user_tx(user) as conn:
+            plan = await conn.fetchrow(
+                "SELECT id::text AS id, name, start_date FROM hearth.meal_plans "
+                "WHERE id = $1::uuid",
+                plan_id,
+            )
+            if plan is None:
                 return f"Meal plan {plan_id} not found."
-            entries = conn.execute(
-                "SELECT e.id, e.recipe_id, e.plan_date, e.slot, e.portions, r.name AS recipe_name "
-                "FROM meal_plan_entries e LEFT JOIN recipes r ON r.id = e.recipe_id "
-                "WHERE e.meal_plan_id = ? ORDER BY e.plan_date, e.slot",
-                [plan_id],
-            ).fetchall()
+            entries = await conn.fetch(
+                """
+                SELECT e.id::text AS id, e.recipe_id::text AS recipe_id,
+                       e.plan_date, e.slot, e.portions, r.name AS recipe_name
+                FROM hearth.meal_plan_entries e
+                LEFT JOIN hearth.recipes r ON r.id = e.recipe_id
+                WHERE e.meal_plan_id = $1::uuid
+                ORDER BY e.plan_date, e.slot
+                """,
+                plan_id,
+            )
 
-        lines = [f"Plan id={plan['id']} | {plan['name']} (starts {plan['start_date']})"]
+        lines = [
+            f"Plan id={plan['id']} | {plan['name']} "
+            f"(starts {plan['start_date'].isoformat() if plan['start_date'] else ''})"
+        ]
         if not entries:
             lines.append("  (no entries yet)")
         for e in entries:
             slot = e["slot"] or "-"
             lines.append(
-                f"  entry_id={e['id']} | {e['plan_date']} {slot}: {e['recipe_name'] or '???'} "
-                f"(recipe_id={e['recipe_id']}, portions={e['portions']})"
+                f"  entry_id={e['id']} | "
+                f"{e['plan_date'].isoformat() if e['plan_date'] else ''} {slot}: "
+                f"{e['recipe_name'] or '???'} "
+                f"(recipe_id={e['recipe_id']}, portions={float(e['portions'])})"
             )
         return "\n".join(lines)
 
     @agent.tool_plain
     def search_pantry(query: str) -> str:
-        """Search the curated pantry (dbt seed ∪ user pantry) for ingredients."""
+        """Search the curated pantry (cache-backed) for ingredients."""
         meta = load_all_curated_meta()
         ql = query.lower()
         hits = [
@@ -157,47 +167,47 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def search_usda(query: str, limit: int = 25) -> str:
+    async def search_usda(query: str, limit: int = 25) -> str:
         """Search the full USDA database (~8k items) by name."""
         like = f"%{query.lower()}%"
-        with get_connection() as conn:
-            rows = conn.execute(
-                "SELECT fdc_id, name, food_group FROM usda.ingredients "
-                "WHERE lower(name) LIKE ? ORDER BY length(name), name LIMIT ?",
-                [like, limit],
-            ).fetchall()
+        async with user_tx(user) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT fdc_id, description, food_group FROM hearth.usda_ingredients
+                WHERE lower(description) LIKE $1
+                ORDER BY length(description), description LIMIT $2
+                """,
+                like, limit,
+            )
         if not rows:
             return f"No USDA ingredient matches '{query}'."
         return "\n".join(
-            f"fdc_id={r[0]} | {r[1]} (group: {r[2]})" for r in rows
+            f"fdc_id={r['fdc_id']} | {r['description']} (group: {r['food_group']})"
+            for r in rows
         )
 
     @agent.tool_plain
-    def get_profile() -> str:
+    async def get_profile() -> str:
         """Read the household profile — dietary needs, likes/dislikes, etc."""
         from api.profile import load_profile, render_profile_context
-        return render_profile_context(load_profile(household_id))
+        return render_profile_context(await load_profile(household_id))
 
     @agent.tool_plain
-    def household_summary() -> str:
+    async def household_summary() -> str:
         """State-of-the-app summary: counts of recipes, meal plans, pantry items."""
-        with get_recipe_db() as conn:
-            n_recipes = conn.execute(
-                "SELECT COUNT(*) AS c FROM recipes WHERE household_id = ?",
-                [household_id],
-            ).fetchone()["c"]
-            n_plans = conn.execute(
-                "SELECT COUNT(*) AS c FROM meal_plans WHERE household_id = ?",
-                [household_id],
-            ).fetchone()["c"]
-            n_pantry = conn.execute("SELECT COUNT(*) AS c FROM pantry_ingredients").fetchone()["c"]
+        async with user_tx(user) as conn:
+            n_recipes = await conn.fetchval(
+                "SELECT COUNT(*) FROM hearth.recipes"
+            )
+            n_plans = await conn.fetchval(
+                "SELECT COUNT(*) FROM hearth.meal_plans"
+            )
         n_curated = len(load_all_curated_meta())
         return (
             f"Household summary:\n"
             f"  saved recipes: {n_recipes}\n"
             f"  meal plans: {n_plans}\n"
-            f"  pantry: {n_curated} ingredients ({n_pantry} user-promoted, "
-            f"{n_curated - n_pantry} from curated seed)"
+            f"  pantry: {n_curated} ingredients (curated catalog)"
         )
 
     # =========================================================
@@ -209,15 +219,15 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         return f"Proposed (id={pid}): {summary}. Waiting for the user to accept."
 
     @agent.tool_plain
-    def propose_rename_recipe(recipe_id: str, new_name: str) -> str:
+    async def propose_rename_recipe(recipe_id: str, new_name: str) -> str:
         """PROPOSE renaming a saved recipe. Does NOT apply the change — the user
         must accept it in the UI."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-        if not row:
+        async with user_tx(user) as conn:
+            row = await conn.fetchrow(
+                "SELECT name FROM hearth.recipes WHERE id = $1::uuid",
+                recipe_id,
+            )
+        if row is None:
             return f"Recipe {recipe_id} not found."
         return _preview(
             "recipe.rename",
@@ -226,14 +236,14 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def propose_update_recipe_servings(recipe_id: str, servings: int) -> str:
+    async def propose_update_recipe_servings(recipe_id: str, servings: int) -> str:
         """PROPOSE changing a recipe's base serving count."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-        if not row:
+        async with user_tx(user) as conn:
+            row = await conn.fetchrow(
+                "SELECT name FROM hearth.recipes WHERE id = $1::uuid",
+                recipe_id,
+            )
+        if row is None:
             return f"Recipe {recipe_id} not found."
         return _preview(
             "recipe.servings",
@@ -242,14 +252,14 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def propose_delete_recipe(recipe_id: str) -> str:
+    async def propose_delete_recipe(recipe_id: str) -> str:
         """PROPOSE deleting a recipe."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-        if not row:
+        async with user_tx(user) as conn:
+            row = await conn.fetchrow(
+                "SELECT name FROM hearth.recipes WHERE id = $1::uuid",
+                recipe_id,
+            )
+        if row is None:
             return f"Recipe {recipe_id} not found."
         return _preview(
             "recipe.delete",
@@ -279,14 +289,14 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def propose_delete_meal_plan(plan_id: str) -> str:
+    async def propose_delete_meal_plan(plan_id: str) -> str:
         """PROPOSE deleting a meal plan."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT name FROM meal_plans WHERE id = ? AND household_id = ?",
-                [plan_id, household_id],
-            ).fetchone()
-        if not row:
+        async with user_tx(user) as conn:
+            row = await conn.fetchrow(
+                "SELECT name FROM hearth.meal_plans WHERE id = $1::uuid",
+                plan_id,
+            )
+        if row is None:
             return f"Meal plan {plan_id} not found."
         return _preview(
             "plan.delete",
@@ -295,27 +305,28 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def propose_add_meal_to_plan(
+    async def propose_add_meal_to_plan(
         plan_id: str, recipe_id: str, plan_date: str,
         slot: str = "dinner", portions: float = 1,
     ) -> str:
         """PROPOSE adding a recipe to a meal plan on a specific date and slot."""
-        with get_recipe_db() as conn:
-            plan = conn.execute(
-                "SELECT name FROM meal_plans WHERE id = ? AND household_id = ?",
-                [plan_id, household_id],
-            ).fetchone()
-            if not plan:
+        async with user_tx(user) as conn:
+            plan = await conn.fetchrow(
+                "SELECT name FROM hearth.meal_plans WHERE id = $1::uuid",
+                plan_id,
+            )
+            if plan is None:
                 return f"Meal plan {plan_id} not found."
-            recipe = conn.execute(
-                "SELECT name FROM recipes WHERE id = ? AND household_id = ?",
-                [recipe_id, household_id],
-            ).fetchone()
-            if not recipe:
+            recipe = await conn.fetchrow(
+                "SELECT name FROM hearth.recipes WHERE id = $1::uuid",
+                recipe_id,
+            )
+            if recipe is None:
                 return f"Recipe {recipe_id} not found."
         return _preview(
             "plan.add_entry",
-            f"Add '{recipe['name']}' to '{plan['name']}' on {plan_date} {slot} ({portions} portions)",
+            f"Add '{recipe['name']}' to '{plan['name']}' on "
+            f"{plan_date} {slot} ({portions} portions)",
             {
                 "plan_id": plan_id, "recipe_id": recipe_id, "plan_date": plan_date,
                 "slot": slot, "portions": float(portions),
@@ -323,33 +334,40 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         )
 
     @agent.tool_plain
-    def propose_remove_meal_from_plan(entry_id: str) -> str:
+    async def propose_remove_meal_from_plan(entry_id: str) -> str:
         """PROPOSE removing a single entry from a meal plan."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT e.plan_date, e.slot, r.name AS recipe_name "
-                "FROM meal_plan_entries e LEFT JOIN recipes r ON r.id = e.recipe_id "
-                "WHERE e.id = ?",
-                [entry_id],
-            ).fetchone()
-        if not row:
+        async with user_tx(user) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT e.plan_date, e.slot, r.name AS recipe_name
+                FROM hearth.meal_plan_entries e
+                LEFT JOIN hearth.recipes r ON r.id = e.recipe_id
+                WHERE e.id = $1::uuid
+                """,
+                entry_id,
+            )
+        if row is None:
             return f"Entry {entry_id} not found."
         return _preview(
             "plan.remove_entry",
-            f"Remove '{row['recipe_name']}' from {row['plan_date']} {row['slot']}",
+            f"Remove '{row['recipe_name']}' from "
+            f"{row['plan_date'].isoformat() if row['plan_date'] else ''} {row['slot']}",
             {"entry_id": entry_id},
         )
 
     @agent.tool_plain
-    def propose_update_entry_portions(entry_id: str, portions: float) -> str:
+    async def propose_update_entry_portions(entry_id: str, portions: float) -> str:
         """PROPOSE changing the portions on a meal plan entry."""
-        with get_recipe_db() as conn:
-            row = conn.execute(
-                "SELECT r.name AS recipe_name FROM meal_plan_entries e "
-                "LEFT JOIN recipes r ON r.id = e.recipe_id WHERE e.id = ?",
-                [entry_id],
-            ).fetchone()
-        if not row:
+        async with user_tx(user) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT r.name AS recipe_name FROM hearth.meal_plan_entries e
+                LEFT JOIN hearth.recipes r ON r.id = e.recipe_id
+                WHERE e.id = $1::uuid
+                """,
+                entry_id,
+            )
+        if row is None:
             return f"Entry {entry_id} not found."
         return _preview(
             "plan.update_portions",
@@ -364,12 +382,7 @@ def register_all(agent, household_id: str, proposer: PendingProposer) -> None:
         Supported fields: family_size (int), dietary/allergies/dislikes/likes/
         cuisines/kitchen_equipment (comma-separated list), typical_cook_time_min
         (int minutes), batch_cook_preference ('none'|'moderate'|'heavy'),
-        budget_level ('thrifty'|'moderate'|'splurge').
-
-        Only set typical_cook_time_min/family_size when you have a concrete
-        number. If the user describes cooking qualitatively ('easy', 'quick',
-        'simple'), that is NOT a time — record it with propose_profile_note or
-        ask for a number instead."""
+        budget_level ('thrifty'|'moderate'|'splurge')."""
         try:
             coerced = coerce_profile_value(field, value)
         except ValueError as e:

@@ -1,23 +1,26 @@
 """Household profile — structured + free-form context that the assistant uses
 to personalise recipes and meal plans.
 
-Fields are intentionally loose (all optional) so the profile can grow via chat
-without needing schema migrations. Structured fields are used for filtering
-(e.g. `dietary=["vegetarian"]` hard-constrains recipes), while `notes` captures
-things the assistant picks up over time ("they hate rice but love bulgur").
+Storage: `hearth.household_profiles` (one row per household, `data` is JSONB).
+asyncpg's jsonb codec (registered in db.py) auto-encodes/decodes Python dicts,
+so we just hand it `profile.model_dump()` on write and receive a dict on read.
+
+Reads use `service_tx` because the helpers (load_profile, _save_profile) are
+called from non-handler code (chat agent tools, meal-plan generator, pending
+action executors) where we don't have a CurrentUser to thread through. Service
+role bypasses RLS; safety comes from the caller passing a household_id that
+came from `get_current_household_id` (which itself validates membership).
 """
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from api.db import get_current_household_id
-from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db
+from api.db import get_current_household_id, service_tx
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -25,12 +28,6 @@ router = APIRouter(prefix="/profile", tags=["profile"])
 # ============================================================
 # Shape
 # ============================================================
-
-# Fields the assistant can read and update. All optional — a brand-new household
-# starts empty and fills in over time.
-#
-# Keep keys stable: tools reference them by name. Add new ones freely, but don't
-# rename existing ones without migrating `household_profiles.data` JSON blobs.
 
 PROFILE_FIELDS: dict[str, str] = {
     "family_size": "How many people the household regularly cooks for.",
@@ -45,8 +42,6 @@ PROFILE_FIELDS: dict[str, str] = {
     "budget_level": "'thrifty' | 'moderate' | 'splurge'.",
 }
 
-# Per-field types, used to coerce/validate values coming from the chat agent
-# (which passes everything as free-text strings).
 LIST_FIELDS = {"dietary", "allergies", "dislikes", "likes", "cuisines", "kitchen_equipment"}
 INT_FIELDS = {"family_size", "typical_cook_time_min"}
 ENUM_FIELDS: dict[str, set[str]] = {
@@ -73,7 +68,7 @@ def coerce_profile_value(field: str, value: Any) -> Any:
         try:
             return int(s)
         except (ValueError, TypeError):
-            m = re.search(r"\d+", s)  # tolerate "30 minutes", "~45 min"
+            m = re.search(r"\d+", s)
             if m:
                 return int(m.group())
             unit = " of minutes" if field == "typical_cook_time_min" else ""
@@ -105,40 +100,43 @@ class HouseholdProfile(BaseModel):
 
 
 # ============================================================
-# Helpers (used by chat.py, meal_plans.py, agent_tools.py)
+# Helpers (used by chat.py, meal_plans.py, agent_tools.py, pending_actions.py)
 # ============================================================
 
 
-def load_profile(household_id: str = DEFAULT_HOUSEHOLD_ID) -> HouseholdProfile:
-    with get_recipe_db() as conn:
-        row = conn.execute(
-            "SELECT data, updated_at FROM household_profiles WHERE household_id = ?",
-            [household_id],
-        ).fetchone()
-    if not row:
+async def load_profile(household_id: str) -> HouseholdProfile:
+    async with service_tx() as conn:
+        row = await conn.fetchrow(
+            "SELECT data, updated_at FROM hearth.household_profiles "
+            "WHERE household_id = $1::uuid",
+            household_id,
+        )
+    if row is None:
         return HouseholdProfile()
-    try:
-        data = json.loads(row["data"]) if row["data"] else {}
-    except (json.JSONDecodeError, TypeError):
-        data = {}
-    data["updated_at"] = row["updated_at"]
+    data = dict(row["data"]) if row["data"] else {}
+    if row["updated_at"] is not None:
+        data["updated_at"] = row["updated_at"].isoformat()
     try:
         return HouseholdProfile(**data)
     except Exception:
-        # If schema drifted, return an empty one rather than error out
-        return HouseholdProfile(notes=data.get("notes", []))
+        # Schema drift safety net.
+        return HouseholdProfile(notes=data.get("notes", []) or [])
 
 
-def _save_profile(household_id: str, profile: HouseholdProfile) -> HouseholdProfile:
+async def _save_profile(household_id: str, profile: HouseholdProfile) -> HouseholdProfile:
     payload = profile.model_dump(exclude={"updated_at"})
-    with get_recipe_db() as conn:
-        conn.execute(
-            "INSERT INTO household_profiles (household_id, data) VALUES (?, ?) "
-            "ON CONFLICT(household_id) DO UPDATE SET "
-            "data = excluded.data, updated_at = CURRENT_TIMESTAMP",
-            [household_id, json.dumps(payload)],
+    async with service_tx() as conn:
+        await conn.execute(
+            """
+            INSERT INTO hearth.household_profiles (household_id, data)
+            VALUES ($1::uuid, $2::jsonb)
+            ON CONFLICT (household_id) DO UPDATE SET
+                data = excluded.data,
+                updated_at = now()
+            """,
+            household_id, payload,
         )
-    return load_profile(household_id)
+    return await load_profile(household_id)
 
 
 def render_profile_context(profile: HouseholdProfile, max_notes: int = 20) -> str:
@@ -174,7 +172,6 @@ def render_profile_context(profile: HouseholdProfile, max_notes: int = 20) -> st
 
 
 def is_profile_sparse(profile: HouseholdProfile) -> bool:
-    """True if we don't know much about the user — triggers discovery behaviour."""
     known = sum(
         1 for v in (
             profile.family_size, profile.dietary, profile.allergies,
@@ -209,13 +206,16 @@ class ProfilePatch(BaseModel):
 
 
 @router.get("", response_model=HouseholdProfile)
-def get_profile(household_id: str = Depends(get_current_household_id)):
-    return load_profile(household_id)
+async def get_profile(household_id: str = Depends(get_current_household_id)):
+    return await load_profile(household_id)
 
 
 @router.patch("", response_model=HouseholdProfile)
-def patch_profile(body: ProfilePatch, household_id: str = Depends(get_current_household_id)):
-    current = load_profile(household_id)
+async def patch_profile(
+    body: ProfilePatch,
+    household_id: str = Depends(get_current_household_id),
+):
+    current = await load_profile(household_id)
     data = current.model_dump(exclude={"updated_at"})
 
     updates: dict[str, Any] = body.model_dump(exclude_none=True)
@@ -227,11 +227,14 @@ def patch_profile(body: ProfilePatch, household_id: str = Depends(get_current_ho
         existing.extend(appended)
         data["notes"] = existing
 
-    return _save_profile(household_id, HouseholdProfile(**data))
+    return await _save_profile(household_id, HouseholdProfile(**data))
 
 
 @router.delete("", status_code=204)
-def reset_profile(household_id: str = Depends(get_current_household_id)):
-    with get_recipe_db() as conn:
-        conn.execute("DELETE FROM household_profiles WHERE household_id = ?", [household_id])
+async def reset_profile(household_id: str = Depends(get_current_household_id)):
+    async with service_tx() as conn:
+        await conn.execute(
+            "DELETE FROM hearth.household_profiles WHERE household_id = $1::uuid",
+            household_id,
+        )
     return None

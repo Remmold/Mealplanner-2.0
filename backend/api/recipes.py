@@ -1,16 +1,13 @@
-"""Recipe CRUD endpoints (SQLite-backed for now, scoped to the authenticated household).
+"""Recipe CRUD endpoints (Postgres-backed; RLS-scoped per household)."""
 
-The user's household_id is resolved from their JWT via Depends(get_current_household_id),
-not from a query parameter. SQLite stays the storage for v1; the Postgres
-migration of recipe data is its own task.
-"""
-
-import json
-import sqlite3
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.db import get_current_household_id, get_pool
+import asyncpg
+
+from api.auth import CurrentUser, get_current_user
+from api.db import get_current_household_id, user_tx
 from api.models import (
     GenerateRecipeRequest,
     GeneratedRecipeOut,
@@ -19,128 +16,149 @@ from api.models import (
     RecipeOut,
     RecipeUpdate,
 )
-from api.recipe_db import get_recipe_db, new_id
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
-async def _usda_names_for(fdc_ids: list[int]) -> dict[int, str]:
-    """Fetch USDA `description` for the given fdc_ids from Postgres."""
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+
+
+async def _usda_names_for(
+    conn: asyncpg.Connection, fdc_ids: list[int]
+) -> dict[int, str]:
     if not fdc_ids:
         return {}
-    pool = get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT fdc_id, description FROM hearth.usda_ingredients WHERE fdc_id = ANY($1::int[])",
-            list({int(f) for f in fdc_ids}),
-        )
+    rows = await conn.fetch(
+        "SELECT fdc_id, description FROM hearth.usda_ingredients "
+        "WHERE fdc_id = ANY($1::int[])",
+        list({int(f) for f in fdc_ids}),
+    )
     return {r["fdc_id"]: r["description"] for r in rows}
 
 
-async def _load_ingredient_names(fdc_ids: list[int]) -> dict[int, str]:
-    """Look up simple_name from the curated pantry (Postgres cache),
-    falling back to USDA description. Aliases are dereferenced via the
-    cache so recipes that stored an alias fdc_id still display correctly.
-    """
+async def _load_ingredient_names(
+    conn: asyncpg.Connection, fdc_ids: list[int]
+) -> dict[int, str]:
+    """Map fdc_id -> simple_name. Curated pantry wins; USDA description falls back.
+    Aliases dereferenced via the in-memory catalog cache."""
     if not fdc_ids:
         return {}
     from api.ingredients import load_all_curated_meta, resolve_fdc_id
 
     meta = load_all_curated_meta()
-
     result: dict[int, str] = {}
+    canonicals: dict[int, int] = {}
     for fid in fdc_ids:
         canonical = resolve_fdc_id(fid)
+        canonicals[fid] = canonical
         if canonical in meta:
             result[fid] = meta[canonical]["simple_name"]
 
     missing = [fid for fid in fdc_ids if fid not in result]
     if missing:
-        canonical_missing = [resolve_fdc_id(f) for f in missing]
-        usda_names = await _usda_names_for(canonical_missing)
-        for orig, canonical in zip(missing, canonical_missing):
-            if canonical in usda_names:
-                result[orig] = usda_names[canonical]
+        usda = await _usda_names_for(conn, [canonicals[m] for m in missing])
+        for fid in missing:
+            name = usda.get(canonicals[fid])
+            if name:
+                result[fid] = name
     return result
 
 
-async def _build_recipe_out(conn: sqlite3.Connection, recipe_id: str) -> RecipeOut:
-    row = conn.execute("SELECT * FROM recipes WHERE id = ?", [recipe_id]).fetchone()
-    if not row:
+async def _build_recipe_out(
+    conn: asyncpg.Connection, recipe_id: str
+) -> RecipeOut:
+    row = await conn.fetchrow(
+        "SELECT id, household_id, name, instructions, servings, "
+        "image_path, created_at, updated_at "
+        "FROM hearth.recipes WHERE id = $1::uuid",
+        recipe_id,
+    )
+    if row is None:
         raise HTTPException(404, "Recipe not found")
 
-    db_ingredients = conn.execute(
-        "SELECT fdc_id, quantity_g FROM recipe_ingredients WHERE recipe_id = ? ORDER BY rowid",
-        [recipe_id],
-    ).fetchall()
+    ing_rows = await conn.fetch(
+        "SELECT fdc_id, quantity_g FROM hearth.recipe_ingredients "
+        "WHERE recipe_id = $1::uuid ORDER BY id",
+        recipe_id,
+    )
 
-    fdc_ids = [ing["fdc_id"] for ing in db_ingredients]
-    names = await _load_ingredient_names(fdc_ids)
+    fdc_ids = [r["fdc_id"] for r in ing_rows]
+    names = await _load_ingredient_names(conn, fdc_ids)
 
-    try:
-        instructions = json.loads(row["instructions"]) if row["instructions"] else []
-    except (json.JSONDecodeError, TypeError):
-        instructions = []
+    # instructions is jsonb; the codec returns a Python list directly.
+    instructions = row["instructions"] if isinstance(row["instructions"], list) else []
 
     return RecipeOut(
-        id=row["id"],
-        household_id=row["household_id"],
+        id=str(row["id"]),
+        household_id=str(row["household_id"]),
         name=row["name"],
         ingredients=[
             RecipeIngredientOut(
-                fdc_id=ing["fdc_id"],
-                quantity_g=ing["quantity_g"],
-                ingredient_name=names.get(ing["fdc_id"]),
+                fdc_id=r["fdc_id"],
+                quantity_g=float(r["quantity_g"]),
+                ingredient_name=names.get(r["fdc_id"]),
             )
-            for ing in db_ingredients
+            for r in ing_rows
         ],
         instructions=instructions,
-        servings=row["servings"] if "servings" in row.keys() else 4,
-        image_path=row["image_path"] if "image_path" in row.keys() else None,
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
+        servings=row["servings"],
+        image_path=row["image_path"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
     )
 
 
-async def _enforce_recipe_in_household(
-    conn: sqlite3.Connection, recipe_id: str, household_id: str
+async def _ensure_recipe_visible(
+    conn: asyncpg.Connection, recipe_id: str
 ) -> None:
-    row = conn.execute(
-        "SELECT household_id FROM recipes WHERE id = ?", [recipe_id]
-    ).fetchone()
-    if not row:
+    """RLS already hides cross-household recipes, but a SELECT returning zero
+    rows looks the same as 'recipe not found' — give the caller a clean 404."""
+    exists = await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM hearth.recipes WHERE id = $1::uuid)",
+        recipe_id,
+    )
+    if not exists:
         raise HTTPException(404, "Recipe not found")
-    if row["household_id"] != household_id:
-        raise HTTPException(403, "Recipe belongs to a different household")
+
+
+# ----------------------------------------------------------------------------
+# Endpoints
+# ----------------------------------------------------------------------------
 
 
 @router.get("", response_model=list[RecipeOut])
-async def list_recipes(household_id: str = Depends(get_current_household_id)):
-    with get_recipe_db() as conn:
-        rows = conn.execute(
-            "SELECT id FROM recipes WHERE household_id = ? ORDER BY updated_at DESC",
-            [household_id],
-        ).fetchall()
-        return [await _build_recipe_out(conn, row["id"]) for row in rows]
+async def list_recipes(user: CurrentUser = Depends(get_current_user)):
+    async with user_tx(user) as conn:
+        rows = await conn.fetch(
+            "SELECT id::text AS id FROM hearth.recipes ORDER BY updated_at DESC"
+        )
+        return [await _build_recipe_out(conn, r["id"]) for r in rows]
 
 
 @router.post("", response_model=RecipeOut, status_code=201)
 async def create_recipe(
     body: RecipeCreate,
+    user: CurrentUser = Depends(get_current_user),
     household_id: str = Depends(get_current_household_id),
 ):
-    recipe_id = new_id()
-
-    with get_recipe_db() as conn:
-        conn.execute(
-            "INSERT INTO recipes (id, household_id, name, instructions, servings) "
-            "VALUES (?, ?, ?, ?, ?)",
-            [recipe_id, household_id, body.name, json.dumps(body.instructions), body.servings],
+    async with user_tx(user) as conn:
+        new_row = await conn.fetchrow(
+            """
+            INSERT INTO hearth.recipes (household_id, name, instructions, servings)
+            VALUES ($1::uuid, $2, $3::jsonb, $4)
+            RETURNING id::text AS id
+            """,
+            household_id, body.name, body.instructions, body.servings,
         )
+        recipe_id = new_row["id"]
+
         for ing in body.ingredients:
-            conn.execute(
-                "INSERT INTO recipe_ingredients (id, recipe_id, fdc_id, quantity_g) VALUES (?, ?, ?, ?)",
-                [new_id(), recipe_id, ing.fdc_id, ing.quantity_g],
+            await conn.execute(
+                "INSERT INTO hearth.recipe_ingredients (recipe_id, fdc_id, quantity_g) "
+                "VALUES ($1::uuid, $2, $3)",
+                recipe_id, ing.fdc_id, ing.quantity_g,
             )
         return await _build_recipe_out(conn, recipe_id)
 
@@ -175,10 +193,10 @@ async def generate_recipe_endpoint(
 @router.get("/{recipe_id}", response_model=RecipeOut)
 async def get_recipe(
     recipe_id: str,
-    household_id: str = Depends(get_current_household_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    with get_recipe_db() as conn:
-        await _enforce_recipe_in_household(conn, recipe_id, household_id)
+    async with user_tx(user) as conn:
+        await _ensure_recipe_visible(conn, recipe_id)
         return await _build_recipe_out(conn, recipe_id)
 
 
@@ -186,40 +204,46 @@ async def get_recipe(
 async def update_recipe(
     recipe_id: str,
     body: RecipeUpdate,
-    household_id: str = Depends(get_current_household_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    with get_recipe_db() as conn:
-        await _enforce_recipe_in_household(conn, recipe_id, household_id)
+    async with user_tx(user) as conn:
+        await _ensure_recipe_visible(conn, recipe_id)
 
         if body.name is not None:
-            conn.execute(
-                "UPDATE recipes SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [body.name, recipe_id],
+            await conn.execute(
+                "UPDATE hearth.recipes SET name = $1, updated_at = now() "
+                "WHERE id = $2::uuid",
+                body.name, recipe_id,
             )
 
         if body.instructions is not None:
-            conn.execute(
-                "UPDATE recipes SET instructions = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [json.dumps(body.instructions), recipe_id],
+            await conn.execute(
+                "UPDATE hearth.recipes SET instructions = $1::jsonb, updated_at = now() "
+                "WHERE id = $2::uuid",
+                body.instructions, recipe_id,
             )
 
         if body.servings is not None:
-            conn.execute(
-                "UPDATE recipes SET servings = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [body.servings, recipe_id],
+            await conn.execute(
+                "UPDATE hearth.recipes SET servings = $1, updated_at = now() "
+                "WHERE id = $2::uuid",
+                body.servings, recipe_id,
             )
 
         if body.ingredients is not None:
-            conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id = ?", [recipe_id])
+            await conn.execute(
+                "DELETE FROM hearth.recipe_ingredients WHERE recipe_id = $1::uuid",
+                recipe_id,
+            )
             for ing in body.ingredients:
-                conn.execute(
-                    "INSERT INTO recipe_ingredients (id, recipe_id, fdc_id, quantity_g) "
-                    "VALUES (?, ?, ?, ?)",
-                    [new_id(), recipe_id, ing.fdc_id, ing.quantity_g],
+                await conn.execute(
+                    "INSERT INTO hearth.recipe_ingredients (recipe_id, fdc_id, quantity_g) "
+                    "VALUES ($1::uuid, $2, $3)",
+                    recipe_id, ing.fdc_id, ing.quantity_g,
                 )
-            conn.execute(
-                "UPDATE recipes SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [recipe_id],
+            await conn.execute(
+                "UPDATE hearth.recipes SET updated_at = now() WHERE id = $1::uuid",
+                recipe_id,
             )
 
         return await _build_recipe_out(conn, recipe_id)
@@ -228,8 +252,11 @@ async def update_recipe(
 @router.delete("/{recipe_id}", status_code=204)
 async def delete_recipe(
     recipe_id: str,
-    household_id: str = Depends(get_current_household_id),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    with get_recipe_db() as conn:
-        await _enforce_recipe_in_household(conn, recipe_id, household_id)
-        conn.execute("DELETE FROM recipes WHERE id = ?", [recipe_id])
+    async with user_tx(user) as conn:
+        await _ensure_recipe_visible(conn, recipe_id)
+        await conn.execute(
+            "DELETE FROM hearth.recipes WHERE id = $1::uuid",
+            recipe_id,
+        )

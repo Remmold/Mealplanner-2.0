@@ -1,144 +1,214 @@
-"""Meal plan CRUD + shopping list generation from a plan + AI weekly generator."""
+"""Meal plan CRUD + shopping list generation from a plan + AI weekly generator
+(Postgres-backed, RLS-scoped per household)."""
+
+from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-log = logging.getLogger("mealplan.generate")
-
+import asyncpg
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from api.db import get_current_household_id
+from api.auth import CurrentUser, get_current_user
+from api.db import get_current_household_id, user_tx
 from api.models import (
     MealPlanCreate,
     MealPlanEntryOut,
     MealPlanOut,
     MealPlanUpdate,
     ShoppingListOut,
+    ShoppingRecipeSelection,
 )
-from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db, new_id
-from api.shopping import generate_shopping_list
-from api.models import ShoppingRecipeSelection
 
+log = logging.getLogger("mealplan.generate")
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 router = APIRouter(prefix="/meal-plans", tags=["meal-plans"])
 
 
-def _build_plan_out(conn, plan_id: str) -> MealPlanOut:
-    row = conn.execute("SELECT * FROM meal_plans WHERE id = ?", [plan_id]).fetchone()
-    if not row:
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+
+
+async def _build_plan_out(conn: asyncpg.Connection, plan_id: str) -> MealPlanOut:
+    row = await conn.fetchrow(
+        "SELECT id, household_id, name, start_date, created_at, updated_at "
+        "FROM hearth.meal_plans WHERE id = $1::uuid",
+        plan_id,
+    )
+    if row is None:
         raise HTTPException(404, "Meal plan not found")
 
-    entries = conn.execute(
-        "SELECT e.id, e.recipe_id, e.plan_date, e.slot, e.portions, r.name AS recipe_name "
-        "FROM meal_plan_entries e "
-        "LEFT JOIN recipes r ON r.id = e.recipe_id "
-        "WHERE e.meal_plan_id = ? "
-        "ORDER BY e.plan_date, e.slot",
-        [plan_id],
-    ).fetchall()
+    entries = await conn.fetch(
+        """
+        SELECT e.id, e.recipe_id, e.plan_date, e.slot, e.portions, r.name AS recipe_name
+        FROM hearth.meal_plan_entries e
+        LEFT JOIN hearth.recipes r ON r.id = e.recipe_id
+        WHERE e.meal_plan_id = $1::uuid
+        ORDER BY e.plan_date, e.slot
+        """,
+        plan_id,
+    )
 
     return MealPlanOut(
-        id=row["id"],
-        household_id=row["household_id"],
+        id=str(row["id"]),
+        household_id=str(row["household_id"]),
         name=row["name"],
-        start_date=row["start_date"],
+        start_date=row["start_date"].isoformat() if row["start_date"] else "",
         entries=[
             MealPlanEntryOut(
-                id=e["id"],
-                recipe_id=e["recipe_id"],
+                id=str(e["id"]),
+                recipe_id=str(e["recipe_id"]),
                 recipe_name=e["recipe_name"],
-                plan_date=e["plan_date"],
+                plan_date=e["plan_date"].isoformat() if e["plan_date"] else "",
                 slot=e["slot"],
-                portions=e["portions"],
+                portions=float(e["portions"]),
             )
             for e in entries
         ],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
     )
 
 
-def _replace_entries(conn, plan_id: str, entries):
-    conn.execute("DELETE FROM meal_plan_entries WHERE meal_plan_id = ?", [plan_id])
+async def _replace_entries(
+    conn: asyncpg.Connection,
+    plan_id: str,
+    entries,
+) -> None:
+    await conn.execute(
+        "DELETE FROM hearth.meal_plan_entries WHERE meal_plan_id = $1::uuid",
+        plan_id,
+    )
     for e in entries:
-        conn.execute(
-            "INSERT INTO meal_plan_entries (id, meal_plan_id, recipe_id, plan_date, slot, portions) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [new_id(), plan_id, e.recipe_id, e.plan_date, e.slot, e.portions],
+        await conn.execute(
+            """
+            INSERT INTO hearth.meal_plan_entries
+                (meal_plan_id, recipe_id, plan_date, slot, portions)
+            VALUES ($1::uuid, $2::uuid, $3::date, $4, $5)
+            """,
+            plan_id, e.recipe_id, e.plan_date, e.slot, e.portions,
         )
+
+
+async def _ensure_plan_visible(conn: asyncpg.Connection, plan_id: str) -> None:
+    exists = await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM hearth.meal_plans WHERE id = $1::uuid)",
+        plan_id,
+    )
+    if not exists:
+        raise HTTPException(404, "Meal plan not found")
+
+
+async def _list_existing_recipes_for_planner(
+    conn: asyncpg.Connection,
+) -> str:
+    # RLS already scopes us to the user's household.
+    rows = await conn.fetch(
+        "SELECT id, name, servings FROM hearth.recipes "
+        "ORDER BY updated_at DESC LIMIT 200"
+    )
+    if not rows:
+        return "(no saved recipes — every meal must be generated fresh)"
+    return "\n".join(
+        f"id={r['id']} | {r['name']} (serves {r['servings']})" for r in rows
+    )
+
+
+# ----------------------------------------------------------------------------
+# Plan CRUD
+# ----------------------------------------------------------------------------
 
 
 @router.get("", response_model=list[MealPlanOut])
-def list_meal_plans(household_id: str = Depends(get_current_household_id)):
-    with get_recipe_db() as conn:
-        rows = conn.execute(
-            "SELECT id FROM meal_plans WHERE household_id = ? ORDER BY start_date DESC",
-            [household_id],
-        ).fetchall()
-        return [_build_plan_out(conn, r["id"]) for r in rows]
+async def list_meal_plans(user: CurrentUser = Depends(get_current_user)):
+    async with user_tx(user) as conn:
+        rows = await conn.fetch(
+            "SELECT id::text AS id FROM hearth.meal_plans ORDER BY start_date DESC"
+        )
+        return [await _build_plan_out(conn, r["id"]) for r in rows]
 
 
 @router.post("", response_model=MealPlanOut, status_code=201)
-def create_meal_plan(body: MealPlanCreate, household_id: str = Depends(get_current_household_id)):
-    plan_id = new_id()
-    with get_recipe_db() as conn:
-        conn.execute(
-            "INSERT INTO meal_plans (id, household_id, name, start_date) VALUES (?, ?, ?, ?)",
-            [plan_id, household_id, body.name, body.start_date],
+async def create_meal_plan(
+    body: MealPlanCreate,
+    user: CurrentUser = Depends(get_current_user),
+    household_id: str = Depends(get_current_household_id),
+):
+    async with user_tx(user) as conn:
+        new_row = await conn.fetchrow(
+            """
+            INSERT INTO hearth.meal_plans (household_id, name, start_date)
+            VALUES ($1::uuid, $2, $3::date)
+            RETURNING id::text AS id
+            """,
+            household_id, body.name, body.start_date,
         )
-        _replace_entries(conn, plan_id, body.entries)
-        return _build_plan_out(conn, plan_id)
+        plan_id = new_row["id"]
+        await _replace_entries(conn, plan_id, body.entries)
+        return await _build_plan_out(conn, plan_id)
 
 
 @router.get("/{plan_id}", response_model=MealPlanOut)
-def get_meal_plan(plan_id: str):
-    with get_recipe_db() as conn:
-        return _build_plan_out(conn, plan_id)
+async def get_meal_plan(
+    plan_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    async with user_tx(user) as conn:
+        await _ensure_plan_visible(conn, plan_id)
+        return await _build_plan_out(conn, plan_id)
 
 
 @router.put("/{plan_id}", response_model=MealPlanOut)
-def update_meal_plan(plan_id: str, body: MealPlanUpdate):
-    with get_recipe_db() as conn:
-        existing = conn.execute("SELECT id FROM meal_plans WHERE id = ?", [plan_id]).fetchone()
-        if not existing:
-            raise HTTPException(404, "Meal plan not found")
+async def update_meal_plan(
+    plan_id: str,
+    body: MealPlanUpdate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    async with user_tx(user) as conn:
+        await _ensure_plan_visible(conn, plan_id)
 
         if body.name is not None:
-            conn.execute(
-                "UPDATE meal_plans SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [body.name, plan_id],
+            await conn.execute(
+                "UPDATE hearth.meal_plans SET name = $1, updated_at = now() "
+                "WHERE id = $2::uuid",
+                body.name, plan_id,
             )
         if body.start_date is not None:
-            conn.execute(
-                "UPDATE meal_plans SET start_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [body.start_date, plan_id],
+            await conn.execute(
+                "UPDATE hearth.meal_plans SET start_date = $1::date, updated_at = now() "
+                "WHERE id = $2::uuid",
+                body.start_date, plan_id,
             )
         if body.entries is not None:
-            _replace_entries(conn, plan_id, body.entries)
-            conn.execute(
-                "UPDATE meal_plans SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [plan_id],
+            await _replace_entries(conn, plan_id, body.entries)
+            await conn.execute(
+                "UPDATE hearth.meal_plans SET updated_at = now() WHERE id = $1::uuid",
+                plan_id,
             )
 
-        return _build_plan_out(conn, plan_id)
+        return await _build_plan_out(conn, plan_id)
 
 
 @router.delete("/{plan_id}", status_code=204)
-def delete_meal_plan(plan_id: str):
-    with get_recipe_db() as conn:
-        existing = conn.execute("SELECT id FROM meal_plans WHERE id = ?", [plan_id]).fetchone()
-        if not existing:
-            raise HTTPException(404, "Meal plan not found")
-        conn.execute("DELETE FROM meal_plans WHERE id = ?", [plan_id])
+async def delete_meal_plan(
+    plan_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    async with user_tx(user) as conn:
+        await _ensure_plan_visible(conn, plan_id)
+        await conn.execute(
+            "DELETE FROM hearth.meal_plans WHERE id = $1::uuid",
+            plan_id,
+        )
 
 
 # ============================================================
@@ -147,24 +217,24 @@ def delete_meal_plan(plan_id: str):
 
 
 class SlotConfig(BaseModel):
-    slot: str                              # "breakfast" | "lunch" | "dinner"
-    portions: float = 1                    # how many servings-sets per meal; >1 for batch cook
-    distinct_meals: int | None = None      # cap distinct dishes in this slot across the week
+    slot: str
+    portions: float = 1
+    distinct_meals: int | None = None
 
 
 class GenerateMealPlanRequest(BaseModel):
     prompt: str
-    start_date: str                        # ISO YYYY-MM-DD
+    start_date: str
     days: int = 7
-    servings: int = 4                      # base servings when creating new recipes
+    servings: int = 4
     slot_configs: list[SlotConfig] = [SlotConfig(slot="dinner")]
 
 
 class _PlannedMeal(BaseModel):
-    day_offset: int  # 0..days-1
-    slot: str        # "breakfast" | "lunch" | "dinner"
-    use_recipe_id: str | None = None  # if matches an existing saved recipe
-    new_recipe_prompt: str | None = None  # otherwise generate one with this prompt
+    day_offset: int
+    slot: str
+    use_recipe_id: str | None = None
+    new_recipe_prompt: str | None = None
     portions: float = 1
 
 
@@ -176,40 +246,16 @@ class _PlannedWeek(BaseModel):
 _PLAN_MODEL = os.getenv("OPENAI_RECIPE_MODEL", "openai:gpt-4o")
 
 
-def _list_existing_recipes_for_planner(household_id: str) -> str:
-    with get_recipe_db() as conn:
-        rows = conn.execute(
-            "SELECT id, name, servings FROM recipes WHERE household_id = ? "
-            "ORDER BY updated_at DESC LIMIT 200",
-            [household_id],
-        ).fetchall()
-    if not rows:
-        return "(no saved recipes — every meal must be generated fresh)"
-    return "\n".join(f"id={r['id']} | {r['name']} (serves {r['servings']})" for r in rows)
-
-
 @router.post("/generate", response_model=MealPlanOut)
 async def generate_meal_plan(
     body: GenerateMealPlanRequest,
+    user: CurrentUser = Depends(get_current_user),
     household_id: str = Depends(get_current_household_id),
 ):
-    """LLM-powered weekly plan generator.
-
-    Two-stage:
-    1. Planner agent decides what to cook each day, choosing existing recipes
-       when reasonable and proposing prompts for new ones when needed.
-    2. For every "new recipe" slot, we call the existing recipe generator
-       (concurrently is overkill — sequential keeps log readable and respects
-       OpenAI rate limits).
-    Then assemble a meal plan and persist it.
-
-    Credit accounting: places a `hold` for the worst-case cost (1 for the
-    planner + one per filled slot, capping at days * slot_configs). On
-    success we finalize the hold with the actual recipes-generated count;
-    on failure we release it so the household isn't charged for a half-baked
-    plan.
-    """
+    """LLM-powered weekly plan generator (Postgres-backed)."""
     from api.credits import finalize_hold, hold, release_hold
+    from api.image_gen import schedule_image
+    from api.profile import load_profile, render_profile_context
     from api.recipe_gen import generate_recipe
 
     if body.days < 1 or body.days > 14:
@@ -217,14 +263,10 @@ async def generate_meal_plan(
     if not body.slot_configs:
         raise HTTPException(400, "slot_configs must not be empty")
 
-    # Pre-flight credit reservation. Caps at days * slots so a 7-day, 3-slot
-    # request never claims more than 22 credits (1 planner + 21 fan-out).
     max_cost = 1.0 + float(body.days * len(body.slot_configs))
     hold_id = await hold(household_id, "weekly_plan", max_cost)
 
     slot_by_name: dict[str, SlotConfig] = {sc.slot: sc for sc in body.slot_configs}
-
-    existing_recipes_listing = _list_existing_recipes_for_planner(household_id)
 
     # Build per-slot rules for the planner prompt.
     slot_rules_lines: list[str] = []
@@ -251,38 +293,37 @@ async def generate_meal_plan(
         "You are a weekly meal planner. Given a user brief and the household's "
         "existing saved recipes, design a coherent meal plan for the requested "
         "days and slots.\n\n"
-        "Slots to fill (one _PlannedMeal per slot per day):\n"
-        f"{slot_rules}\n\n"
+        f"Slots to fill (one _PlannedMeal per slot per day):\n{slot_rules}\n\n"
         "Rules:\n"
         "- For each slot you fill, EITHER set use_recipe_id to one of the listed "
         "  saved recipes (use the exact id), OR set new_recipe_prompt to a short "
         "  description for a new recipe to be generated. Never both, never neither.\n"
         "- NEVER reuse the same recipe across different slots. Breakfast, lunch "
-        "  and dinner must be disjoint sets of dishes — a dinner recipe is not a "
-        "  breakfast recipe. Within one slot, reusing a recipe across days is "
-        "  encouraged for batch cooking.\n"
+        "  and dinner must be disjoint sets of dishes.\n"
         "- To batch-cook a dish across multiple days in the same slot: emit one "
         "  _PlannedMeal per day with the SAME use_recipe_id (or an IDENTICAL "
         "  new_recipe_prompt string — identical prompts dedup into one recipe).\n"
-        "- Reuse existing recipes when they fit the brief — don't generate "
-        "  duplicates. Variety matters: avoid the same protein two days in a row "
-        "  UNLESS the user asked for batch cooking / matlåda / meal prep.\n"
+        "- Reuse existing recipes when they fit the brief. Variety matters: avoid "
+        "  the same protein two days in a row UNLESS the user asked for batch "
+        "  cooking / matlåda / meal prep.\n"
         "- Honour dietary constraints (vegetarian, gluten-free, etc.) the user "
         "  states in the brief.\n"
-        "- new_recipe_prompt should be evocative and specific: 'Lemon-garlic cod "
-        "  with crushed potatoes' beats 'fish dinner'. Match the meal to the slot — "
-        "  breakfast prompts should be breakfast food, not dinner entrees.\n"
-        "- day_offset is 0-indexed (0 = first day).\n"
-        "- In the planner output, the `portions` field on _PlannedMeal is advisory; "
-        "  the server overrides it with the slot's configured portions anyway.\n"
-        "- plan_name should be evocative: 'Spring Mediterranean Week', not 'Plan'."
+        "- new_recipe_prompt should be evocative and specific. Match the meal "
+        "  to the slot — breakfast prompts should be breakfast food.\n"
+        "- day_offset is 0-indexed.\n"
+        "- The `portions` field on _PlannedMeal is advisory; the server overrides "
+        "  with the slot's configured portions.\n"
+        "- plan_name should be evocative."
         + matlada_hint
     )
 
     planner = Agent(_PLAN_MODEL, output_type=_PlannedWeek, system_prompt=planner_system_prompt)
 
-    from api.profile import load_profile, render_profile_context
-    profile_block = render_profile_context(load_profile(household_id))
+    # Read the household profile and existing recipes inside one transaction.
+    async with user_tx(user) as conn:
+        existing_recipes_listing = await _list_existing_recipes_for_planner(conn)
+
+    profile_block = render_profile_context(await load_profile(household_id))
 
     user_brief = (
         f"Brief: {body.prompt}\n\n"
@@ -291,13 +332,13 @@ async def generate_meal_plan(
         f"Slots are listed in the system prompt above.\n\n"
         f"--- Household profile ---\n{profile_block}\n\n"
         f"Respect the household profile strictly: never include allergens, avoid "
-        f"dislikes, lean into likes/cuisines, match their cook-time tolerance and "
-        f"batch-cook preference.\n\n"
+        f"dislikes, lean into likes/cuisines.\n\n"
         f"Existing saved recipes:\n{existing_recipes_listing}"
     )
 
     overall_start = time.monotonic()
-    log.warning("[plan-gen] stage 1 planner starting (prompt=%r, days=%d)", body.prompt[:60], body.days)
+    log.warning("[plan-gen] stage 1 planner starting (prompt=%r, days=%d)",
+                body.prompt[:60], body.days)
 
     try:
         planner_start = time.monotonic()
@@ -308,29 +349,22 @@ async def generate_meal_plan(
         )
     except Exception as e:
         log.exception("[plan-gen] planner failed")
-        # Refund the hold so the user isn't charged for a failed planner call.
         try:
             await release_hold(hold_id)
         except Exception:
             log.exception("[plan-gen] hold release failed (continuing)")
         raise HTTPException(500, f"Plan generation failed: {e}")
 
-    # Validate existing recipe ids
-    with get_recipe_db() as conn:
-        valid_ids = {
-            r["id"] for r in conn.execute(
-                "SELECT id FROM recipes WHERE household_id = ?", [household_id],
-            ).fetchall()
-        }
+    # Look up valid existing recipe ids (RLS-scoped).
+    async with user_tx(user) as conn:
+        rows = await conn.fetch("SELECT id::text AS id FROM hearth.recipes")
+        valid_ids = {r["id"] for r in rows}
 
-    # Filter to meals we'll actually use, dedup identical prompts, keep order.
-    # Also enforce "recipes are disjoint across slots" as a server-side safety net
-    # in case the planner ignores the instruction.
     valid_meals: list[_PlannedMeal] = []
-    unique_prompts: list[str] = []              # preserves order
+    unique_prompts: list[str] = []
     seen_prompts: set[str] = set()
-    prompt_to_slot: dict[str, str] = {}          # dedup prompt ↔ slot
-    recipe_id_to_slot: dict[str, str] = {}       # dedup existing-recipe ↔ slot
+    prompt_to_slot: dict[str, str] = {}
+    recipe_id_to_slot: dict[str, str] = {}
     for meal in planned.meals:
         if meal.day_offset < 0 or meal.day_offset >= body.days:
             continue
@@ -338,20 +372,16 @@ async def generate_meal_plan(
             continue
         if not meal.use_recipe_id and not meal.new_recipe_prompt:
             continue
-
-        # Enforce slot-disjointness: a recipe used for dinner can't show up in lunch.
         if meal.use_recipe_id:
             prior = recipe_id_to_slot.get(meal.use_recipe_id)
             if prior and prior != meal.slot:
-                log.warning("[plan-gen] dropping cross-slot reuse of %s (was %s, now %s)",
-                            meal.use_recipe_id, prior, meal.slot)
+                log.warning("[plan-gen] dropping cross-slot reuse of %s",
+                            meal.use_recipe_id)
                 continue
             recipe_id_to_slot[meal.use_recipe_id] = meal.slot
         if meal.new_recipe_prompt:
             prior = prompt_to_slot.get(meal.new_recipe_prompt)
             if prior and prior != meal.slot:
-                log.warning("[plan-gen] dropping cross-slot reuse of prompt %r (was %s, now %s)",
-                            meal.new_recipe_prompt[:40], prior, meal.slot)
                 continue
             prompt_to_slot[meal.new_recipe_prompt] = meal.slot
 
@@ -361,12 +391,10 @@ async def generate_meal_plan(
             unique_prompts.append(meal.new_recipe_prompt)
 
     # Stage 2: generate all needed recipes concurrently (bounded by semaphore).
-    # OpenAI gpt-4o TPM limit on this tier is 30k/min; each recipe uses 2-4k tokens.
-    # Semaphore of 3 keeps us under the TPM ceiling while still cutting total time ~3x.
     concurrency = int(os.getenv("RECIPE_GEN_CONCURRENCY", "3"))
     sem = asyncio.Semaphore(concurrency)
 
-    async def gen_one(prompt: str) -> tuple[str, object | None]:
+    async def gen_one(prompt: str):
         async with sem:
             t0 = time.monotonic()
             log.warning("[plan-gen] generating recipe: %r", prompt[:80])
@@ -385,79 +413,88 @@ async def generate_meal_plan(
             "[plan-gen] stage 2: generating %d unique recipes (concurrency=%d)",
             len(unique_prompts), concurrency,
         )
-        stage2_start = time.monotonic()
         results = await asyncio.gather(*(gen_one(p) for p in unique_prompts))
-        log.warning(
-            "[plan-gen] stage 2 done in %.1fs (%d succeeded, %d failed)",
-            time.monotonic() - stage2_start,
-            sum(1 for _, g in results if g is not None),
-            sum(1 for _, g in results if g is None),
-        )
     else:
         results = []
 
-    # Persist the new recipes and build prompt → recipe_id map.
+    # Persist the plan + new recipes + entries inside a single RLS-scoped tx.
     prompt_to_recipe_id: dict[str, str] = {}
-    plan_id = new_id()
-    with get_recipe_db() as conn:
-        conn.execute(
-            "INSERT INTO meal_plans (id, household_id, name, start_date) VALUES (?, ?, ?, ?)",
-            [plan_id, household_id, planned.plan_name, body.start_date],
-        )
-        for prompt, gen in results:
-            if gen is None:
-                continue
-            rid = new_id()
-            conn.execute(
-                "INSERT INTO recipes (id, household_id, name, instructions, servings) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [rid, household_id, gen.name, json.dumps(gen.instructions), body.servings],
+    try:
+        async with user_tx(user) as conn:
+            plan_row = await conn.fetchrow(
+                """
+                INSERT INTO hearth.meal_plans (household_id, name, start_date)
+                VALUES ($1::uuid, $2, $3::date)
+                RETURNING id::text AS id
+                """,
+                household_id, planned.plan_name, body.start_date,
             )
-            for ing in gen.ingredients:
-                conn.execute(
-                    "INSERT INTO recipe_ingredients (id, recipe_id, fdc_id, quantity_g) "
-                    "VALUES (?, ?, ?, ?)",
-                    [new_id(), rid, ing.fdc_id, ing.quantity_g],
+            plan_id = plan_row["id"]
+
+            for prompt, gen in results:
+                if gen is None:
+                    continue
+                # Use $N::jsonb for instructions
+                recipe_row = await conn.fetchrow(
+                    """
+                    INSERT INTO hearth.recipes
+                        (household_id, name, instructions, servings)
+                    VALUES ($1::uuid, $2, $3::jsonb, $4)
+                    RETURNING id::text AS id
+                    """,
+                    household_id, gen.name, gen.instructions, body.servings,
                 )
-            prompt_to_recipe_id[prompt] = rid
-            # Kick off image generation for this newly-created recipe
-            from api.image_gen import schedule_image
-            schedule_image(rid, gen.name, household_id)
+                rid = recipe_row["id"]
+                for ing in gen.ingredients:
+                    await conn.execute(
+                        "INSERT INTO hearth.recipe_ingredients "
+                        "(recipe_id, fdc_id, quantity_g) "
+                        "VALUES ($1::uuid, $2, $3)",
+                        rid, ing.fdc_id, ing.quantity_g,
+                    )
+                prompt_to_recipe_id[prompt] = rid
+                # Image gen runs detached (service_tx inside).
+                schedule_image(rid, gen.name, household_id)
 
-        # Assemble the plan entries.
-        for meal in valid_meals:
-            recipe_id: str | None = None
-            if meal.use_recipe_id and meal.use_recipe_id in valid_ids:
-                recipe_id = meal.use_recipe_id
-            elif meal.new_recipe_prompt:
-                recipe_id = prompt_to_recipe_id.get(meal.new_recipe_prompt)
+            for meal in valid_meals:
+                recipe_id: str | None = None
+                if meal.use_recipe_id and meal.use_recipe_id in valid_ids:
+                    recipe_id = meal.use_recipe_id
+                elif meal.new_recipe_prompt:
+                    recipe_id = prompt_to_recipe_id.get(meal.new_recipe_prompt)
+                if not recipe_id:
+                    continue
 
-            if not recipe_id:
-                continue
+                plan_date = (
+                    datetime.fromisoformat(body.start_date)
+                    + timedelta(days=meal.day_offset)
+                ).strftime("%Y-%m-%d")
 
-            plan_date = (
-                datetime.fromisoformat(body.start_date) + timedelta(days=meal.day_offset)
-            ).strftime("%Y-%m-%d")
+                slot_cfg = slot_by_name.get(meal.slot)
+                portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
+                await conn.execute(
+                    """
+                    INSERT INTO hearth.meal_plan_entries
+                        (meal_plan_id, recipe_id, plan_date, slot, portions)
+                    VALUES ($1::uuid, $2::uuid, $3::date, $4, $5)
+                    """,
+                    plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions),
+                )
 
-            # Per-slot portions override the planner's advisory value.
-            slot_cfg = slot_by_name.get(meal.slot)
-            portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
-            conn.execute(
-                "INSERT INTO meal_plan_entries (id, meal_plan_id, recipe_id, plan_date, slot, portions) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [new_id(), plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions)],
-            )
-
-        out = _build_plan_out(conn, plan_id)
+            out = await _build_plan_out(conn, plan_id)
+    except Exception:
+        try:
+            await release_hold(hold_id)
+        except Exception:
+            log.exception("[plan-gen] hold release on persist failure failed")
+        raise
 
     log.warning(
         "[plan-gen] DONE in %.1fs total — plan '%s' with %d entries",
         time.monotonic() - overall_start, out.name, len(out.entries),
     )
 
-    # Finalize the hold with the actual cost: 1 (planner) + one debit per
-    # successfully-generated recipe. Refund the difference.
-    actual_recipes = len([1 for _, g in results if g is not None]) if 'results' in locals() else 0
+    actual_recipes = len([1 for _, g in results if g is not None])
     actual_cost = 1.0 + float(actual_recipes)
     await finalize_hold(hold_id, actual_cost)
 
@@ -465,29 +502,23 @@ async def generate_meal_plan(
 
 
 @router.post("/{plan_id}/shopping-list", response_model=ShoppingListOut)
-def shopping_list_from_plan(
+async def shopping_list_from_plan(
     plan_id: str,
+    user: CurrentUser = Depends(get_current_user),
     household_id: str = Depends(get_current_household_id),
     include_template: bool = True,
 ):
-    """Consolidate all entries in a plan into a single shopping list.
+    """Consolidate all entries in a plan into a single shopping list."""
+    from api.shopping import generate_shopping_list
 
-    Entries for the same recipe on different days are summed, so an ingredient
-    used across three dinners shows up as one line."""
-    with get_recipe_db() as conn:
-        plan = conn.execute(
-            "SELECT id FROM meal_plans WHERE id = ? AND household_id = ?",
-            [plan_id, household_id],
-        ).fetchone()
-        if not plan:
-            raise HTTPException(404, "Meal plan not found")
+    async with user_tx(user) as conn:
+        await _ensure_plan_visible(conn, plan_id)
+        entries = await conn.fetch(
+            "SELECT recipe_id::text AS recipe_id, portions "
+            "FROM hearth.meal_plan_entries WHERE meal_plan_id = $1::uuid",
+            plan_id,
+        )
 
-        entries = conn.execute(
-            "SELECT recipe_id, portions FROM meal_plan_entries WHERE meal_plan_id = ?",
-            [plan_id],
-        ).fetchall()
-
-    # Sum portions per recipe — the shopping generator already consolidates ingredients.
     totals: dict[str, float] = {}
     for e in entries:
         totals[e["recipe_id"]] = totals.get(e["recipe_id"], 0) + float(e["portions"])
@@ -496,6 +527,9 @@ def shopping_list_from_plan(
         ShoppingRecipeSelection(recipe_id=rid, portions=pts)
         for rid, pts in totals.items()
     ]
-    return generate_shopping_list(
-        selections, household_id=household_id, include_template=include_template,
+    return await generate_shopping_list(
+        selections,
+        user=user,
+        household_id=household_id,
+        include_template=include_template,
     )

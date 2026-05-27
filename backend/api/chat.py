@@ -1,15 +1,14 @@
-"""Chat agent: lets the user manage recipes, meal plans, and the pantry via natural language.
+"""Chat agent: lets the user manage recipes, meal plans, and the pantry via
+natural language (Postgres-backed, RLS-scoped per household).
 
-Architecture:
-- One PydanticAI Agent per request (cheap to construct), with all tools registered
-  via `agent_tools.register_all`. Tools close over the household_id and an AuditLog
-  so every mutation is recorded for the UI.
-- Conversation history is persisted as JSON on `chat_sessions.message_history`
-  using PydanticAI's `ModelMessagesTypeAdapter`, so a session can be resumed
-  across requests / app restarts.
-- The send-message endpoint returns the assistant's text reply plus the list of
-  audit events, so the frontend can show "Updated 'Tuesday dinner' to ..." cards
-  and refresh affected views.
+Storage:
+- Conversation history persisted as JSONB on `hearth.chat_sessions.message_history`.
+  We round-trip through PydanticAI's `ModelMessagesTypeAdapter.dump_python`
+  (mode='json') so what we write is JSON-serializable Python (list of dicts),
+  which asyncpg's jsonb codec handles natively. Reading back, `validate_python`
+  reconstructs the typed `ModelMessage` objects.
+- The `chat_messages` table exists in the schema but isn't used yet — the
+  JSONB blob is the source of truth for now.
 """
 
 from __future__ import annotations
@@ -24,10 +23,10 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
 from api.agent_tools import register_all
-from api.db import get_current_household_id
+from api.auth import CurrentUser, get_current_user
+from api.db import get_current_household_id, user_tx
 from api.pending_actions import PendingProposer
 from api.profile import is_profile_sparse, load_profile, render_profile_context
-from api.recipe_db import DEFAULT_HOUSEHOLD_ID, get_recipe_db, new_id
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -67,27 +66,23 @@ _SYSTEM_PROMPT_BASE = (
     "Human-in-the-loop writes:\n"
     "- Every write is via a `propose_*` tool. These DO NOT mutate anything — "
     "  they queue a card the user accepts or rejects in the UI.\n"
-    "- It's fine (and expected) to propose multiple actions in one turn — e.g. "
-    "  generate three recipes and add each to the plan. The user will see and "
-    "  approve each card.\n"
+    "- It's fine (and expected) to propose multiple actions in one turn.\n"
     "- After proposing, do NOT pretend the change happened. Say things like "
-    "  'I've put 3 cards above for you to accept' rather than 'I've added X to "
-    "  Tuesday'.\n"
+    "  'I've put 3 cards above for you to accept' rather than 'I've added X'.\n"
     "- If a previous turn's proposal was rejected, don't re-propose the exact "
     "  same thing — ask what the user would prefer instead."
 )
 
 
-def _build_system_prompt(household_id: str) -> str:
-    profile = load_profile(household_id)
+async def _build_system_prompt(household_id: str) -> str:
+    profile = await load_profile(household_id)
     profile_block = render_profile_context(profile)
     sparse_hint = ""
     if is_profile_sparse(profile):
         sparse_hint = (
             "\n\nPROFILE IS SPARSE — if the current conversation is about meal "
             "planning or recipe generation, ask one or two quick discovery "
-            "questions first (family size, dietary needs, things they love/hate) "
-            "and record the answers via the profile tools before doing the work."
+            "questions first and record the answers via the profile tools."
         )
     return (
         _SYSTEM_PROMPT_BASE
@@ -120,7 +115,7 @@ class SendMessageResponse(BaseModel):
 
 
 class ChatMessageOut(BaseModel):
-    role: str  # 'user' | 'assistant' | 'system'
+    role: str
     content: str
 
 
@@ -145,23 +140,24 @@ class ChatSessionDetail(BaseModel):
 # ============================================================
 
 
-def _summarise_messages(message_history_json: bytes) -> list[ChatMessageOut]:
+def _summarise_messages(message_history) -> list[ChatMessageOut]:
     """Extract user/assistant text from PydanticAI's structured message history.
 
-    PydanticAI stores rich messages with parts (text, tool calls, tool returns).
-    For UI display we only surface text content. Tool calls/returns are visible
-    via the audit events that come back from each turn."""
-    if not message_history_json:
+    `message_history` is a list of dicts (from JSONB) or empty. We parse it
+    back to typed ModelMessage objects via validate_python, then extract text
+    parts only — tool calls/returns are surfaced via the audit events that come
+    back from each turn instead.
+    """
+    if not message_history:
         return []
     try:
-        messages = ModelMessagesTypeAdapter.validate_json(message_history_json)
+        messages = ModelMessagesTypeAdapter.validate_python(message_history)
     except Exception:
         return []
 
     out: list[ChatMessageOut] = []
     for msg in messages:
         kind = msg.kind  # 'request' or 'response'
-        # Text parts only
         text_parts = []
         for part in msg.parts:
             part_kind = getattr(part, "part_kind", None)
@@ -171,7 +167,6 @@ def _summarise_messages(message_history_json: bytes) -> list[ChatMessageOut]:
         if not text:
             continue
         if kind == "request":
-            # User-side message
             out.append(ChatMessageOut(role="user", content=text))
         elif kind == "response":
             out.append(ChatMessageOut(role="assistant", content=text))
@@ -189,134 +184,150 @@ def _derive_title(first_user_msg: str) -> str:
 
 
 @router.get("/sessions", response_model=list[ChatSessionSummary])
-def list_sessions(household_id: str = Depends(get_current_household_id)):
-    with get_recipe_db() as conn:
-        rows = conn.execute(
-            "SELECT s.id, s.title, s.created_at, s.updated_at, "
-            "(SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id) AS n "
-            "FROM chat_sessions s WHERE s.household_id = ? "
-            "ORDER BY s.updated_at DESC",
-            [household_id],
-        ).fetchall()
+async def list_sessions(user: CurrentUser = Depends(get_current_user)):
+    async with user_tx(user) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id::text AS id, title, created_at, updated_at,
+                   COALESCE(jsonb_array_length(message_history), 0) AS n
+            FROM hearth.chat_sessions
+            ORDER BY updated_at DESC
+            """
+        )
     return [
         ChatSessionSummary(
-            id=r["id"], title=r["title"],
-            created_at=r["created_at"], updated_at=r["updated_at"],
-            message_count=r["n"],
+            id=r["id"],
+            title=r["title"],
+            created_at=r["created_at"].isoformat() if r["created_at"] else "",
+            updated_at=r["updated_at"].isoformat() if r["updated_at"] else "",
+            message_count=int(r["n"]),
         )
         for r in rows
     ]
 
 
 @router.post("/sessions", response_model=ChatSessionDetail, status_code=201)
-def create_session(household_id: str = Depends(get_current_household_id)):
-    sid = new_id()
-    with get_recipe_db() as conn:
-        conn.execute(
-            "INSERT INTO chat_sessions (id, household_id, title) VALUES (?, ?, ?)",
-            [sid, household_id, "New chat"],
+async def create_session(
+    user: CurrentUser = Depends(get_current_user),
+    household_id: str = Depends(get_current_household_id),
+):
+    async with user_tx(user) as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO hearth.chat_sessions (household_id, title)
+            VALUES ($1::uuid, $2)
+            RETURNING id::text AS id, title, created_at, updated_at
+            """,
+            household_id, "New chat",
         )
-        row = conn.execute(
-            "SELECT id, title, created_at, updated_at FROM chat_sessions WHERE id = ?",
-            [sid],
-        ).fetchone()
     return ChatSessionDetail(
-        id=row["id"], title=row["title"],
-        created_at=row["created_at"], updated_at=row["updated_at"],
+        id=row["id"],
+        title=row["title"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
         messages=[],
     )
 
 
 @router.get("/sessions/{sid}", response_model=ChatSessionDetail)
-def get_session(sid: str):
-    with get_recipe_db() as conn:
-        row = conn.execute(
-            "SELECT id, title, created_at, updated_at, message_history "
-            "FROM chat_sessions WHERE id = ?",
-            [sid],
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "Session not found")
-    history_bytes = (row["message_history"] or "").encode("utf-8")
+async def get_session(sid: str, user: CurrentUser = Depends(get_current_user)):
+    async with user_tx(user) as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id::text AS id, title, created_at, updated_at, message_history
+            FROM hearth.chat_sessions WHERE id = $1::uuid
+            """,
+            sid,
+        )
+    if row is None:
+        raise HTTPException(404, "Session not found")
     return ChatSessionDetail(
-        id=row["id"], title=row["title"],
-        created_at=row["created_at"], updated_at=row["updated_at"],
-        messages=_summarise_messages(history_bytes),
+        id=row["id"],
+        title=row["title"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
+        messages=_summarise_messages(row["message_history"]),
     )
 
 
 @router.delete("/sessions/{sid}", status_code=204)
-def delete_session(sid: str):
-    with get_recipe_db() as conn:
-        conn.execute("DELETE FROM chat_sessions WHERE id = ?", [sid])
+async def delete_session(sid: str, user: CurrentUser = Depends(get_current_user)):
+    async with user_tx(user) as conn:
+        await conn.execute(
+            "DELETE FROM hearth.chat_sessions WHERE id = $1::uuid",
+            sid,
+        )
 
 
 @router.post("/sessions/{sid}/messages", response_model=SendMessageResponse)
-async def send_message(sid: str, body: SendMessageRequest, household_id: str = Depends(get_current_household_id)):
+async def send_message(
+    sid: str,
+    body: SendMessageRequest,
+    user: CurrentUser = Depends(get_current_user),
+    household_id: str = Depends(get_current_household_id),
+):
     from api.credits import debit, require_credits
 
-    # Gate: caller must have credits AND the global budget mustn't be tripped.
-    # Raises 402 (insufficient credits) or 503 (global kill-switch) cleanly.
     await require_credits(household_id, "chat_turn")
 
-    with get_recipe_db() as conn:
-        row = conn.execute(
-            "SELECT title, message_history FROM chat_sessions WHERE id = ? AND household_id = ?",
-            [sid, household_id],
-        ).fetchone()
-        if not row:
-            raise HTTPException(404, "Session not found")
-        prior_history_str: str = row["message_history"] or ""
-        title = row["title"]
+    # Load the session (RLS-scoped — wrong-household sessions are invisible).
+    async with user_tx(user) as conn:
+        row = await conn.fetchrow(
+            "SELECT title, message_history FROM hearth.chat_sessions "
+            "WHERE id = $1::uuid",
+            sid,
+        )
+    if row is None:
+        raise HTTPException(404, "Session not found")
+    prior_history = row["message_history"] or []
+    title = row["title"]
 
-    # Build a fresh agent for this turn (cheap; tools close over household_id + proposer)
-    proposer = PendingProposer(session_id=sid, household_id=household_id)
-    agent = Agent(_MODEL, system_prompt=_build_system_prompt(household_id))
-    register_all(agent, household_id, proposer)
+    # Build a fresh agent for this turn.
+    proposer = PendingProposer(session_id=sid, household_id=household_id, user=user)
+    agent = Agent(_MODEL, system_prompt=await _build_system_prompt(household_id))
+    register_all(agent, household_id, proposer, user)
 
-    # Deserialise prior history
-    if prior_history_str:
+    if prior_history:
         try:
-            prior_history = ModelMessagesTypeAdapter.validate_json(prior_history_str.encode("utf-8"))
+            typed_prior = ModelMessagesTypeAdapter.validate_python(prior_history)
         except Exception:
-            prior_history = []
+            typed_prior = []
     else:
-        prior_history = []
+        typed_prior = []
 
-    # Run the turn
     try:
-        result = await agent.run(body.content, message_history=prior_history)
+        result = await agent.run(body.content, message_history=typed_prior)
     except Exception as e:
         raise HTTPException(500, f"Agent failed: {e}")
 
-    # Record the credit cost after a successful turn. (We don't punish failures.)
     await debit(household_id, "chat_turn", ref_id=sid)
 
     reply_text = str(result.output) if result.output is not None else ""
 
-    # Persist the new full history
     all_messages = result.all_messages()
-    new_history_bytes = ModelMessagesTypeAdapter.dump_json(all_messages)
+    new_history = ModelMessagesTypeAdapter.dump_python(all_messages, mode="json")
 
-    # Derive a title from the first user message if still default
-    new_title = title
-    if title == "New chat":
-        new_title = _derive_title(body.content)
+    new_title = title if title != "New chat" else _derive_title(body.content)
 
-    # Persist any proposals the tools queued during the turn.
-    flushed = proposer.flush()
+    # Persist queued proposals (via service_tx — proposer owns its own writes).
+    flushed = await proposer.flush()
 
-    with get_recipe_db() as conn:
-        conn.execute(
-            "UPDATE chat_sessions SET message_history = ?, title = ?, "
-            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            [new_history_bytes.decode("utf-8"), new_title, sid],
+    async with user_tx(user) as conn:
+        await conn.execute(
+            """
+            UPDATE hearth.chat_sessions
+            SET message_history = $1::jsonb, title = $2, updated_at = now()
+            WHERE id = $3::uuid
+            """,
+            new_history, new_title, sid,
         )
 
     return SendMessageResponse(
         reply=reply_text,
         pending=[
-            ProposedAction(id=p["id"], kind=p["kind"], summary=p["summary"], params=p["params"])
+            ProposedAction(
+                id=p["id"], kind=p["kind"], summary=p["summary"], params=p["params"]
+            )
             for p in flushed
         ],
         session_id=sid,
