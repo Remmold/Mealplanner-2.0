@@ -5,6 +5,7 @@ import { useAuth } from "./auth/AuthProvider";
 import SignIn from "./auth/SignIn";
 import CreateOrJoinHousehold from "./auth/CreateOrJoinHousehold";
 import ProfileWizard, { wizardWasDismissed } from "./auth/ProfileWizard";
+import WelcomeTour, { resetWelcomeTour, welcomeTourSeen } from "./tutorial/WelcomeTour";
 import PrivacyPolicy from "./legal/PrivacyPolicy";
 import TermsOfService from "./legal/TermsOfService";
 import { Button } from "./components/ui";
@@ -14,11 +15,13 @@ import MealPlan from "./components/MealPlan";
 import Chat from "./components/Chat";
 import Profile from "./components/Profile";
 
-type Tab = "recipe" | "plan" | "shopping" | "profile";
+type Tab = "plan" | "recipe" | "shopping" | "profile";
 
+// Meal Plan is the primary surface — it's where the value-prop starts
+// (plan the week -> shopping list). Recipes is a supporting library.
 const TABS: { id: Tab; label: string }[] = [
-  { id: "recipe",     label: "Recipes" },
   { id: "plan",       label: "Meal Plan" },
+  { id: "recipe",     label: "Recipes" },
   { id: "shopping",   label: "Shopping" },
   { id: "profile",    label: "Household" },
 ];
@@ -52,10 +55,11 @@ export default function App() {
   const initialJoinToken = useMemo(consumeJoinTokenFromUrl, []);
   const [pendingInviteToken, setPendingInviteToken] = useState<string | null>(initialJoinToken);
 
-  const [tab, setTab] = useState<Tab>("recipe");
+  const [tab, setTab] = useState<Tab>("plan");
   const [chatOpen, setChatOpen] = useState(false);
   const [initialRecipeId, setInitialRecipeId] = useState<string | null>(null);
   const [showWizardDismissed, setShowWizardDismissed] = useState(wizardWasDismissed);
+  const [tourSeen, setTourSeen] = useState(welcomeTourSeen);
   const [legalOpen, setLegalOpen] = useState<"privacy" | "terms" | null>(null);
 
   useEffect(() => {
@@ -86,6 +90,10 @@ export default function App() {
 
   if (!showWizardDismissed) {
     return <ProfileWizard onComplete={() => setShowWizardDismissed(true)} />;
+  }
+
+  if (!tourSeen) {
+    return <WelcomeTour open onClose={() => setTourSeen(true)} />;
   }
 
   return (
@@ -150,6 +158,15 @@ export default function App() {
         ·{" "}
         <button type="button" className="link-button" onClick={() => setLegalOpen("terms")}>
           Terms
+        </button>{" "}
+        ·{" "}
+        <button
+          type="button"
+          className="link-button"
+          onClick={() => { resetWelcomeTour(); setTourSeen(false); }}
+          title="Replay the welcome tour"
+        >
+          Replay tour
         </button>
       </footer>
 
