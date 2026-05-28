@@ -51,7 +51,7 @@ export default function MealPlan() {
   const [genStep, setGenStep] = useState<0 | 1 | 2>(0);
   const [genPrompt, setGenPrompt] = useState("");
   const [genStart, setGenStart] = useState(isoDate(new Date()));
-  const [genDays, setGenDays] = useState(7);
+  const [genEnd, setGenEnd] = useState(addDays(isoDate(new Date()), 6)); // 7 days inclusive
   const [genServings, setGenServings] = useState(4);
   // Per-slot batch-cook tuning (portions / distinct caps) is intentionally
   // hidden from the UI — the planner agent infers it from keywords in the
@@ -60,6 +60,29 @@ export default function MealPlan() {
   const [enabledSlots, setEnabledSlots] = useState<Set<Slot>>(new Set(["dinner"]));
   const [generating, setGenerating] = useState(false);
   const [genElapsed, setGenElapsed] = useState(0);
+
+  // Inclusive day count: start = end means 1 day. Clamps any garbage input.
+  const genDays = useMemo(() => {
+    const ms = new Date(genEnd + "T00:00:00").getTime()
+             - new Date(genStart + "T00:00:00").getTime();
+    if (Number.isNaN(ms) || ms < 0) return 0;
+    return Math.floor(ms / 86_400_000) + 1;
+  }, [genStart, genEnd]);
+
+  const genRangeError = genDays === 0
+    ? "End date can't be before the start."
+    : genDays > 14
+    ? "Plans can be at most 14 days. Pick a closer end date."
+    : null;
+
+  function onStartChange(newStart: string) {
+    setGenStart(newStart);
+    // If the new start is after the current end, push end out to start + 6
+    // so the user doesn't see a transient "invalid" state.
+    if (new Date(newStart + "T00:00:00") > new Date(genEnd + "T00:00:00")) {
+      setGenEnd(addDays(newStart, 6));
+    }
+  }
 
   function openGenerator() {
     setGenStep(0);
@@ -70,8 +93,6 @@ export default function MealPlan() {
   function closeGenerator() {
     if (generating) return;
     setGenOpen(false);
-    // Don't reset other state — if the user reopens, their last settings
-    // are still there. genStep resets on next openGenerator().
   }
 
   // Profile context the generator should respect. Loaded once on mount;
@@ -181,6 +202,7 @@ export default function MealPlan() {
       distinct_meals: null,
     }));
     if (slot_configs.length === 0) { setError("Pick at least one meal slot"); return; }
+    if (genRangeError) { setError(genRangeError); return; }
     setGenerating(true); setError(""); setGenElapsed(0);
     const t0 = Date.now();
     const timer = setInterval(() => setGenElapsed(Math.round((Date.now() - t0) / 1000)), 1000);
@@ -195,6 +217,7 @@ export default function MealPlan() {
         servings: genServings,
         slot_configs,
       });
+      // Push selected end date back so reopening shows the same window.
       await reloadPlans();
       // Load the generated plan into the editor
       setActiveId(plan.id);
@@ -325,144 +348,179 @@ export default function MealPlan() {
         </div>
       </Card>
 
-      {/* AI weekly plan generator — guided 3-step wizard so no single screen
-          drowns the user in fields. Per-slot batch tuning is intentionally
-          hidden (the planner reads "batch-cook"/"matlåda" from the brief). */}
-      <Modal open={genOpen} onClose={closeGenerator} className="modal-lg">
-        <h3 className="row gap-2"><Sparkles size={18} /> Plan this week</h3>
-
-        <div className="tour-dots mt-2" aria-hidden>
-          {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              className={"tour-dot" + (i === genStep ? " tour-dot-active" : "")}
-            />
-          ))}
-        </div>
-
-        {genStep === 0 && (
-          <div className="col-2 mt-3">
-            <p className="muted m-0">First, the basics. Defaults pulled from your profile.</p>
-            <Field>
-              Cooking for how many?
-              <Input
-                type="number" min={1} numeric
-                value={genServings}
-                onChange={(e) => setGenServings(Math.max(1, Number(e.target.value) || 4))}
-                disabled={generating}
-                autoFocus
-              />
-            </Field>
-            <div className="row gap-3 wrap">
-              <Field>
-                Start date
-                <Input
-                  type="date"
-                  value={genStart}
-                  onChange={(e) => setGenStart(e.target.value)}
-                  disabled={generating}
-                />
-              </Field>
-              <Field>
-                How many days?
-                <Input
-                  type="number" min={1} max={14} numeric
-                  value={genDays}
-                  onChange={(e) => setGenDays(Math.max(1, Math.min(14, Number(e.target.value) || 7)))}
-                  disabled={generating}
-                />
-              </Field>
-            </div>
+      {/* AI weekly plan generator — full-screen wizard takeover. Same warm
+          shell as sign-in / welcome tour for visual continuity, instead of
+          a generic centered modal. Three steps: basics, meals, brief. */}
+      {genOpen && (
+        <div className="plan-shell" role="dialog" aria-modal>
+          <div className="brand auth-brand plan-shell-brand">
+            <span className="brand-mark">Plan this week</span>
+            <span className="brand-tag">Hearth drafts a plan and a shopping list</span>
           </div>
-        )}
 
-        {genStep === 1 && (
-          <div className="col-2 mt-3">
-            <p className="muted m-0">Which meals should Hearth plan? Most people just do dinner.</p>
-            <div className="col-2">
-              {(["breakfast", "lunch", "dinner"] as Slot[]).map((s) => {
-                const enabled = enabledSlots.has(s);
-                return (
-                  <label key={s} className="meal-toggle">
-                    <input
-                      type="checkbox"
-                      checked={enabled}
-                      onChange={() => setEnabledSlots((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(s)) next.delete(s); else next.add(s);
-                        return next;
-                      })}
+          <Card className="plan-shell-card">
+            <div className="tour-dots" aria-hidden>
+              {[0, 1, 2].map((i) => (
+                <span
+                  key={i}
+                  className={"tour-dot" + (i === genStep ? " tour-dot-active" : "")}
+                />
+              ))}
+            </div>
+
+            {genStep === 0 && (
+              <div className="col-2">
+                <h2 className="m-0">The basics</h2>
+                <p className="muted m-0">
+                  Pick the dates and the table size. Defaults pulled from your profile.
+                </p>
+
+                <Field>
+                  Cooking for how many?
+                  <Input
+                    type="number" min={1} numeric
+                    value={genServings}
+                    onChange={(e) => setGenServings(Math.max(1, Number(e.target.value) || 4))}
+                    disabled={generating}
+                    autoFocus
+                  />
+                </Field>
+
+                <div className="row gap-3 wrap">
+                  <Field>
+                    Start
+                    <Input
+                      type="date"
+                      value={genStart}
+                      onChange={(e) => onStartChange(e.target.value)}
                       disabled={generating}
                     />
-                    <span className="capitalize">{s}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        )}
+                  </Field>
+                  <Field>
+                    End
+                    <Input
+                      type="date"
+                      value={genEnd}
+                      min={genStart}
+                      onChange={(e) => setGenEnd(e.target.value)}
+                      disabled={generating}
+                    />
+                  </Field>
+                </div>
 
-        {genStep === 2 && (
-          <div className="col-2 mt-3">
-            <ProfileContextCard profile={profile} />
-            <Field className="field-col">
-              <span className="small muted">Anything special this week? <em>(optional)</em></span>
-              <Textarea
-                placeholder="e.g. 'batch-cook 3 dinners', 'meatless Monday', 'lighter than last week'"
-                value={genPrompt}
-                onChange={(e) => setGenPrompt(e.target.value)}
-                rows={2}
-                disabled={generating}
-              />
-            </Field>
-          </div>
-        )}
+                {genRangeError ? (
+                  <p className="small text-warm m-0">{genRangeError}</p>
+                ) : (
+                  <p className="small muted m-0">
+                    {genDays} {genDays === 1 ? "day" : "days"} ·{" "}
+                    {formatDay(genStart)} → {formatDay(genEnd)}
+                  </p>
+                )}
+              </div>
+            )}
 
-        <div className="row gap-2 mt-4">
-          {genStep > 0 ? (
-            <Button variant="ghost" onClick={() => setGenStep((s) => (s - 1) as 0 | 1 | 2)} disabled={generating}>
-              Back
-            </Button>
-          ) : (
-            <Button variant="ghost" onClick={closeGenerator} disabled={generating}>
-              Cancel
-            </Button>
-          )}
-          {genStep < 2 ? (
-            <Button
-              variant="primary"
-              onClick={() => setGenStep((s) => (s + 1) as 0 | 1 | 2)}
-              disabled={generating}
-              className="flex-1"
-            >
-              Continue
-            </Button>
-          ) : (
-            <Button
-              variant="accent"
-              onClick={runWeeklyGenerator}
-              disabled={generating}
-              className="flex-1"
-            >
-              {generating ? "Drafting your week..." : "Generate this week's plan"}
-            </Button>
-          )}
-        </div>
-
-        {generating && (
-          <Card variant="soft" className="mt-3">
-            <div className="row gap-2">
-              <div className="chat-typing"><span></span><span></span><span></span></div>
-              <div className="flex-1">
-                <div className="fw-500">Drafting your week…</div>
-                <div className="tiny muted">
-                  {genElapsed}s elapsed · planner runs first, then recipes generate in parallel. Usually 30–90s total.
+            {genStep === 1 && (
+              <div className="col-2">
+                <h2 className="m-0">Which meals?</h2>
+                <p className="muted m-0">
+                  Most people just plan dinner. Pick whichever you want covered.
+                </p>
+                <div className="col-2 mt-2">
+                  {(["breakfast", "lunch", "dinner"] as Slot[]).map((s) => {
+                    const enabled = enabledSlots.has(s);
+                    return (
+                      <label key={s} className="meal-toggle">
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          onChange={() => setEnabledSlots((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(s)) next.delete(s); else next.add(s);
+                            return next;
+                          })}
+                          disabled={generating}
+                        />
+                        <span className="capitalize">{s}</span>
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
+            )}
+
+            {genStep === 2 && (
+              <div className="col-2">
+                <h2 className="m-0">Anything special this week?</h2>
+                <p className="muted m-0">
+                  Hearth respects your profile every time — only mention what
+                  changes <em>this</em> week.
+                </p>
+
+                <ProfileContextCard profile={profile} />
+
+                <Field className="field-col">
+                  <Textarea
+                    placeholder="e.g. 'batch-cook 3 dinners', 'meatless Monday', 'lighter than last week' — or leave blank."
+                    value={genPrompt}
+                    onChange={(e) => setGenPrompt(e.target.value)}
+                    rows={3}
+                    disabled={generating}
+                  />
+                </Field>
+              </div>
+            )}
+
+            <div className="row gap-2 mt-4">
+              {genStep > 0 ? (
+                <Button
+                  variant="ghost"
+                  onClick={() => setGenStep((s) => (s - 1) as 0 | 1 | 2)}
+                  disabled={generating}
+                >
+                  Back
+                </Button>
+              ) : (
+                <Button variant="ghost" onClick={closeGenerator} disabled={generating}>
+                  Cancel
+                </Button>
+              )}
+              {genStep < 2 ? (
+                <Button
+                  variant="primary"
+                  onClick={() => setGenStep((s) => (s + 1) as 0 | 1 | 2)}
+                  disabled={generating || (genStep === 0 && genRangeError !== null)}
+                  className="flex-1"
+                >
+                  Continue
+                </Button>
+              ) : (
+                <Button
+                  variant="accent"
+                  onClick={runWeeklyGenerator}
+                  disabled={generating}
+                  className="flex-1"
+                >
+                  {generating ? "Drafting your week..." : "Generate this week's plan"}
+                </Button>
+              )}
             </div>
+
+            {generating && (
+              <Card variant="soft" className="mt-3">
+                <div className="row gap-2">
+                  <div className="chat-typing"><span></span><span></span><span></span></div>
+                  <div className="flex-1">
+                    <div className="fw-500">Drafting your week…</div>
+                    <div className="tiny muted">
+                      {genElapsed}s elapsed · planner runs first, then recipes generate in parallel. Usually 30–90s total.
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            )}
           </Card>
-        )}
-      </Modal>
+        </div>
+      )}
 
       {/* Recipe picker modal */}
       <Modal open={!!pickerCell} onClose={() => setPickerCell(null)}>

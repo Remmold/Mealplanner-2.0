@@ -1384,3 +1384,46 @@ input[type="checkbox"] {
 .meal-toggle input[type="checkbox"] {
   margin: 0;
 }
+
+/* ============================================================
+   Plan-this-week wizard — full-screen takeover with warm shell.
+   Same aesthetic as sign-in / welcome tour, not a generic modal.
+   ============================================================ */
+
+.plan-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  gap: var(--space-4);
+  overflow-y: auto;
+  background:
+    radial-gradient(at 20% 0%, rgba(212, 156, 61, 0.10) 0%, transparent 60%),
+    radial-gradient(at 80% 100%, rgba(74, 107, 70, 0.08) 0%, transparent 60%),
+    var(--cream);
+  animation: fadeIn .18s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.plan-shell-brand {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-1);
+}
+
+.plan-shell-card {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
