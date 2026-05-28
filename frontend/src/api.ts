@@ -435,14 +435,74 @@ export interface GenerateMealPlanInput {
   slot_configs: SlotConfig[];
 }
 
-export async function generateMealPlan(input: GenerateMealPlanInput): Promise<MealPlan> {
+/** One progress event from the streaming /meal-plans/generate endpoint. */
+export type GenerateEvent =
+  | { type: "planning_start"; brief: string; days: number; slots: string[] }
+  | { type: "planning_done"; meals_proposed: number; recipes_to_generate: number; plan_name: string }
+  | { type: "recipe_start"; prompt: string }
+  | { type: "recipe_done"; name: string; duration: number }
+  | { type: "recipe_failed"; prompt: string; error: string }
+  | { type: "persisting" }
+  | { type: "complete"; plan: MealPlan; total_duration: number }
+  | { type: "error"; message: string };
+
+/**
+ * Streams the meal-plan generator. Calls `onEvent` for every NDJSON event as
+ * it arrives; resolves with the final saved plan from the `complete` event.
+ * Throws if the stream ends without `complete`, or emits an `error` event.
+ */
+export async function generateMealPlan(
+  input: GenerateMealPlanInput,
+  onEvent: (event: GenerateEvent) => void,
+): Promise<MealPlan> {
   const res = await authFetch(`/meal-plans/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+
+  if (!res.ok) {
+    let detail: string = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? detail;
+    } catch { /* keep statusText */ }
+    throw new Error(`${res.status} ${detail}`);
+  }
+  if (!res.body) throw new Error("No response body");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let plan: MealPlan | null = null;
+  let lastError: string | null = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // NDJSON: events separated by \n
+    let nl = buffer.indexOf("\n");
+    while (nl >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (line) {
+        try {
+          const event = JSON.parse(line) as GenerateEvent;
+          onEvent(event);
+          if (event.type === "complete") plan = event.plan;
+          if (event.type === "error") lastError = event.message;
+        } catch {
+          // Skip malformed line — backend should never emit one.
+        }
+      }
+      nl = buffer.indexOf("\n");
+    }
+  }
+
+  if (lastError) throw new Error(lastError);
+  if (!plan) throw new Error("Generator finished without returning a plan");
+  return plan;
 }
 
 export async function mealPlanShoppingList(id: string): Promise<ShoppingList> {

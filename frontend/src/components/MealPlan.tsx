@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, ShoppingCart, Sparkles, X } from "lucide-react";
+import { Check, Plus, Save, ShoppingCart, Sparkles, X } from "lucide-react";
+import type { ReactNode } from "react";
 import {
   fetchMealPlans,
   createMealPlan,
@@ -9,6 +10,7 @@ import {
   fetchRecipes,
   generateMealPlan,
   onDataChanged,
+  type GenerateEvent,
   type MealPlan,
   type MealPlanEntry,
   type Recipe,
@@ -61,6 +63,16 @@ export default function MealPlan() {
   const [enabledSlots, setEnabledSlots] = useState<Set<Slot>>(new Set(["dinner"]));
   const [generating, setGenerating] = useState(false);
   const [genElapsed, setGenElapsed] = useState(0);
+
+  // Live progress feed from the streaming /meal-plans/generate endpoint.
+  // One row per event, in order of arrival.
+  interface FeedItem {
+    id: string;
+    status: "pending" | "done" | "failed";
+    icon: ReactNode;
+    text: string;
+  }
+  const [feed, setFeed] = useState<FeedItem[]>([]);
 
   // Inclusive day count: start = end means 1 day. Clamps any garbage input.
   const genDays = useMemo(() => {
@@ -205,19 +217,24 @@ export default function MealPlan() {
     if (slot_configs.length === 0) { setError("Pick at least one meal slot"); return; }
     if (genRangeError) { setError(genRangeError); return; }
     setGenerating(true); setError(""); setGenElapsed(0);
+    setFeed([]);
     const t0 = Date.now();
     const timer = setInterval(() => setGenElapsed(Math.round((Date.now() - t0) / 1000)), 1000);
     try {
-      // Empty brief is fine — the planner falls back to the household profile.
-      // Send a generic anchor so the LLM has something to riff off.
       const promptText = genPrompt.trim() || "A balanced week using the household's typical preferences.";
-      const plan = await generateMealPlan({
-        prompt: promptText,
-        start_date: genStart,
-        days: genDays,
-        servings: genServings,
-        slot_configs,
-      });
+      const plan = await generateMealPlan(
+        {
+          prompt: promptText,
+          start_date: genStart,
+          days: genDays,
+          servings: genServings,
+          slot_configs,
+        },
+        (event) => {
+          const item = buildFeedItem(event);
+          if (item) setFeed((prev) => [...prev, item]);
+        },
+      );
       // Push selected end date back so reopening shows the same window.
       await reloadPlans();
       // Load the generated plan into the editor
@@ -487,16 +504,27 @@ export default function MealPlan() {
             </div>
 
             {generating && (
-              <Card variant="soft" className="mt-3">
-                <div className="row gap-2">
+              <Card variant="soft" className="mt-3 gen-feed">
+                <div className="gen-feed-header">
                   <div className="chat-typing"><span></span><span></span><span></span></div>
                   <div className="flex-1">
-                    <div className="fw-500">Drafting your week…</div>
-                    <div className="tiny muted">
-                      {genElapsed}s elapsed · planner runs first, then recipes generate in parallel. Usually 30–90s total.
-                    </div>
+                    <div className="fw-500">Drafting your week</div>
+                    <div className="tiny muted">{genElapsed}s elapsed</div>
                   </div>
                 </div>
+                {feed.length > 0 && (
+                  <ul className="gen-feed-list">
+                    {feed.map((item) => (
+                      <li
+                        key={item.id}
+                        className={`gen-feed-item gen-feed-${item.status}`}
+                      >
+                        <span className="gen-feed-icon">{item.icon}</span>
+                        <span className="gen-feed-text">{item.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </Card>
             )}
           </Card>
@@ -556,6 +584,70 @@ export default function MealPlan() {
       )}
     </div>
   );
+}
+
+
+/**
+ * Map a single streaming event onto a feed item the user sees in the live
+ * progress card. Returns null for events we want to silently ignore.
+ */
+function buildFeedItem(event: GenerateEvent): {
+  id: string;
+  status: "pending" | "done" | "failed";
+  icon: ReactNode;
+  text: string;
+} | null {
+  const id = `${event.type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  switch (event.type) {
+    case "planning_start":
+      return {
+        id, status: "pending",
+        icon: <Sparkles size={14} />,
+        text: `Drafting the week (${event.days} ${event.days === 1 ? "day" : "days"}, ${event.slots.join(" + ")})`,
+      };
+    case "planning_done":
+      return {
+        id, status: "done",
+        icon: <Check size={14} />,
+        text: `Drafted "${event.plan_name}" — ${event.meals_proposed} meals, ${event.recipes_to_generate} new recipes to create`,
+      };
+    case "recipe_start":
+      return {
+        id, status: "pending",
+        icon: <Sparkles size={14} />,
+        text: `Generating recipe: ${event.prompt}`,
+      };
+    case "recipe_done":
+      return {
+        id, status: "done",
+        icon: <Check size={14} />,
+        text: `Made "${event.name}" · ${event.duration}s`,
+      };
+    case "recipe_failed":
+      return {
+        id, status: "failed",
+        icon: <X size={14} />,
+        text: `Failed: ${event.prompt} (${event.error})`,
+      };
+    case "persisting":
+      return {
+        id, status: "pending",
+        icon: <Save size={14} />,
+        text: "Saving the plan and new recipes…",
+      };
+    case "complete":
+      return {
+        id, status: "done",
+        icon: <Check size={14} />,
+        text: `Done — plan ready (${event.total_duration}s total)`,
+      };
+    case "error":
+      return {
+        id, status: "failed",
+        icon: <X size={14} />,
+        text: event.message,
+      };
+  }
 }
 
 

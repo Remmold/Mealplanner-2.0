@@ -1520,3 +1520,91 @@ input[type="checkbox"] {
   font-size: 12px;
   color: var(--taupe-2);
 }
+
+/* ============================================================
+   Generate-plan live progress feed — replaces the static
+   "Drafting your week..." spinner with a per-event timeline so the
+   user can see exactly what the AI is working on right now.
+   ============================================================ */
+
+.gen-feed-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.gen-feed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  /* Soft fade at top so the latest events at the bottom feel "live". */
+  mask-image: linear-gradient(to bottom, transparent, black 16px);
+}
+
+.gen-feed-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 6px;
+  font-size: 13px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  animation: feedSlideIn .18s ease-out;
+}
+
+@keyframes feedSlideIn {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.gen-feed-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--taupe-2);
+}
+
+.gen-feed-text {
+  flex: 1;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gen-feed-pending .gen-feed-icon {
+  color: var(--terracotta);
+  animation: feedSpin 1.4s linear infinite;
+}
+.gen-feed-pending .gen-feed-text {
+  color: var(--taupe);
+}
+
+.gen-feed-done {
+  background: var(--sage-soft);
+}
+.gen-feed-done .gen-feed-icon {
+  color: var(--sage-dark);
+}
+
+.gen-feed-failed {
+  background: var(--danger-soft);
+}
+.gen-feed-failed .gen-feed-icon,
+.gen-feed-failed .gen-feed-text {
+  color: var(--danger);
+}
+
+@keyframes feedSpin {
+  from { transform: rotate(0); }
+  to   { transform: rotate(360deg); }
+}

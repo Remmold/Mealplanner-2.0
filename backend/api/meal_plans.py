@@ -10,9 +10,12 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import json
+
 import asyncpg
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
@@ -246,18 +249,37 @@ class _PlannedWeek(BaseModel):
 _PLAN_MODEL = os.getenv("OPENAI_RECIPE_MODEL", "openai:gpt-4o")
 
 
-@router.post("/generate", response_model=MealPlanOut)
+@router.post("/generate")
 async def generate_meal_plan(
     body: GenerateMealPlanRequest,
     user: CurrentUser = Depends(get_current_user),
     household_id: str = Depends(get_current_household_id),
 ):
-    """LLM-powered weekly plan generator (Postgres-backed)."""
+    """LLM-powered weekly plan generator — streams NDJSON progress events.
+
+    Response is `application/x-ndjson`: one JSON object per line, terminated
+    by `\\n`. Event types (the `type` field):
+
+      planning_start    {"brief": "...", "days": 7, "slots": ["dinner"]}
+      planning_done     {"meals_proposed": 7, "recipes_to_generate": 4,
+                         "plan_name": "Spring Mediterranean"}
+      recipe_start      {"prompt": "Lemon-Garlic Cod..."}
+      recipe_done       {"name": "Lemon-Garlic Cod...", "duration": 9.2}
+      recipe_failed     {"prompt": "...", "error": "..."}
+      persisting        {}
+      complete          {"plan": <MealPlanOut>, "total_duration": 47.1}
+      error             {"message": "..."}
+
+    Frontend reads the stream, surfaces events live, and uses the `complete`
+    event's `plan` as the final result.
+    """
     from api.credits import finalize_hold, hold, release_hold
     from api.image_gen import schedule_image
     from api.profile import load_profile, render_profile_context
     from api.recipe_gen import generate_recipe
 
+    # Validation + credit hold happen synchronously up front so 4xx errors
+    # are normal HTTPExceptions (not mid-stream).
     if body.days < 1 or body.days > 14:
         raise HTTPException(400, "days must be 1..14")
     if not body.slot_configs:
@@ -317,188 +339,231 @@ async def generate_meal_plan(
         + matlada_hint
     )
 
-    planner = Agent(_PLAN_MODEL, output_type=_PlannedWeek, system_prompt=planner_system_prompt)
+    async def event_stream():
+        def emit(event_type: str, **data) -> str:
+            return json.dumps({"type": event_type, **data}) + "\n"
 
-    # Read the household profile and existing recipes inside one transaction.
-    async with user_tx(user) as conn:
-        existing_recipes_listing = await _list_existing_recipes_for_planner(conn)
+        overall_start = time.monotonic()
+        log.warning("[plan-gen] stream starting (prompt=%r, days=%d)",
+                    body.prompt[:60], body.days)
 
-    profile_block = render_profile_context(await load_profile(household_id))
-
-    user_brief = (
-        f"Brief: {body.prompt}\n\n"
-        f"Days: {body.days}\n"
-        f"Base servings per generated recipe: {body.servings}\n"
-        f"Slots are listed in the system prompt above.\n\n"
-        f"--- Household profile ---\n{profile_block}\n\n"
-        f"Respect the household profile strictly: never include allergens, avoid "
-        f"dislikes, lean into likes/cuisines.\n\n"
-        f"Existing saved recipes:\n{existing_recipes_listing}"
-    )
-
-    overall_start = time.monotonic()
-    log.warning("[plan-gen] stage 1 planner starting (prompt=%r, days=%d)",
-                body.prompt[:60], body.days)
-
-    try:
-        planner_start = time.monotonic()
-        planned = (await planner.run(user_brief)).output
-        log.warning(
-            "[plan-gen] stage 1 planner done in %.1fs — %d meals proposed",
-            time.monotonic() - planner_start, len(planned.meals),
-        )
-    except Exception as e:
-        log.exception("[plan-gen] planner failed")
+        # ---- Stage 1: planner ----
         try:
-            await release_hold(hold_id)
-        except Exception:
-            log.exception("[plan-gen] hold release failed (continuing)")
-        raise HTTPException(500, f"Plan generation failed: {e}")
-
-    # Look up valid existing recipe ids (RLS-scoped).
-    async with user_tx(user) as conn:
-        rows = await conn.fetch("SELECT id::text AS id FROM hearth.recipes")
-        valid_ids = {r["id"] for r in rows}
-
-    valid_meals: list[_PlannedMeal] = []
-    unique_prompts: list[str] = []
-    seen_prompts: set[str] = set()
-    prompt_to_slot: dict[str, str] = {}
-    recipe_id_to_slot: dict[str, str] = {}
-    for meal in planned.meals:
-        if meal.day_offset < 0 or meal.day_offset >= body.days:
-            continue
-        if meal.slot not in slot_by_name:
-            continue
-        if not meal.use_recipe_id and not meal.new_recipe_prompt:
-            continue
-        if meal.use_recipe_id:
-            prior = recipe_id_to_slot.get(meal.use_recipe_id)
-            if prior and prior != meal.slot:
-                log.warning("[plan-gen] dropping cross-slot reuse of %s",
-                            meal.use_recipe_id)
-                continue
-            recipe_id_to_slot[meal.use_recipe_id] = meal.slot
-        if meal.new_recipe_prompt:
-            prior = prompt_to_slot.get(meal.new_recipe_prompt)
-            if prior and prior != meal.slot:
-                continue
-            prompt_to_slot[meal.new_recipe_prompt] = meal.slot
-
-        valid_meals.append(meal)
-        if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen_prompts:
-            seen_prompts.add(meal.new_recipe_prompt)
-            unique_prompts.append(meal.new_recipe_prompt)
-
-    # Stage 2: generate all needed recipes concurrently (bounded by semaphore).
-    concurrency = int(os.getenv("RECIPE_GEN_CONCURRENCY", "3"))
-    sem = asyncio.Semaphore(concurrency)
-
-    async def gen_one(prompt: str):
-        async with sem:
-            t0 = time.monotonic()
-            log.warning("[plan-gen] generating recipe: %r", prompt[:80])
-            try:
-                gen = await generate_recipe(prompt)
-                log.warning(
-                    "[plan-gen]   → '%s' in %.1fs", gen.name, time.monotonic() - t0,
-                )
-                return prompt, gen
-            except Exception as e:
-                log.warning("[plan-gen]   FAILED in %.1fs: %s", time.monotonic() - t0, e)
-                return prompt, None
-
-    if unique_prompts:
-        log.warning(
-            "[plan-gen] stage 2: generating %d unique recipes (concurrency=%d)",
-            len(unique_prompts), concurrency,
-        )
-        results = await asyncio.gather(*(gen_one(p) for p in unique_prompts))
-    else:
-        results = []
-
-    # Persist the plan + new recipes + entries inside a single RLS-scoped tx.
-    prompt_to_recipe_id: dict[str, str] = {}
-    try:
-        async with user_tx(user) as conn:
-            plan_row = await conn.fetchrow(
-                """
-                INSERT INTO hearth.meal_plans (household_id, name, start_date)
-                VALUES ($1::uuid, $2, $3::date)
-                RETURNING id::text AS id
-                """,
-                household_id, planned.plan_name, body.start_date,
+            yield emit(
+                "planning_start",
+                brief=body.prompt[:140],
+                days=body.days,
+                slots=[sc.slot for sc in body.slot_configs],
             )
-            plan_id = plan_row["id"]
 
-            for prompt, gen in results:
-                if gen is None:
+            planner = Agent(_PLAN_MODEL, output_type=_PlannedWeek, system_prompt=planner_system_prompt)
+
+            async with user_tx(user) as conn:
+                existing_recipes_listing = await _list_existing_recipes_for_planner(conn)
+            profile_block = render_profile_context(await load_profile(household_id))
+
+            user_brief = (
+                f"Brief: {body.prompt}\n\n"
+                f"Days: {body.days}\n"
+                f"Base servings per generated recipe: {body.servings}\n"
+                f"Slots are listed in the system prompt above.\n\n"
+                f"--- Household profile ---\n{profile_block}\n\n"
+                f"Respect the household profile strictly: never include allergens, "
+                f"avoid dislikes, lean into likes/cuisines.\n\n"
+                f"Existing saved recipes:\n{existing_recipes_listing}"
+            )
+
+            planner_start = time.monotonic()
+            planned = (await planner.run(user_brief)).output
+            log.warning(
+                "[plan-gen] planner done in %.1fs — %d meals proposed",
+                time.monotonic() - planner_start, len(planned.meals),
+            )
+        except Exception as e:
+            log.exception("[plan-gen] planner failed")
+            try: await release_hold(hold_id)
+            except Exception: log.exception("[plan-gen] release_hold failed")
+            yield emit("error", message=f"Plan generation failed: {e}")
+            return
+
+        # Dedup + slot-disjoint validation of planner output.
+        async with user_tx(user) as conn:
+            rows = await conn.fetch("SELECT id::text AS id FROM hearth.recipes")
+            valid_ids = {r["id"] for r in rows}
+
+        valid_meals: list[_PlannedMeal] = []
+        unique_prompts: list[str] = []
+        seen_prompts: set[str] = set()
+        prompt_to_slot: dict[str, str] = {}
+        recipe_id_to_slot: dict[str, str] = {}
+        for meal in planned.meals:
+            if meal.day_offset < 0 or meal.day_offset >= body.days:
+                continue
+            if meal.slot not in slot_by_name:
+                continue
+            if not meal.use_recipe_id and not meal.new_recipe_prompt:
+                continue
+            if meal.use_recipe_id:
+                prior = recipe_id_to_slot.get(meal.use_recipe_id)
+                if prior and prior != meal.slot:
                     continue
-                # Use $N::jsonb for instructions
-                recipe_row = await conn.fetchrow(
+                recipe_id_to_slot[meal.use_recipe_id] = meal.slot
+            if meal.new_recipe_prompt:
+                prior = prompt_to_slot.get(meal.new_recipe_prompt)
+                if prior and prior != meal.slot:
+                    continue
+                prompt_to_slot[meal.new_recipe_prompt] = meal.slot
+            valid_meals.append(meal)
+            if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen_prompts:
+                seen_prompts.add(meal.new_recipe_prompt)
+                unique_prompts.append(meal.new_recipe_prompt)
+
+        yield emit(
+            "planning_done",
+            meals_proposed=len(valid_meals),
+            recipes_to_generate=len(unique_prompts),
+            plan_name=planned.plan_name,
+        )
+
+        # ---- Stage 2: recipe gens (parallel, with per-recipe live events) ----
+        concurrency = int(os.getenv("RECIPE_GEN_CONCURRENCY", "3"))
+        sem = asyncio.Semaphore(concurrency)
+        event_queue: asyncio.Queue = asyncio.Queue()
+
+        async def gen_one(prompt: str):
+            async with sem:
+                t0 = time.monotonic()
+                await event_queue.put({"type": "recipe_start", "prompt": prompt[:100]})
+                log.warning("[plan-gen] generating recipe: %r", prompt[:80])
+                try:
+                    gen = await generate_recipe(prompt)
+                    duration = round(time.monotonic() - t0, 1)
+                    log.warning("[plan-gen]   → '%s' in %.1fs", gen.name, duration)
+                    await event_queue.put({
+                        "type": "recipe_done", "name": gen.name,
+                        "duration": duration,
+                    })
+                    return prompt, gen
+                except Exception as e:
+                    duration = round(time.monotonic() - t0, 1)
+                    log.warning("[plan-gen]   FAILED in %.1fs: %s", duration, e)
+                    await event_queue.put({
+                        "type": "recipe_failed", "prompt": prompt[:100],
+                        "error": str(e),
+                    })
+                    return prompt, None
+
+        tasks = [asyncio.create_task(gen_one(p)) for p in unique_prompts]
+
+        # Drain the queue: each task pushes a recipe_start AND a terminal
+        # (recipe_done OR recipe_failed). Loop ends when every task has
+        # emitted its terminal event.
+        finished = 0
+        target = len(tasks)
+        while finished < target:
+            ev = await event_queue.get()
+            ev_type = ev["type"]
+            payload = {k: v for k, v in ev.items() if k != "type"}
+            yield emit(ev_type, **payload)
+            if ev_type in ("recipe_done", "recipe_failed"):
+                finished += 1
+
+        # Tasks are guaranteed complete now (their last action is the terminal
+        # push above), so gather is essentially synchronous — just collects
+        # the (prompt, gen) return values.
+        results: list = await asyncio.gather(*tasks) if tasks else []
+
+        # ---- Stage 3: persist plan + new recipes + entries ----
+        try:
+            yield emit("persisting")
+
+            prompt_to_recipe_id: dict[str, str] = {}
+            async with user_tx(user) as conn:
+                plan_row = await conn.fetchrow(
                     """
-                    INSERT INTO hearth.recipes
-                        (household_id, name, instructions, servings)
-                    VALUES ($1::uuid, $2, $3::jsonb, $4)
+                    INSERT INTO hearth.meal_plans (household_id, name, start_date)
+                    VALUES ($1::uuid, $2, $3::date)
                     RETURNING id::text AS id
                     """,
-                    household_id, gen.name, gen.instructions, body.servings,
+                    household_id, planned.plan_name, body.start_date,
                 )
-                rid = recipe_row["id"]
-                for ing in gen.ingredients:
-                    await conn.execute(
-                        "INSERT INTO hearth.recipe_ingredients "
-                        "(recipe_id, fdc_id, quantity_g) "
-                        "VALUES ($1::uuid, $2, $3)",
-                        rid, ing.fdc_id, ing.quantity_g,
+                plan_id = plan_row["id"]
+
+                for prompt, gen in results:
+                    if gen is None:
+                        continue
+                    recipe_row = await conn.fetchrow(
+                        """
+                        INSERT INTO hearth.recipes
+                            (household_id, name, instructions, servings)
+                        VALUES ($1::uuid, $2, $3::jsonb, $4)
+                        RETURNING id::text AS id
+                        """,
+                        household_id, gen.name, gen.instructions, body.servings,
                     )
-                prompt_to_recipe_id[prompt] = rid
-                # Image gen runs detached (service_tx inside).
-                schedule_image(rid, gen.name, household_id)
+                    rid = recipe_row["id"]
+                    for ing in gen.ingredients:
+                        await conn.execute(
+                            "INSERT INTO hearth.recipe_ingredients "
+                            "(recipe_id, fdc_id, quantity_g) "
+                            "VALUES ($1::uuid, $2, $3)",
+                            rid, ing.fdc_id, ing.quantity_g,
+                        )
+                    prompt_to_recipe_id[prompt] = rid
+                    schedule_image(rid, gen.name, household_id)
 
-            for meal in valid_meals:
-                recipe_id: str | None = None
-                if meal.use_recipe_id and meal.use_recipe_id in valid_ids:
-                    recipe_id = meal.use_recipe_id
-                elif meal.new_recipe_prompt:
-                    recipe_id = prompt_to_recipe_id.get(meal.new_recipe_prompt)
-                if not recipe_id:
-                    continue
+                for meal in valid_meals:
+                    recipe_id: str | None = None
+                    if meal.use_recipe_id and meal.use_recipe_id in valid_ids:
+                        recipe_id = meal.use_recipe_id
+                    elif meal.new_recipe_prompt:
+                        recipe_id = prompt_to_recipe_id.get(meal.new_recipe_prompt)
+                    if not recipe_id:
+                        continue
 
-                plan_date = (
-                    datetime.fromisoformat(body.start_date)
-                    + timedelta(days=meal.day_offset)
-                ).strftime("%Y-%m-%d")
+                    plan_date = (
+                        datetime.fromisoformat(body.start_date)
+                        + timedelta(days=meal.day_offset)
+                    ).strftime("%Y-%m-%d")
 
-                slot_cfg = slot_by_name.get(meal.slot)
-                portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
-                await conn.execute(
-                    """
-                    INSERT INTO hearth.meal_plan_entries
-                        (meal_plan_id, recipe_id, plan_date, slot, portions)
-                    VALUES ($1::uuid, $2::uuid, $3::date, $4, $5)
-                    """,
-                    plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions),
-                )
+                    slot_cfg = slot_by_name.get(meal.slot)
+                    portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
+                    await conn.execute(
+                        """
+                        INSERT INTO hearth.meal_plan_entries
+                            (meal_plan_id, recipe_id, plan_date, slot, portions)
+                        VALUES ($1::uuid, $2::uuid, $3::date, $4, $5)
+                        """,
+                        plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions),
+                    )
 
-            out = await _build_plan_out(conn, plan_id)
-    except Exception:
-        try:
-            await release_hold(hold_id)
-        except Exception:
-            log.exception("[plan-gen] hold release on persist failure failed")
-        raise
+                out = await _build_plan_out(conn, plan_id)
+        except Exception as e:
+            log.exception("[plan-gen] persist failed")
+            try: await release_hold(hold_id)
+            except Exception: pass
+            yield emit("error", message=f"Saving the plan failed: {e}")
+            return
 
-    log.warning(
-        "[plan-gen] DONE in %.1fs total — plan '%s' with %d entries",
-        time.monotonic() - overall_start, out.name, len(out.entries),
-    )
+        total_duration = round(time.monotonic() - overall_start, 1)
+        log.warning(
+            "[plan-gen] DONE in %.1fs — plan '%s' with %d entries",
+            total_duration, out.name, len(out.entries),
+        )
 
-    actual_recipes = len([1 for _, g in results if g is not None])
-    actual_cost = 1.0 + float(actual_recipes)
-    await finalize_hold(hold_id, actual_cost)
+        actual_recipes = len([1 for _, g in results if g is not None])
+        actual_cost = 1.0 + float(actual_recipes)
+        await finalize_hold(hold_id, actual_cost)
 
-    return out
+        # Final event with the saved plan as the payload.
+        # model_dump(mode='json') turns datetimes/UUIDs into ISO/string.
+        yield emit(
+            "complete",
+            plan=out.model_dump(mode="json"),
+            total_duration=total_duration,
+        )
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @router.post("/{plan_id}/shopping-list", response_model=ShoppingListOut)
