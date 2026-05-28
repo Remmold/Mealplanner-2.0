@@ -16,6 +16,7 @@ import {
 } from "../api";
 import { fetchProfile, type ProfileSummary } from "../lib/auth-api";
 import { Button, Card, Chip, Divider, Empty, ErrorBanner, Field, IconButton, Input, Modal, Pill, Textarea } from "./ui";
+import DateRangePicker from "./DateRangePicker";
 
 const DAYS = 7;
 const SLOTS = ["breakfast", "lunch", "dinner"] as const;
@@ -386,36 +387,16 @@ export default function MealPlan() {
                   />
                 </Field>
 
-                <div className="row gap-3 wrap">
-                  <Field>
-                    Start
-                    <Input
-                      type="date"
-                      value={genStart}
-                      onChange={(e) => onStartChange(e.target.value)}
-                      disabled={generating}
-                    />
-                  </Field>
-                  <Field>
-                    End
-                    <Input
-                      type="date"
-                      value={genEnd}
-                      min={genStart}
-                      onChange={(e) => setGenEnd(e.target.value)}
-                      disabled={generating}
-                    />
-                  </Field>
-                </div>
+                <DateRangePicker
+                  start={genStart}
+                  end={genEnd}
+                  onChange={(s, e) => { setGenStart(s); setGenEnd(e); }}
+                  maxDays={14}
+                />
 
-                {genRangeError ? (
-                  <p className="small text-warm m-0">{genRangeError}</p>
-                ) : (
-                  <p className="small muted m-0">
-                    {genDays} {genDays === 1 ? "day" : "days"} ·{" "}
-                    {formatDay(genStart)} → {formatDay(genEnd)}
-                  </p>
-                )}
+                <p className="small muted m-0 text-center">
+                  {formatDay(genStart)} → {formatDay(genEnd)} · {genDays} {genDays === 1 ? "day" : "days"}
+                </p>
               </div>
             )}
 
