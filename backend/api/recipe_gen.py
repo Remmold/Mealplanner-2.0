@@ -1,4 +1,4 @@
-"""LLM-powered recipe generation using PydanticAI + OpenAI."""
+"""LLM-powered recipe generation using PydanticAI + OpenAI (Postgres-backed)."""
 
 import os
 from pathlib import Path
@@ -7,9 +7,6 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from api.database import get_connection
-
-# Ensure .env is loaded (for OPENAI_API_KEY)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
@@ -25,56 +22,102 @@ class GeneratedRecipe(BaseModel):
     instructions: list[str]
 
 
-def _load_all_ingredients() -> list[dict]:
-    """Load curated ingredients (dbt seed ∪ pantry) joined with USDA nutrition."""
+# Nutrition for the global catalog is immutable until restart — cache it
+# once on the first tool call and reuse.
+_NUTRI_CACHE: dict[int, dict] | None = None
+
+
+async def _fetch_nutri(fdc_ids: list[int]) -> dict[int, dict]:
+    if not fdc_ids:
+        return {}
+    from api.db import get_pool
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT fdc_id, energy_kcal, protein_g, carbs_g, fat_g
+            FROM hearth.usda_ingredients
+            WHERE fdc_id = ANY($1::int[])
+            """,
+            fdc_ids,
+        )
+    return {
+        r["fdc_id"]: {
+            "kcal":    float(r["energy_kcal"]) if r["energy_kcal"] is not None else None,
+            "protein": float(r["protein_g"])   if r["protein_g"]   is not None else None,
+            "carbs":   float(r["carbs_g"])     if r["carbs_g"]     is not None else None,
+            "fat":     float(r["fat_g"])       if r["fat_g"]       is not None else None,
+        }
+        for r in rows
+    }
+
+
+async def _load_all_ingredients() -> list[dict]:
+    """Curated pantry joined with USDA nutrition (cached)."""
     from api.ingredients import load_all_curated_meta
+
     meta = load_all_curated_meta()
     if not meta:
         return []
-    fdc_ids = list(meta.keys())
-    placeholders = ", ".join(["?"] * len(fdc_ids))
-    with get_connection() as conn:
-        rows = conn.execute(
-            f"SELECT fdc_id, energy_kcal_100g, proteins_100g, carbohydrates_100g, fat_100g "
-            f"FROM usda.ingredients WHERE fdc_id IN ({placeholders})",
-            fdc_ids,
-        ).fetchall()
-    nutri = {r[0]: r for r in rows}
+
+    global _NUTRI_CACHE
+    if _NUTRI_CACHE is None:
+        _NUTRI_CACHE = await _fetch_nutri(list(meta.keys()))
+    nutri = _NUTRI_CACHE
+
     return [
         {
-            "fdc_id": fid,
-            "name": info["simple_name"],
+            "fdc_id":  fid,
+            "name":    info["simple_name"],
             "category": info["category"],
-            "kcal": (nutri.get(fid) or [None, None])[1],
-            "protein": (nutri.get(fid) or [None, None, None])[2],
-            "carbs": (nutri.get(fid) or [None, None, None, None])[3],
-            "fat": (nutri.get(fid) or [None, None, None, None, None])[4],
+            "kcal":    nutri.get(fid, {}).get("kcal"),
+            "protein": nutri.get(fid, {}).get("protein"),
+            "carbs":   nutri.get(fid, {}).get("carbs"),
+            "fat":     nutri.get(fid, {}).get("fat"),
         }
         for fid, info in meta.items()
     ]
 
 
-def _search_usda_fallback(query: str, limit: int = 25) -> list[dict]:
+async def _search_usda_fallback(query: str, limit: int = 25) -> list[dict]:
     """Search the full USDA table when curated has no hits."""
-    like = f"%{query.lower()}%"
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT fdc_id, name, food_group, energy_kcal_100g, proteins_100g, "
-            "carbohydrates_100g, fat_100g FROM usda.ingredients "
-            "WHERE lower(name) LIKE ? ORDER BY length(name), name LIMIT ?",
-            [like, limit],
-        ).fetchall()
+    from api.db import get_pool
     from api.ingredients import map_food_group
+
+    like = f"%{query.lower()}%"
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT fdc_id, description, food_group,
+                   energy_kcal, protein_g, carbs_g, fat_g
+            FROM hearth.usda_ingredients
+            WHERE lower(description) LIKE $1
+            ORDER BY length(description), description
+            LIMIT $2
+            """,
+            like, limit,
+        )
     return [
         {
-            "fdc_id": r[0], "name": r[1], "category": map_food_group(r[2]),
-            "kcal": r[3], "protein": r[4], "carbs": r[5], "fat": r[6],
+            "fdc_id":  r["fdc_id"],
+            "name":    r["description"],
+            "category": map_food_group(r["food_group"]),
+            "kcal":    float(r["energy_kcal"]) if r["energy_kcal"] is not None else None,
+            "protein": float(r["protein_g"])   if r["protein_g"]   is not None else None,
+            "carbs":   float(r["carbs_g"])     if r["carbs_g"]     is not None else None,
+            "fat":     float(r["fat_g"])       if r["fat_g"]       is not None else None,
         }
         for r in rows
     ]
 
 
-_MODEL = os.getenv("OPENAI_RECIPE_MODEL", "openai:gpt-4o")
+_MODEL_RAW = os.getenv("OPENAI_RECIPE_MODEL", "gpt-4o-mini")
+# Prefix with "openai:" if the user gave a bare model name. The .env.example
+# encourages "gpt-4o-mini"; PydanticAI normally infers the provider, but
+# being explicit removes a class of "agent silently picked wrong provider"
+# bugs.
+_MODEL = _MODEL_RAW if ":" in _MODEL_RAW else f"openai:{_MODEL_RAW}"
 
 agent = Agent(
     _MODEL,
@@ -105,14 +148,13 @@ agent = Agent(
 
 
 @agent.tool_plain
-def search_ingredients(query: str) -> str:
+async def search_ingredients(query: str) -> str:
     """Search available ingredients by name or category.
 
-    Searches the curated pantry first (preferred). If no hits, falls back
-    to the full USDA database (~8000 items). Returns fdc_id, name, category,
-    and basic nutrition per 100g.
-    """
-    all_ingredients = _load_all_ingredients()
+    Searches the curated pantry first (preferred); falls back to the full
+    USDA database (~8k items) when curated has no hits. Returns fdc_id,
+    name, category, and basic nutrition per 100g."""
+    all_ingredients = await _load_all_ingredients()
     query_lower = query.lower()
     matches = [
         ing for ing in all_ingredients
@@ -120,7 +162,7 @@ def search_ingredients(query: str) -> str:
     ]
     source = "curated"
     if not matches:
-        matches = _search_usda_fallback(query)
+        matches = await _search_usda_fallback(query)
         source = "usda"
     if not matches:
         return f"No ingredients found for '{query}'. Try a broader search."
@@ -129,7 +171,8 @@ def search_ingredients(query: str) -> str:
     for ing in matches:
         lines.append(
             f"fdc_id={ing['fdc_id']} | {ing['name']} | {ing['category']} | "
-            f"{ing['kcal']} kcal, {ing['protein']}g protein, {ing['carbs']}g carbs, {ing['fat']}g fat per 100g"
+            f"{ing['kcal']} kcal, {ing['protein']}g protein, "
+            f"{ing['carbs']}g carbs, {ing['fat']}g fat per 100g"
         )
     return "\n".join(lines)
 
