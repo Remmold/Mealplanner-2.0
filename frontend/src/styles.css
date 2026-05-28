@@ -1361,3 +1361,26 @@ input[type="checkbox"] {
   background: var(--terracotta);
   transform: scale(1.2);
 }
+
+/* Wizard-style meal slot toggle (Plan-this-week step 2). One row per slot,
+   big tap target, no inline-field cramming. */
+.meal-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 14px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  font-size: 15px;
+  transition: border-color .12s, background .12s;
+}
+.meal-toggle:hover { border-color: var(--taupe-3); }
+.meal-toggle:has(input:checked) {
+  background: var(--sage-soft);
+  border-color: #cfdbc8;
+}
+.meal-toggle input[type="checkbox"] {
+  margin: 0;
+}

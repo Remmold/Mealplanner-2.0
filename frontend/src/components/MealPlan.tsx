@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, Plus, ShoppingCart, Sparkles, X } from "lucide-react";
+import { Plus, ShoppingCart, Sparkles, X } from "lucide-react";
 import {
   fetchMealPlans,
   createMealPlan,
@@ -46,21 +46,33 @@ export default function MealPlan() {
   const [shopping, setShopping] = useState<ShoppingList | null>(null);
   const [error, setError] = useState("");
 
-  // AI weekly generator
+  // AI weekly generator — wizard-style 3-step flow
   const [genOpen, setGenOpen] = useState(false);
+  const [genStep, setGenStep] = useState<0 | 1 | 2>(0);
   const [genPrompt, setGenPrompt] = useState("");
   const [genStart, setGenStart] = useState(isoDate(new Date()));
   const [genDays, setGenDays] = useState(7);
   const [genServings, setGenServings] = useState(4);
-  const [genAdvanced, setGenAdvanced] = useState(false);
-  interface SlotSetting { enabled: boolean; portions: number; distinct: number | ""; }
-  const [slotSettings, setSlotSettings] = useState<Record<Slot, SlotSetting>>({
-    breakfast: { enabled: false, portions: 1, distinct: "" },
-    lunch:     { enabled: false, portions: 1, distinct: "" },
-    dinner:    { enabled: true,  portions: 1, distinct: "" },
-  });
+  // Per-slot batch-cook tuning (portions / distinct caps) is intentionally
+  // hidden from the UI — the planner agent infers it from keywords in the
+  // brief ("batch-cook", "matlåda", "meal prep") and applies defaults
+  // otherwise. Keeps the wizard focused.
+  const [enabledSlots, setEnabledSlots] = useState<Set<Slot>>(new Set(["dinner"]));
   const [generating, setGenerating] = useState(false);
   const [genElapsed, setGenElapsed] = useState(0);
+
+  function openGenerator() {
+    setGenStep(0);
+    setError("");
+    setGenOpen(true);
+  }
+
+  function closeGenerator() {
+    if (generating) return;
+    setGenOpen(false);
+    // Don't reset other state — if the user reopens, their last settings
+    // are still there. genStep resets on next openGenerator().
+  }
 
   // Profile context the generator should respect. Loaded once on mount;
   // refreshed when the chat agent edits the profile.
@@ -162,14 +174,13 @@ export default function MealPlan() {
   }
 
   async function runWeeklyGenerator() {
-    const slot_configs = (Object.keys(slotSettings) as Slot[])
-      .filter((s) => slotSettings[s].enabled)
-      .map((s) => ({
-        slot: s,
-        portions: Math.max(0.25, slotSettings[s].portions) || 1,
-        distinct_meals: slotSettings[s].distinct === "" ? null : Number(slotSettings[s].distinct),
-      }));
-    if (slot_configs.length === 0) { setError("Enable at least one slot in More options"); return; }
+    // Per-slot portions/distinct hidden from UI; planner infers from brief.
+    const slot_configs = Array.from(enabledSlots).map((s) => ({
+      slot: s,
+      portions: 1,
+      distinct_meals: null,
+    }));
+    if (slot_configs.length === 0) { setError("Pick at least one meal slot"); return; }
     setGenerating(true); setError(""); setGenElapsed(0);
     const t0 = Date.now();
     const timer = setInterval(() => setGenElapsed(Math.round((Date.now() - t0) / 1000)), 1000);
@@ -224,7 +235,7 @@ export default function MealPlan() {
         <h3 className="muted small overline m-0">Your plans</h3>
         <div className="row wrap gap-2">
           <Button onClick={newPlan} variant="primary" size="sm"><Plus size={14} /> New plan</Button>
-          <Button onClick={() => setGenOpen(true)} variant="accent" size="sm"><Sparkles size={14} /> Generate week with AI</Button>
+          <Button onClick={openGenerator} variant="accent" size="sm"><Sparkles size={14} /> Generate week with AI</Button>
           {plans.map((p) => (
             <Chip
               key={p.id}
@@ -314,40 +325,37 @@ export default function MealPlan() {
         </div>
       </Card>
 
-      {/* AI weekly plan generator modal — minimal by default. The system
-          leans on the household profile (built up via the chat agent's
-          discovery loop) so the user doesn't re-enter context every time. */}
-      <Modal open={genOpen} onClose={() => { if (!generating) setGenOpen(false); }} className="modal-lg">
+      {/* AI weekly plan generator — guided 3-step wizard so no single screen
+          drowns the user in fields. Per-slot batch tuning is intentionally
+          hidden (the planner reads "batch-cook"/"matlåda" from the brief). */}
+      <Modal open={genOpen} onClose={closeGenerator} className="modal-lg">
         <h3 className="row gap-2"><Sparkles size={18} /> Plan this week</h3>
 
-        <ProfileContextCard profile={profile} />
+        <div className="tour-dots mt-2" aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className={"tour-dot" + (i === genStep ? " tour-dot-active" : "")}
+            />
+          ))}
+        </div>
 
-        <Field className="field-col mt-3">
-          <span className="small muted">Anything special this week? <em>(optional)</em></span>
-          <Textarea
-            placeholder="e.g. 'batch-cook 3 dinners', 'meatless Monday', 'lighter than last week'"
-            value={genPrompt}
-            onChange={(e) => setGenPrompt(e.target.value)}
-            rows={2}
-            disabled={generating}
-          />
-        </Field>
-
-        <button
-          type="button"
-          className="link-button mt-2 row items-center"
-          onClick={() => setGenAdvanced(!genAdvanced)}
-          disabled={generating}
-        >
-          {genAdvanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          <span className="ml-1">More options</span>
-        </button>
-
-        {genAdvanced && (
-          <Card variant="soft" className="mt-2">
+        {genStep === 0 && (
+          <div className="col-2 mt-3">
+            <p className="muted m-0">First, the basics. Defaults pulled from your profile.</p>
+            <Field>
+              Cooking for how many?
+              <Input
+                type="number" min={1} numeric
+                value={genServings}
+                onChange={(e) => setGenServings(Math.max(1, Number(e.target.value) || 4))}
+                disabled={generating}
+                autoFocus
+              />
+            </Field>
             <div className="row gap-3 wrap">
               <Field>
-                Start
+                Start date
                 <Input
                   type="date"
                   value={genStart}
@@ -356,7 +364,7 @@ export default function MealPlan() {
                 />
               </Field>
               <Field>
-                Days
+                How many days?
                 <Input
                   type="number" min={1} max={14} numeric
                   value={genDays}
@@ -364,73 +372,83 @@ export default function MealPlan() {
                   disabled={generating}
                 />
               </Field>
-              <Field>
-                Servings
-                <Input
-                  type="number" min={1} numeric
-                  value={genServings}
-                  onChange={(e) => setGenServings(Math.max(1, Number(e.target.value) || 4))}
-                  disabled={generating}
-                />
-              </Field>
             </div>
+          </div>
+        )}
 
-            <Divider />
-
-            <div className="small muted mb-2">Which slots? (dinner only by default)</div>
+        {genStep === 1 && (
+          <div className="col-2 mt-3">
+            <p className="muted m-0">Which meals should Hearth plan? Most people just do dinner.</p>
             <div className="col-2">
               {(["breakfast", "lunch", "dinner"] as Slot[]).map((s) => {
-                const cfg = slotSettings[s];
+                const enabled = enabledSlots.has(s);
                 return (
-                  <div key={s} className="row gap-3 wrap items-center">
-                    <Field className="min-w-100 capitalize">
-                      <input
-                        type="checkbox"
-                        checked={cfg.enabled}
-                        onChange={() => setSlotSettings((prev) => ({
-                          ...prev, [s]: { ...prev[s], enabled: !prev[s].enabled },
-                        }))}
-                        disabled={generating}
-                      />
-                      {s}
-                    </Field>
-                    <Field title="Meals per sitting; >1 means batch-cook this much per sitting.">
-                      Portions
-                      <Input
-                        type="number" min={0.25} step={0.25} numeric
-                        value={cfg.portions}
-                        onChange={(e) => setSlotSettings((prev) => ({
-                          ...prev, [s]: { ...prev[s], portions: Number(e.target.value) || 1 },
-                        }))}
-                        disabled={generating || !cfg.enabled}
-                      />
-                    </Field>
-                    <Field title="Cap on distinct dishes in this slot across the whole week. Lower = more batch cooking.">
-                      Distinct
-                      <Input
-                        type="number" min={1} max={14} placeholder="auto" numeric
-                        value={cfg.distinct}
-                        onChange={(e) => setSlotSettings((prev) => ({
-                          ...prev, [s]: { ...prev[s], distinct: e.target.value === "" ? "" : Math.max(1, Number(e.target.value)) },
-                        }))}
-                        disabled={generating || !cfg.enabled}
-                      />
-                    </Field>
-                  </div>
+                  <label key={s} className="meal-toggle">
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={() => setEnabledSlots((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(s)) next.delete(s); else next.add(s);
+                        return next;
+                      })}
+                      disabled={generating}
+                    />
+                    <span className="capitalize">{s}</span>
+                  </label>
                 );
               })}
             </div>
-          </Card>
+          </div>
+        )}
+
+        {genStep === 2 && (
+          <div className="col-2 mt-3">
+            <ProfileContextCard profile={profile} />
+            <Field className="field-col">
+              <span className="small muted">Anything special this week? <em>(optional)</em></span>
+              <Textarea
+                placeholder="e.g. 'batch-cook 3 dinners', 'meatless Monday', 'lighter than last week'"
+                value={genPrompt}
+                onChange={(e) => setGenPrompt(e.target.value)}
+                rows={2}
+                disabled={generating}
+              />
+            </Field>
+          </div>
         )}
 
         <div className="row gap-2 mt-4">
-          <Button onClick={runWeeklyGenerator} disabled={generating} variant="accent" className="flex-1">
-            {generating ? "Drafting your week..." : "Generate this week's plan"}
-          </Button>
-          <Button onClick={() => setGenOpen(false)} disabled={generating} variant="ghost">
-            Cancel
-          </Button>
+          {genStep > 0 ? (
+            <Button variant="ghost" onClick={() => setGenStep((s) => (s - 1) as 0 | 1 | 2)} disabled={generating}>
+              Back
+            </Button>
+          ) : (
+            <Button variant="ghost" onClick={closeGenerator} disabled={generating}>
+              Cancel
+            </Button>
+          )}
+          {genStep < 2 ? (
+            <Button
+              variant="primary"
+              onClick={() => setGenStep((s) => (s + 1) as 0 | 1 | 2)}
+              disabled={generating}
+              className="flex-1"
+            >
+              Continue
+            </Button>
+          ) : (
+            <Button
+              variant="accent"
+              onClick={runWeeklyGenerator}
+              disabled={generating}
+              className="flex-1"
+            >
+              {generating ? "Drafting your week..." : "Generate this week's plan"}
+            </Button>
+          )}
         </div>
+
         {generating && (
           <Card variant="soft" className="mt-3">
             <div className="row gap-2">
