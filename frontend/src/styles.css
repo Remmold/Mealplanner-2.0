@@ -201,8 +201,11 @@ a:hover { text-decoration: underline; }
   padding: var(--space-4);
 }
 .card-warm {
-  background: var(--terracotta-soft);
-  border: 1px solid #ecc8b6;
+  /* Used by "Generate a recipe" — was terracotta-soft, which reads as a red
+     warning. Honey-soft + line-strong border keeps the warmth (the variant
+     name still fits) but feels calm and inviting rather than destructive. */
+  background: var(--honey-soft);
+  border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   padding: var(--space-4);
 }
