@@ -15,7 +15,7 @@ import {
   type ShoppingList,
 } from "../api";
 import { fetchProfile, type ProfileSummary } from "../lib/auth-api";
-import { Button, Card, Chip, Divider, Empty, ErrorBanner, Field, IconButton, Input, Modal, Textarea } from "./ui";
+import { Button, Card, Chip, Divider, Empty, ErrorBanner, Field, IconButton, Input, Modal, Pill, Textarea } from "./ui";
 
 const DAYS = 7;
 const SLOTS = ["breakfast", "lunch", "dinner"] as const;
@@ -553,7 +553,7 @@ function ProfileContextCard({ profile }: { profile: ProfileSummary | null }) {
       <p className="tiny muted m-0">Hearth will use what we've learned so far:</p>
       <div className="row wrap gap-2 mt-2">
         {chips.map((c, i) => (
-          <Chip key={i} active>{c}</Chip>
+          <Pill key={i}>{c}</Pill>
         ))}
       </div>
       <p className="tiny muted m-0 mt-2">
