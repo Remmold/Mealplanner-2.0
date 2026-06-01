@@ -137,3 +137,37 @@ def build_chat_toolset(ctx: ToolContext, proposer: PendingProposer) -> list[Tool
         )
         for wrapper, core_fn in pairs
     ]
+
+
+def build_planner_search_tools(ctx: ToolContext) -> list[Tool]:
+    """Read-only search tools for the week planner so it can find existing
+    saved/pool recipes to reuse (reuse-first) instead of generating blind.
+    No proposer — the planner only reads."""
+
+    async def list_recipes() -> str:
+        return await core.list_recipes(ctx)
+
+    async def search_recipes(query: str) -> str:
+        return await core.search_recipes(ctx, query)
+
+    async def search_pool_recipes(query: str) -> str:
+        return await core.search_pool_recipes(ctx, query)
+
+    async def get_recipe(recipe_id: str) -> str:
+        return await core.get_recipe(ctx, recipe_id)
+
+    pairs = [
+        (list_recipes, core.list_recipes),
+        (search_recipes, core.search_recipes),
+        (search_pool_recipes, core.search_pool_recipes),
+        (get_recipe, core.get_recipe),
+    ]
+    return [
+        Tool(
+            wrapper,
+            takes_ctx=False,
+            name=core_fn.__name__,
+            description=(core_fn.__doc__ or "").strip(),
+        )
+        for wrapper, core_fn in pairs
+    ]

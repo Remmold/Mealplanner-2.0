@@ -234,6 +234,39 @@ async def list_calendar_meals(ctx: ToolContext, start_date: str, end_date: str) 
     )
 
 
+async def get_calendar_conflicts(
+    ctx: ToolContext, start_date: str, end_date: str, slots: list[str],
+) -> list[dict]:
+    """Return existing calendar entries that occupy the given slots between two
+    dates (inclusive, ISO YYYY-MM-DD). Structured (not a chat tool) — used by
+    the week wizard's pre-flight to ask the user keep-or-replace per day before
+    generating, so a freshly-generated plan never double-books an occupied day."""
+    async with user_tx(ctx.user) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT e.id::text AS entry_id, e.plan_date, e.slot, e.portions,
+                   e.recipe_id::text AS recipe_id, r.name AS recipe_name
+            FROM hearth.meal_plan_entries e
+            LEFT JOIN hearth.recipes r ON r.id = e.recipe_id
+            WHERE e.plan_date BETWEEN $1::date AND $2::date
+              AND e.slot = ANY($3::text[])
+            ORDER BY e.plan_date, e.slot
+            """,
+            start_date, end_date, slots,
+        )
+    return [
+        {
+            "entry_id": r["entry_id"],
+            "plan_date": r["plan_date"].isoformat() if r["plan_date"] else "",
+            "slot": r["slot"],
+            "recipe_id": r["recipe_id"],
+            "recipe_name": r["recipe_name"],
+            "portions": float(r["portions"]),
+        }
+        for r in rows
+    ]
+
+
 async def search_usda_for_staple(ctx: ToolContext, query: str) -> str:
     """Search the USDA ingredient catalogue for a name to use with
     propose_pantry_add or propose_pantry_remove. Returns fdc_id + name

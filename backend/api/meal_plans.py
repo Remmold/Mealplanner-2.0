@@ -7,20 +7,20 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import json
 
 import asyncpg
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
 from api.auth import CurrentUser, get_current_user
-from api.db import get_current_household_id, user_tx
+from api.db import get_current_household_id, service_tx, user_tx
 from api.models import (
     MealPlanCreate,
     MealPlanEntryOut,
@@ -87,6 +87,12 @@ async def _replace_entries(
     plan_id: str,
     entries,
 ) -> None:
+    # Resolve household_id from the parent plan (every entry needs it set
+    # since the flat-calendar migration).
+    household_id = await conn.fetchval(
+        "SELECT household_id::text FROM hearth.meal_plans WHERE id = $1::uuid",
+        plan_id,
+    )
     await conn.execute(
         "DELETE FROM hearth.meal_plan_entries WHERE meal_plan_id = $1::uuid",
         plan_id,
@@ -95,10 +101,10 @@ async def _replace_entries(
         await conn.execute(
             """
             INSERT INTO hearth.meal_plan_entries
-                (meal_plan_id, recipe_id, plan_date, slot, portions)
-            VALUES ($1::uuid, $2::uuid, $3::date, $4, $5)
+                (household_id, meal_plan_id, recipe_id, plan_date, slot, portions)
+            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::date, $5, $6)
             """,
-            plan_id, e.recipe_id, e.plan_date, e.slot, e.portions,
+            household_id, plan_id, e.recipe_id, e.plan_date, e.slot, e.portions,
         )
 
 
@@ -158,6 +164,33 @@ async def create_meal_plan(
         plan_id = new_row["id"]
         await _replace_entries(conn, plan_id, body.entries)
         return await _build_plan_out(conn, plan_id)
+
+
+class CalendarConflictOut(BaseModel):
+    entry_id: str
+    plan_date: str
+    slot: str
+    recipe_id: str | None = None
+    recipe_name: str | None = None
+    portions: float
+
+
+@router.get("/conflicts", response_model=list[CalendarConflictOut])
+async def calendar_conflicts(
+    start: date,
+    end: date,
+    slots: list[str] = Query(default=["dinner"]),
+    user: CurrentUser = Depends(get_current_user),
+    household_id: str = Depends(get_current_household_id),
+):
+    """Existing meals occupying `slots` between `start` and `end` (inclusive).
+    The week wizard calls this first to offer keep/replace per occupied day."""
+    from api.agent_core.context import ToolContext
+    from api.agent_core.tools import get_calendar_conflicts
+
+    ctx = ToolContext(user=user, household_id=household_id)
+    rows = await get_calendar_conflicts(ctx, start.isoformat(), end.isoformat(), slots)
+    return [CalendarConflictOut(**r) for r in rows]
 
 
 @router.get("/{plan_id}", response_model=MealPlanOut)
@@ -227,10 +260,14 @@ class SlotConfig(BaseModel):
 
 class GenerateMealPlanRequest(BaseModel):
     prompt: str
-    start_date: str
+    start_date: date
     days: int = 7
     servings: int = 4
     slot_configs: list[SlotConfig] = [SlotConfig(slot="dinner")]
+    # Calendar entry_ids the user chose to REPLACE in the pre-flight. Any other
+    # already-occupied (date, slot) is KEPT: the planner skips it and the old
+    # meal stays. Empty => keep every occupied day (never double-book).
+    replace_entry_ids: list[str] = []
 
 
 class _PlannedMeal(BaseModel):
@@ -239,6 +276,10 @@ class _PlannedMeal(BaseModel):
     use_recipe_id: str | None = None
     new_recipe_prompt: str | None = None
     portions: float = 1
+    # When generating (new_recipe_prompt), a short note on WHY a fresh recipe
+    # instead of reusing — e.g. "no saved/pool match" or "user asked to try it".
+    # Surfaced to the user so generation is never silent.
+    reason: str | None = None
 
 
 class _PlannedWeek(BaseModel):
@@ -263,7 +304,7 @@ async def generate_meal_plan(
       planning_start    {"brief": "...", "days": 7, "slots": ["dinner"]}
       planning_done     {"meals_proposed": 7, "recipes_to_generate": 4,
                          "plan_name": "Spring Mediterranean"}
-      recipe_start      {"prompt": "Lemon-Garlic Cod..."}
+      recipe_start      {"prompt": "Lemon-Garlic Cod...", "reason": "no saved/pool match"}
       recipe_done       {"name": "Lemon-Garlic Cod...", "duration": 9.2}
       recipe_failed     {"prompt": "...", "error": "..."}
       persisting        {}
@@ -273,6 +314,9 @@ async def generate_meal_plan(
     Frontend reads the stream, surfaces events live, and uses the `complete`
     event's `plan` as the final result.
     """
+    from api.agent_core.context import ToolContext
+    from api.agent_core.tools import get_calendar_conflicts
+    from api.agent_tools import build_planner_search_tools
     from api.credits import finalize_hold, hold, release_hold
     from api.image_gen import schedule_image
     from api.profile import load_profile, render_profile_context
@@ -285,7 +329,35 @@ async def generate_meal_plan(
     if not body.slot_configs:
         raise HTTPException(400, "slot_configs must not be empty")
 
-    max_cost = 1.0 + float(body.days * len(body.slot_configs))
+    # Calendar-aware pre-flight: which (day_offset, slot) cells are free to plan?
+    # Occupied cells the user did NOT mark for replacement are KEPT (skipped) so
+    # we never double-book a day they'd already planned.
+    ctx = ToolContext(user=user, household_id=household_id)
+    slot_names = [sc.slot for sc in body.slot_configs]
+    end_date = body.start_date + timedelta(days=body.days - 1)
+    conflicts = await get_calendar_conflicts(
+        ctx, body.start_date.isoformat(), end_date.isoformat(), slot_names
+    )
+    replace_set = set(body.replace_entry_ids)
+    kept = [c for c in conflicts if c["entry_id"] not in replace_set]
+    kept_cells = {
+        ((date.fromisoformat(c["plan_date"]) - body.start_date).days, c["slot"])
+        for c in kept
+    }
+    fillable_cells = [
+        (d, sc.slot)
+        for d in range(body.days)
+        for sc in body.slot_configs
+        if (d, sc.slot) not in kept_cells
+    ]
+    if not fillable_cells:
+        raise HTTPException(
+            400,
+            "Every selected day is already planned. Mark a day Replace, or pick "
+            "a different range.",
+        )
+
+    max_cost = 1.0 + float(len(fillable_cells))
     hold_id = await hold(household_id, "weekly_plan", max_cost)
 
     slot_by_name: dict[str, SlotConfig] = {sc.slot: sc for sc in body.slot_configs}
@@ -311,30 +383,68 @@ async def generate_meal_plan(
             "across 2–4 days. Don't design 7 unique dinners for a busy household."
         )
 
+    cells_lines = "\n".join(f"  - day_offset={d}, slot={s}" for d, s in fillable_cells)
+    if kept:
+        kept_lines = "\n".join(
+            f"  - day_offset={(date.fromisoformat(c['plan_date']) - body.start_date).days}, "
+            f"slot={c['slot']}: {c['recipe_name']}"
+            for c in kept
+        )
+        kept_block = (
+            "\n\nAlready on the calendar — KEEP (do NOT plan these cells, do NOT "
+            f"repeat these dishes elsewhere in the plan):\n{kept_lines}"
+        )
+    else:
+        kept_block = ""
+
     planner_system_prompt = (
-        "You are a weekly meal planner. Given a user brief and the household's "
-        "existing saved recipes, design a coherent meal plan for the requested "
-        "days and slots.\n\n"
-        f"Slots to fill (one _PlannedMeal per slot per day):\n{slot_rules}\n\n"
+        "You are a weekly meal planner for a household that values REUSING the "
+        "recipes it already has. You have search tools — use them before "
+        "inventing anything.\n\n"
+        f"Slots and their portions:\n{slot_rules}\n\n"
+        "Fill ONLY the (day_offset, slot) cells the brief lists as available — "
+        "one _PlannedMeal each. For every cell:\n"
+        "  1. SEARCH FIRST: call search_recipes(query) for a saved recipe that "
+        "     fits the brief and slot. These are creatures of habit — reusing a "
+        "     recipe they've cooked before is the PREFERRED outcome, not a "
+        "     compromise. Set use_recipe_id to the exact id.\n"
+        "  2. If nothing saved fits, call search_pool_recipes(query) and reuse a "
+        "     pool recipe by setting use_recipe_id to its public_recipe_id.\n"
+        "  3. ONLY if neither search yields a fit, set new_recipe_prompt for a "
+        "     fresh recipe AND set `reason` to a short why (e.g. 'no saved/pool "
+        "     match', or 'user asked to try it').\n"
+        "Generation costs a credit and clutters the library — last resort. A plan "
+        "that reuses 5 saved recipes and generates 2 is BETTER than one that "
+        "generates 7.\n\n"
         "Rules:\n"
-        "- For each slot you fill, EITHER set use_recipe_id to one of the listed "
-        "  saved recipes (use the exact id), OR set new_recipe_prompt to a short "
-        "  description for a new recipe to be generated. Never both, never neither.\n"
-        "- NEVER reuse the same recipe across different slots. Breakfast, lunch "
-        "  and dinner must be disjoint sets of dishes.\n"
-        "- To batch-cook a dish across multiple days in the same slot: emit one "
-        "  _PlannedMeal per day with the SAME use_recipe_id (or an IDENTICAL "
-        "  new_recipe_prompt string — identical prompts dedup into one recipe).\n"
-        "- Reuse existing recipes when they fit the brief. Variety matters: avoid "
-        "  the same protein two days in a row UNLESS the user asked for batch "
-        "  cooking / matlåda / meal prep.\n"
-        "- Honour dietary constraints (vegetarian, gluten-free, etc.) the user "
-        "  states in the brief.\n"
-        "- new_recipe_prompt should be evocative and specific. Match the meal "
-        "  to the slot — breakfast prompts should be breakfast food.\n"
-        "- day_offset is 0-indexed.\n"
+        "- Each cell: EITHER use_recipe_id OR new_recipe_prompt — never both, "
+        "  never neither.\n"
+        "- VARIETY: never put the SAME dish (same use_recipe_id, or the same "
+        "  new_recipe_prompt) on two different days of this plan, UNLESS the user "
+        "  asked for batch-cooking / matlåda / leftovers. Week-to-week repeats are "
+        "  fine; the same dish twice in ONE plan is not.\n"
+        "- NAMED DISH = ONCE: if the brief names a specific dish to 'try' (e.g. "
+        "  'try the salmon burger'), put it on ONE day only and fill the OTHER "
+        "  days with different meals. Do NOT theme the whole week around it, and "
+        "  NEVER generate several near-identical variants of it.\n"
+        "- ALREADY ON THE CALENDAR: the brief may list meals already planned on "
+        "  some days (kept). Do NOT plan those cells, and do NOT repeat those "
+        "  dishes elsewhere in this plan.\n"
+        "- To batch-cook a dish across multiple days in the same slot (only when "
+        "  asked): emit one _PlannedMeal per day with the SAME use_recipe_id, or "
+        "  an IDENTICAL new_recipe_prompt string (identical prompts dedup into "
+        "  one recipe).\n"
+        "- NEVER reuse the same recipe across different slots; breakfast, lunch "
+        "  and dinner are disjoint dish sets.\n"
+        "- SHARE INGREDIENTS across the week when reasonable to shorten the "
+        "  shopping list — lean toward overlap; don't sacrifice the brief for it.\n"
+        "- Honour dietary constraints (vegetarian, gluten-free, allergies) "
+        "  strictly.\n"
+        "- new_recipe_prompt should be evocative and specific, and match the "
+        "  slot — breakfast prompts should be breakfast food.\n"
+        "- day_offset is 0-indexed from the plan start.\n"
         "- The `portions` field on _PlannedMeal is advisory; the server overrides "
-        "  with the slot's configured portions.\n"
+        "  it with the slot's configured portions.\n"
         "- plan_name should be evocative."
         + matlada_hint
     )
@@ -356,7 +466,12 @@ async def generate_meal_plan(
                 slots=[sc.slot for sc in body.slot_configs],
             )
 
-            planner = Agent(_PLAN_MODEL, output_type=_PlannedWeek, system_prompt=planner_system_prompt)
+            planner = Agent(
+                _PLAN_MODEL,
+                output_type=_PlannedWeek,
+                system_prompt=planner_system_prompt,
+                tools=build_planner_search_tools(ctx),
+            )
 
             async with user_tx(user) as conn:
                 existing_recipes_listing = await _list_existing_recipes_for_planner(conn)
@@ -364,13 +479,14 @@ async def generate_meal_plan(
 
             user_brief = (
                 f"Brief: {body.prompt}\n\n"
-                f"Days: {body.days}\n"
-                f"Base servings per generated recipe: {body.servings}\n"
-                f"Slots are listed in the system prompt above.\n\n"
+                f"Base servings per generated recipe: {body.servings}\n\n"
+                f"Fill EXACTLY these cells (one _PlannedMeal each):\n{cells_lines}"
+                f"{kept_block}\n\n"
                 f"--- Household profile ---\n{profile_block}\n\n"
                 f"Respect the household profile strictly: never include allergens, "
                 f"avoid dislikes, lean into likes/cuisines.\n\n"
-                f"Existing saved recipes:\n{existing_recipes_listing}"
+                f"Some saved recipes (also use the search tools to find more, and "
+                f"prefer reusing these over generating):\n{existing_recipes_listing}"
             )
 
             planner_start = time.monotonic()
@@ -396,10 +512,17 @@ async def generate_meal_plan(
         seen_prompts: set[str] = set()
         prompt_to_slot: dict[str, str] = {}
         recipe_id_to_slot: dict[str, str] = {}
+        prompt_to_reason: dict[str, str] = {}
+        filled_cells: set[tuple[int, str]] = set()
         for meal in planned.meals:
             if meal.day_offset < 0 or meal.day_offset >= body.days:
                 continue
             if meal.slot not in slot_by_name:
+                continue
+            cell = (meal.day_offset, meal.slot)
+            # Enforce calendar-awareness server-side: never plan a kept cell, and
+            # only one meal per (day, slot).
+            if cell in kept_cells or cell in filled_cells:
                 continue
             if not meal.use_recipe_id and not meal.new_recipe_prompt:
                 continue
@@ -413,10 +536,12 @@ async def generate_meal_plan(
                 if prior and prior != meal.slot:
                     continue
                 prompt_to_slot[meal.new_recipe_prompt] = meal.slot
+            filled_cells.add(cell)
             valid_meals.append(meal)
             if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen_prompts:
                 seen_prompts.add(meal.new_recipe_prompt)
                 unique_prompts.append(meal.new_recipe_prompt)
+                prompt_to_reason[meal.new_recipe_prompt] = (meal.reason or "").strip()
 
         yield emit(
             "planning_done",
@@ -430,10 +555,13 @@ async def generate_meal_plan(
         sem = asyncio.Semaphore(concurrency)
         event_queue: asyncio.Queue = asyncio.Queue()
 
-        async def gen_one(prompt: str):
+        async def gen_one(prompt: str, reason: str):
             async with sem:
                 t0 = time.monotonic()
-                await event_queue.put({"type": "recipe_start", "prompt": prompt[:100]})
+                await event_queue.put({
+                    "type": "recipe_start", "prompt": prompt[:100],
+                    "reason": reason or "no saved/pool match",
+                })
                 log.warning("[plan-gen] generating recipe: %r", prompt[:80])
                 try:
                     gen = await generate_recipe(prompt)
@@ -453,7 +581,10 @@ async def generate_meal_plan(
                     })
                     return prompt, None
 
-        tasks = [asyncio.create_task(gen_one(p)) for p in unique_prompts]
+        tasks = [
+            asyncio.create_task(gen_one(p, prompt_to_reason.get(p, "")))
+            for p in unique_prompts
+        ]
 
         # Drain the queue: each task pushes a recipe_start AND a terminal
         # (recipe_done OR recipe_failed). Loop ends when every task has
@@ -489,6 +620,15 @@ async def generate_meal_plan(
                 )
                 plan_id = plan_row["id"]
 
+                # Replace: drop the old meals the user chose to overwrite. Bounded
+                # to entries we actually detected as conflicts in this range.
+                replace_ids = [c["entry_id"] for c in conflicts if c["entry_id"] in replace_set]
+                if replace_ids:
+                    await conn.execute(
+                        "DELETE FROM hearth.meal_plan_entries WHERE id = ANY($1::uuid[])",
+                        replace_ids,
+                    )
+
                 for prompt, gen in results:
                     if gen is None:
                         continue
@@ -502,15 +642,64 @@ async def generate_meal_plan(
                         household_id, gen.name, gen.instructions, body.servings,
                     )
                     rid = recipe_row["id"]
+                    # Dedup by fdc_id (LLM sometimes emits the same code twice).
+                    grams_by_fdc: dict[int, float] = {}
                     for ing in gen.ingredients:
-                        await conn.execute(
-                            "INSERT INTO hearth.recipe_ingredients "
-                            "(recipe_id, fdc_id, quantity_g) "
-                            "VALUES ($1::uuid, $2, $3)",
-                            rid, ing.fdc_id, ing.quantity_g,
+                        grams_by_fdc[ing.fdc_id] = grams_by_fdc.get(ing.fdc_id, 0.0) + ing.quantity_g
+                    if grams_by_fdc:
+                        valid_rows = await conn.fetch(
+                            "SELECT fdc_id FROM hearth.usda_ingredients "
+                            "WHERE fdc_id = ANY($1::int[])",
+                            list(grams_by_fdc.keys()),
                         )
+                        valid_set = {r["fdc_id"] for r in valid_rows}
+                        for fdc_id, qty in grams_by_fdc.items():
+                            if fdc_id not in valid_set:
+                                continue
+                            await conn.execute(
+                                "INSERT INTO hearth.recipe_ingredients "
+                                "(recipe_id, fdc_id, quantity_g) "
+                                "VALUES ($1::uuid, $2, $3)",
+                                rid, fdc_id, qty,
+                            )
                     prompt_to_recipe_id[prompt] = rid
-                    schedule_image(rid, gen.name, household_id)
+
+                    # Auto-share into the global pool for Explore discovery,
+                    # and share images across all households that own this
+                    # recipe (per project policy).
+                    from api.image_gen import schedule_pool_image
+                    from api.public_pool import mirror_to_pool
+                    public_id = await mirror_to_pool(
+                        name=gen.name,
+                        ingredients=[{"fdc_id": i.fdc_id, "name": i.name, "quantity_g": i.quantity_g}
+                                     for i in gen.ingredients],
+                        instructions=gen.instructions,
+                        source="llm",
+                        originating_household_id=household_id,
+                    )
+                    if public_id:
+                        await conn.execute(
+                            "UPDATE hearth.recipes SET public_origin_id = $1::uuid "
+                            "WHERE id = $2::uuid",
+                            public_id, rid,
+                        )
+                        schedule_pool_image(public_id, gen.name)
+                    else:
+                        # Pool dedup hit — try to inherit the existing image.
+                        async with service_tx() as svc:
+                            pool_row = await svc.fetchrow(
+                                "SELECT id::text AS id, image_path FROM hearth.public_recipes "
+                                "WHERE lower(name) = lower($1)",
+                                gen.name,
+                            )
+                        if pool_row:
+                            await conn.execute(
+                                "UPDATE hearth.recipes SET public_origin_id = $1::uuid, "
+                                "image_path = COALESCE(image_path, $2) WHERE id = $3::uuid",
+                                pool_row["id"], pool_row["image_path"], rid,
+                            )
+                        if not pool_row or not pool_row["image_path"]:
+                            schedule_image(rid, gen.name, household_id)
 
                 for meal in valid_meals:
                     recipe_id: str | None = None
@@ -521,20 +710,17 @@ async def generate_meal_plan(
                     if not recipe_id:
                         continue
 
-                    plan_date = (
-                        datetime.fromisoformat(body.start_date)
-                        + timedelta(days=meal.day_offset)
-                    ).strftime("%Y-%m-%d")
+                    plan_date = body.start_date + timedelta(days=meal.day_offset)
 
                     slot_cfg = slot_by_name.get(meal.slot)
                     portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
                     await conn.execute(
                         """
                         INSERT INTO hearth.meal_plan_entries
-                            (meal_plan_id, recipe_id, plan_date, slot, portions)
-                        VALUES ($1::uuid, $2::uuid, $3::date, $4, $5)
+                            (household_id, meal_plan_id, recipe_id, plan_date, slot, portions)
+                        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::date, $5, $6)
                         """,
-                        plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions),
+                        household_id, plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions),
                     )
 
                 out = await _build_plan_out(conn, plan_id)
