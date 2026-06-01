@@ -101,10 +101,14 @@ async def search_pool_recipes(ctx: ToolContext, query: str) -> str:
     out = ["public_recipe_id | name [tags]"]
     for r in rows:
         tags = []
-        if r["meal_type"]: tags.append(r["meal_type"])
-        if r["cuisine"]: tags.append("/".join(r["cuisine"]))
-        if r["dietary"]: tags.append("/".join(r["dietary"]))
-        if r["time_min"]: tags.append(f"{r['time_min']}min")
+        if r["meal_type"]:
+            tags.append(r["meal_type"])
+        if r["cuisine"]:
+            tags.append("/".join(r["cuisine"]))
+        if r["dietary"]:
+            tags.append("/".join(r["dietary"]))
+        if r["time_min"]:
+            tags.append(f"{r['time_min']}min")
         tag_str = f" [{', '.join(tags)}]" if tags else ""
         out.append(f"{r['id']} | {r['name']}{tag_str}")
     return "\n".join(out)
@@ -142,8 +146,8 @@ async def get_recipe(ctx: ToolContext, recipe_id: str) -> str:
 
     return (
         f"id={row['id']} | {row['name']} (serves {row['servings']})\n"
-        f"Ingredients:\n" + ("\n".join(ing_lines) or "  (none)") + "\n"
-        f"Instructions:\n" + ("\n".join(instr_lines) or "  (none)")
+        "Ingredients:\n" + ("\n".join(ing_lines) or "  (none)") + "\n"
+        "Instructions:\n" + ("\n".join(instr_lines) or "  (none)")
     )
 
 
