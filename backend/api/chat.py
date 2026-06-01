@@ -22,7 +22,8 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
-from api.agent_tools import register_all
+from api.agent_core.context import ToolContext
+from api.agent_tools import build_chat_toolset
 from api.auth import CurrentUser, get_current_user
 from api.db import get_current_household_id, user_tx
 from api.pending_actions import PendingProposer
@@ -45,8 +46,55 @@ _SYSTEM_PROMPT_BASE = (
     "  a recipe), DO IT — don't just describe what you would do.\n"
     "- For meal plan operations, dates are ISO format YYYY-MM-DD. Slots are "
     "  'breakfast', 'lunch', or 'dinner'.\n"
-    "- When generating a recipe to fill a meal slot, first call "
-    "  generate_and_save_recipe, then add_meal_to_plan with the returned id.\n"
+    "- The household's meals live on a single shared CALENDAR, not in "
+    "  'plans'. There is no plan to create, no plan_id to track. A meal is "
+    "  simply a recipe attached to a (date, slot, portions) on the calendar. "
+    "  Use propose_add_meal_to_calendar / propose_remove_meal_from_calendar / "
+    "  propose_update_meal_portions for all calendar edits. Do not mention "
+    "  'meal plans' or 'plans' to the user — say 'calendar' instead.\n"
+    "- DEFAULT TO DINNER. The household plans dinners only — never propose "
+    "  a breakfast or lunch slot unless the user explicitly asks for one. "
+    "  When the slot isn't stated, set slot='dinner'.\n"
+    "- When the user asks for a SINGLE meal (a Friday dinner, Thursday "
+    "  breakfast, etc.) follow this strict order:\n"
+    "    1. Call search_recipes(query) to look in the household's saved "
+    "       library. Pick the top-ranked match — they're ordered "
+    "       previously-cooked > Explore-liked > other, so the leading result "
+    "       is the household's best fit.\n"
+    "    2. If nothing fits, call search_pool_recipes(query) to look in the "
+    "       global library + community pool. If you find a match, call "
+    "       propose_import_pool_recipe — it's free, instant, and the saved "
+    "       copy goes straight into search_recipes results for next time.\n"
+    "    3. ONLY if BOTH searches turn up nothing usable, fall back to "
+    "       propose_generate_recipe. Generation costs an LLM credit and "
+    "       takes ~30s, so it's the last resort.\n"
+    "  After you have a recipe id (from search, import, or generate), call "
+    "  propose_add_meal_to_calendar with that id to put it on the calendar.\n"
+    "- To see what is already on the calendar, call list_calendar_meals with "
+    "  a start and end date.\n"
+    "- If the user asks for a FULL WEEK or MULTI-DAY plan with recipes "
+    "  ('create a vegetarian week', 'plan dinners for the next 5 days'), DO NOT "
+    "  use propose_create_meal_plan on its own — that only creates an empty "
+    "  shell. Instead, tell the user to use the wizard with the nav-link "
+    "  syntax (see Navigation links below), e.g.: 'For a full week with "
+    "  recipes, [open the week wizard](nav:plan/generate) — it builds a "
+    "  coherent menu and creates the recipes in one go.' You can still help "
+    "  with single meals (one recipe + one add_meal_to_plan) here in chat — "
+    "  that's where chat tools shine.\n"
+    "\n"
+    "Navigation links:\n"
+    "- When you mention a place in the app the user should go, embed a "
+    "  clickable link using this exact format: [label](nav:<target>). The UI "
+    "  renders these as buttons inside your message. Supported targets:\n"
+    "    plan            — Meal Plan tab\n"
+    "    plan/generate   — Meal Plan tab + opens the Generate-week wizard\n"
+    "    recipes         — Recipes tab\n"
+    "    shopping        — Shopping tab\n"
+    "    profile         — Household profile tab\n"
+    "- Examples:\n"
+    "    'Your saved recipes live on the [Recipes tab](nav:recipes).'\n"
+    "    'Once accepted, you'll see it on the [Meal Plan tab](nav:plan).'\n"
+    "- Only use these targets — invalid ones render as plain text.\n"
     "- Be concise. After completing actions, give a brief summary of what you did.\n"
     "- If unsure about destructive operations (delete recipe, delete plan), "
     "  confirm with the user before acting.\n"
@@ -58,7 +106,14 @@ _SYSTEM_PROMPT_BASE = (
     "  and batch-cook preference.\n"
     "- When the user mentions something persistent (a preference, a habit, an "
     "  aversion, family size, equipment), PROPOSE it via propose_profile_field "
-    "  or propose_profile_note. Don't re-propose things already on file.\n"
+    "  whenever a structured field matches. propose_profile_note is a last "
+    "  resort for genuinely free-form observations. Specifically:\n"
+    "    * 'we don't plan breakfasts' / 'skip lunches' / 'only dinner' → "
+    "      propose_profile_field('visible_slots', '<remaining slots>')\n"
+    "    * 'cooking for 4' → propose_profile_field('family_size', '4')\n"
+    "    * 'we're vegetarian' → propose_profile_field('dietary', 'vegetarian')\n"
+    "    * 'love Thai food' → propose_profile_field('likes', 'Thai')\n"
+    "  Don't re-propose things already on file.\n"
     "- Never spam the user with questionnaires. Ask at most one natural "
     "  profile-discovery question per turn, and only when it would improve the "
     "  answer you're about to give.\n"
@@ -75,6 +130,7 @@ _SYSTEM_PROMPT_BASE = (
 
 
 async def _build_system_prompt(household_id: str) -> str:
+    from datetime import date, timedelta
     profile = await load_profile(household_id)
     profile_block = render_profile_context(profile)
     sparse_hint = ""
@@ -84,8 +140,23 @@ async def _build_system_prompt(household_id: str) -> str:
             "planning or recipe generation, ask one or two quick discovery "
             "questions first and record the answers via the profile tools."
         )
+    today = date.today()
+    # Spell out the next two weeks day-by-day so the agent can resolve
+    # "this Friday" / "next Monday" by table lookup rather than calendar math
+    # (which it gets wrong surprisingly often).
+    upcoming_lines: list[str] = []
+    for offset in range(0, 14):
+        d = today + timedelta(days=offset)
+        label = "today" if offset == 0 else "tomorrow" if offset == 1 else ""
+        suffix = f" ({label})" if label else ""
+        upcoming_lines.append(f"  {d.strftime('%A')} {d.isoformat()}{suffix}")
+    upcoming_block = "\n".join(upcoming_lines)
     return (
         _SYSTEM_PROMPT_BASE
+        + f"\n\nToday is {today.isoformat()} ({today.strftime('%A')}). "
+        + "Resolve relative dates from this anchor — never from your training "
+        + "cutoff. Here are the next 14 days; use this as your ground truth:\n"
+        + upcoming_block
         + "\n\n--- Household profile ---\n"
         + profile_block
         + sparse_hint
@@ -284,8 +355,12 @@ async def send_message(
 
     # Build a fresh agent for this turn.
     proposer = PendingProposer(session_id=sid, household_id=household_id, user=user)
-    agent = Agent(_MODEL, system_prompt=await _build_system_prompt(household_id))
-    register_all(agent, household_id, proposer, user)
+    ctx = ToolContext(user=user, household_id=household_id)
+    agent = Agent(
+        _MODEL,
+        system_prompt=await _build_system_prompt(household_id),
+        tools=build_chat_toolset(ctx, proposer),
+    )
 
     if prior_history:
         try:
