@@ -12,6 +12,8 @@ them directly, and the in-process adapter mirrors them. Keep both in sync.
 
 from __future__ import annotations
 
+from datetime import date
+
 from api.agent_core.context import Proposal, ToolContext
 from api.db import user_tx
 from api.ingredients import load_all_curated_meta
@@ -217,6 +219,13 @@ async def list_calendar_meals(ctx: ToolContext, start_date: str, end_date: str) 
     (inclusive, ISO YYYY-MM-DD). Use this to check what's already planned
     before proposing additions, and to find entry_ids when the user wants
     to remove or change something."""
+    try:
+        sd, ed = date.fromisoformat(start_date), date.fromisoformat(end_date)
+    except ValueError:
+        return (
+            f"Invalid date — use ISO YYYY-MM-DD "
+            f"(got start={start_date!r}, end={end_date!r})."
+        )
     async with user_tx(ctx.user) as conn:
         rows = await conn.fetch(
             """
@@ -227,7 +236,7 @@ async def list_calendar_meals(ctx: ToolContext, start_date: str, end_date: str) 
             WHERE e.plan_date BETWEEN $1::date AND $2::date
             ORDER BY e.plan_date, e.slot
             """,
-            start_date, end_date,
+            sd, ed,
         )
     if not rows:
         return f"Nothing planned between {start_date} and {end_date}."
@@ -245,6 +254,7 @@ async def get_calendar_conflicts(
     dates (inclusive, ISO YYYY-MM-DD). Structured (not a chat tool) — used by
     the week wizard's pre-flight to ask the user keep-or-replace per day before
     generating, so a freshly-generated plan never double-books an occupied day."""
+    sd, ed = date.fromisoformat(start_date), date.fromisoformat(end_date)
     async with user_tx(ctx.user) as conn:
         rows = await conn.fetch(
             """
@@ -256,7 +266,7 @@ async def get_calendar_conflicts(
               AND e.slot = ANY($3::text[])
             ORDER BY e.plan_date, e.slot
             """,
-            start_date, end_date, slots,
+            sd, ed, slots,
         )
     return [
         {
