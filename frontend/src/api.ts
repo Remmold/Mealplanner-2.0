@@ -16,7 +16,7 @@ async function authFetch(path: string, init?: RequestInit): Promise<Response> {
     ...((init?.headers as Record<string, string> | undefined) ?? {}),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-  return authFetch(`${path}`, { ...init, headers });
+  return fetch(`${BASE}${path}`, { ...init, headers });
 }
 
 // ------------------------------------------------------------------
@@ -26,7 +26,7 @@ async function authFetch(path: string, init?: RequestInit): Promise<Response> {
 // back. Components subscribe to this so they refetch after agent turns or
 // other writes. Dispatch with `dataChanged()` after any mutation that other
 // views might care about.
-type DataKind = "recipes" | "meal_plans" | "pantry" | "*";
+type DataKind = "recipes" | "meal_plans" | "meals" | "pantry" | "*";
 
 const listeners = new Set<(kind: DataKind) => void>();
 
@@ -42,11 +42,16 @@ export function onDataChanged(handler: (kind: DataKind) => void): () => void {
 }
 
 // ------------------------------------------------------------------
-// Navigation intents — used by chat cards to jump to a related view.
+// Navigation intents — used by chat cards / inline chat links to jump
+// to a related view. `openGenerator` on the plan intent additionally
+// triggers the weekly-plan wizard on arrival.
 // ------------------------------------------------------------------
 export type NavIntent =
   | { tab: "recipe"; recipe_id?: string }
-  | { tab: "plan"; plan_id?: string };
+  | { tab: "plan"; plan_id?: string; openGenerator?: boolean; week_start?: string }
+  | { tab: "shopping" }
+  | { tab: "profile" }
+  | { tab: "explore"; slot?: SlotFilter };
 
 const navListeners = new Set<(intent: NavIntent) => void>();
 export function navigateTo(intent: NavIntent) {
@@ -119,6 +124,7 @@ export interface RecipeIngredient {
   fdc_id: number;
   quantity_g: number;
   ingredient_name: string | null;
+  from_pantry?: boolean;
 }
 
 export interface Recipe {
@@ -128,6 +134,7 @@ export interface Recipe {
   ingredients: RecipeIngredient[];
   instructions: string[];
   servings: number;
+  meal_type: "breakfast" | "lunch" | "dinner" | null;
   image_path: string | null;
   created_at: string;
   updated_at: string;
@@ -154,12 +161,13 @@ export async function createRecipe(
   name: string,
   ingredients: { fdc_id: number; quantity_g: number }[],
   instructions: string[] = [],
-  servings: number = 4
+  servings: number = 4,
+  meal_type: "breakfast" | "lunch" | "dinner" | null = null,
 ): Promise<Recipe> {
   const res = await authFetch(`/recipes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, ingredients, instructions, servings }),
+    body: JSON.stringify({ name, ingredients, instructions, servings, meal_type }),
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
@@ -172,6 +180,7 @@ export async function updateRecipe(
     ingredients?: { fdc_id: number; quantity_g: number }[];
     instructions?: string[];
     servings?: number;
+    meal_type?: "breakfast" | "lunch" | "dinner" | null;
   }
 ): Promise<Recipe> {
   const res = await authFetch(`/recipes/${id}`, {
@@ -212,6 +221,105 @@ export async function generateRecipe(prompt: string): Promise<GeneratedRecipe> {
   return res.json();
 }
 
+/** Seed N profile-matched starter recipes into the current household.
+ *  Idempotent: skips recipes the household already has by name.
+ *  Returns the names that were actually created. */
+export async function seedStarterRecipes(count: number = 12): Promise<string[]> {
+  const qs = new URLSearchParams({ count: String(count) }).toString();
+  const res = await authFetch(`/recipes/seed-starters?${qs}`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const body = await res.json();
+  return body.created as string[];
+}
+
+// --- Explore (Tinder-style recipe discovery) ---
+
+export type SlotFilter = "any" | "breakfast" | "lunch" | "dinner";
+
+export interface ExploreCard {
+  id: string;
+  name: string;
+  meal_type: "breakfast" | "lunch" | "dinner" | null;
+  cuisine: string[];
+  dietary: string[];
+  time_min: number | null;
+  source: "starter_corpus" | "llm" | "household_share";
+  image_path: string | null;
+  ingredients_preview: string[];
+  ingredient_count: number;
+  step_count: number;
+  match_reasons: string[];
+}
+
+export interface SwipeResult {
+  saved_recipe_id: string | null;
+  saved_recipe_name: string | null;
+  profile_added_cuisines: string[];
+}
+
+export interface ExploreStats {
+  likes: number;
+  skips: number;
+  pool_size: number;
+}
+
+export interface ExploreRecipeDetail {
+  id: string;
+  name: string;
+  meal_type: "breakfast" | "lunch" | "dinner" | null;
+  cuisine: string[];
+  dietary: string[];
+  time_min: number | null;
+  source: "starter_corpus" | "llm" | "household_share";
+  image_path: string | null;
+  ingredients: Array<{
+    fdc_id: number;
+    name: string | null;
+    quantity_g: number;
+    display_quantity: number | null;
+    display_unit: string | null;
+  }>;
+  instructions: string[];
+}
+
+export async function fetchExploreRecipeDetail(id: string): Promise<ExploreRecipeDetail> {
+  const res = await authFetch(`/explore/recipe/${id}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchExploreDeck(slot: SlotFilter = "any", count = 20): Promise<ExploreCard[]> {
+  const qs = new URLSearchParams({ slot, count: String(count) }).toString();
+  const res = await authFetch(`/explore/deck?${qs}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function swipeRecipe(
+  public_recipe_id: string,
+  direction: "like" | "skip",
+): Promise<SwipeResult> {
+  const res = await authFetch(`/explore/swipe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ public_recipe_id, direction }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function undoLastSwipe(): Promise<SwipeResult> {
+  const res = await authFetch(`/explore/undo`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchExploreStats(): Promise<ExploreStats> {
+  const res = await authFetch(`/explore/stats`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
 // --- Shopping list ---
 
 export interface ShoppingListItem {
@@ -233,7 +341,41 @@ export interface ShoppingListCategory {
 
 export interface ShoppingList {
   categories: ShoppingListCategory[];
+  pantry_check: ShoppingListItem[];
   missing_recipes: string[];
+}
+
+// --- Household staples (pantry) ---
+
+export interface StapleEntry {
+  fdc_id: number;
+  name: string;
+  category: string;
+}
+
+export interface StaplesPayload {
+  items: StapleEntry[];
+  seeded_now: boolean;
+}
+
+export async function fetchStaples(): Promise<StaplesPayload> {
+  const res = await authFetch(`/staples`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function addStaple(fdc_id: number): Promise<void> {
+  const res = await authFetch(`/staples`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fdc_id }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+}
+
+export async function removeStaple(fdc_id: number): Promise<void> {
+  const res = await authFetch(`/staples/${fdc_id}`, { method: "DELETE" });
+  if (!res.ok && res.status !== 204) throw new Error(`${res.status} ${res.statusText}`);
 }
 
 export async function generateShoppingList(
@@ -366,6 +508,71 @@ export interface MealPlanEntry {
   portions: number;
 }
 
+// --- Flat calendar (the canonical model) -----------------------------------
+
+export interface MealEntry {
+  id: string;
+  recipe_id: string;
+  recipe_name: string | null;
+  plan_date: string;             // ISO YYYY-MM-DD
+  slot: "breakfast" | "lunch" | "dinner" | null;
+  portions: number;
+  image_path: string | null;
+}
+
+export async function fetchMeals(start: string, end: string): Promise<MealEntry[]> {
+  const qs = new URLSearchParams({ start, end }).toString();
+  const res = await authFetch(`/meals?${qs}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function createMeal(input: {
+  recipe_id: string;
+  plan_date: string;
+  slot?: string | null;
+  portions: number;
+}): Promise<MealEntry> {
+  const res = await authFetch(`/meals`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateMeal(
+  id: string,
+  patch: { plan_date?: string; slot?: string | null; portions?: number },
+): Promise<MealEntry> {
+  const res = await authFetch(`/meals/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export async function deleteMeal(id: string): Promise<void> {
+  const res = await authFetch(`/meals/${id}`, { method: "DELETE" });
+  if (!res.ok && res.status !== 204) throw new Error(`${res.status} ${res.statusText}`);
+}
+
+export async function mealsShoppingList(
+  start: string,
+  end: string,
+  includeTemplate: boolean = true,
+): Promise<ShoppingList> {
+  const qs = new URLSearchParams({
+    start, end, include_template: String(includeTemplate),
+  }).toString();
+  const res = await authFetch(`/meals/shopping-list?${qs}`, { method: "POST" });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
 export interface MealPlan {
   id: string;
   household_id: string;
@@ -433,13 +640,39 @@ export interface GenerateMealPlanInput {
   days?: number;
   servings?: number;
   slot_configs: SlotConfig[];
+  // Calendar entry_ids the user chose to overwrite in the pre-flight. Any other
+  // already-occupied day is kept and skipped (never double-booked).
+  replace_entry_ids?: string[];
+}
+
+export interface CalendarConflict {
+  entry_id: string;
+  plan_date: string;            // ISO YYYY-MM-DD
+  slot: string;
+  recipe_id: string | null;
+  recipe_name: string | null;
+  portions: number;
+}
+
+/** Meals already occupying the given slots in [start, end] (inclusive). The
+ * week wizard calls this first to offer keep/replace per occupied day. */
+export async function fetchCalendarConflicts(
+  start: string,
+  end: string,
+  slots: string[],
+): Promise<CalendarConflict[]> {
+  const params = new URLSearchParams({ start, end });
+  for (const s of slots) params.append("slots", s);
+  const res = await authFetch(`/meal-plans/conflicts?${params.toString()}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
 }
 
 /** One progress event from the streaming /meal-plans/generate endpoint. */
 export type GenerateEvent =
   | { type: "planning_start"; brief: string; days: number; slots: string[] }
   | { type: "planning_done"; meals_proposed: number; recipes_to_generate: number; plan_name: string }
-  | { type: "recipe_start"; prompt: string }
+  | { type: "recipe_start"; prompt: string; reason?: string }
   | { type: "recipe_done"; name: string; duration: number }
   | { type: "recipe_failed"; prompt: string; error: string }
   | { type: "persisting" }
@@ -603,6 +836,8 @@ export interface HouseholdProfile {
   cuisines: string[];
   budget_level: string | null;
   notes: string[];
+  visible_slots: string[];
+  max_ingredients_to_buy: number | null;
   updated_at: string | null;
 }
 
@@ -618,6 +853,8 @@ export type ProfilePatch = Partial<{
   cuisines: string[];
   budget_level: string | null;
   notes: string[];
+  visible_slots: string[];
+  max_ingredients_to_buy: number | null;
   append_notes: string[];
 }>;
 
