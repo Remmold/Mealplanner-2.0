@@ -16,6 +16,11 @@ from api.pending_actions import router as pending_router
 from api.image_gen import router as image_router
 from api.households import router as households_router
 from api.accounts import router as accounts_router
+from api.starter_seed import router as starter_seed_router
+from api.explore import router as explore_router
+from api.meals import router as meals_router
+from api.staples import router as staples_router
+from api.mcp_server import build_mcp_asgi, mcp_app
 from api.models import (
     AggregatedNutrition,
     Ingredient,
@@ -39,11 +44,19 @@ async def lifespan(app: FastAPI):
             await catalog_cache.load_all()
         except Exception as e:
             print(f"[catalog] failed to load (run scripts/migrate_reference_data?): {e}")
-    yield
+    # The MCP server's Streamable-HTTP session manager must run for the lifetime
+    # of the app (the mounted /mcp sub-app's own lifespan isn't auto-started).
+    async with mcp_app.session_manager.run():
+        yield
     await close_pool()
 
 
 app = FastAPI(title="Mealplanner API", version="0.1.0", lifespan=lifespan)
+
+# Mount the MCP server (thesis experiment transport). Tools require a per-request
+# Supabase JWT; see api.mcp_server. The in-process path (api.agent_tools) stays
+# the default + control group.
+app.mount("/mcp", build_mcp_asgi())
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,6 +79,10 @@ app.include_router(chat_router)
 app.include_router(profile_router)
 app.include_router(pending_router)
 app.include_router(image_router)
+app.include_router(starter_seed_router)
+app.include_router(explore_router)
+app.include_router(meals_router)
+app.include_router(staples_router)
 
 
 @app.get("/health")

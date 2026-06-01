@@ -13,6 +13,7 @@ Storage:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -255,6 +256,53 @@ def _derive_title(first_user_msg: str) -> str:
     return (text[:60] + "…") if len(text) > 60 else text or "New chat"
 
 
+def _extract_proposal(content) -> dict | None:
+    """Pull a {kind, summary, params} descriptor out of one MCP tool-return
+    payload, if it carries one. Tolerant of the shapes PydanticAI may surface an
+    MCP result as: a dict, a JSON string, a list of content blocks, or an object
+    exposing `.structuredContent` / `.text`."""
+    def from_dict(d) -> dict | None:
+        if isinstance(d, dict) and d.get("status") == "proposed" and d.get("kind"):
+            return {"kind": d["kind"], "summary": d.get("summary", ""), "params": d.get("params", {})}
+        return None
+
+    if isinstance(content, dict):
+        return from_dict(content)
+    if isinstance(content, str):
+        try:
+            return from_dict(json.loads(content))
+        except Exception:
+            return None
+    if isinstance(content, (list, tuple)):
+        for item in content:
+            got = _extract_proposal(item)
+            if got:
+                return got
+        return None
+    sc = getattr(content, "structuredContent", None)
+    if sc is not None:
+        got = from_dict(sc) if isinstance(sc, dict) else _extract_proposal(sc)
+        if got:
+            return got
+    txt = getattr(content, "text", None)
+    if isinstance(txt, str):
+        return _extract_proposal(txt)
+    return None
+
+
+def _harvest_mcp_proposals(messages, proposer: PendingProposer) -> None:
+    """Scan a completed MCP run for proposed-action descriptors (returned by the
+    server's write tools) and buffer them on the host's proposer, in order. The
+    proposer is then flushed exactly as for the in-process path."""
+    for msg in messages:
+        for part in getattr(msg, "parts", []):
+            if getattr(part, "part_kind", None) != "tool-return":
+                continue
+            payload = _extract_proposal(getattr(part, "content", None))
+            if payload:
+                proposer.propose(payload["kind"], payload["summary"], payload["params"])
+
+
 # ============================================================
 # Endpoints
 # ============================================================
@@ -359,14 +407,25 @@ async def send_message(
     prior_history = row["message_history"] or []
     title = row["title"]
 
-    # Build a fresh agent for this turn.
+    # Build a fresh agent for this turn. Transport is selectable for the MCP
+    # thesis: in_process (control) attaches tools directly; mcp (experiment)
+    # reaches the SAME tools over the MCP server, forwarding the user's JWT.
     proposer = PendingProposer(session_id=sid, household_id=household_id, user=user)
     ctx = ToolContext(user=user, household_id=household_id)
-    agent = Agent(
-        _MODEL,
-        system_prompt=await _build_system_prompt(household_id),
-        tools=build_chat_toolset(ctx, proposer),
-    )
+    system_prompt = await _build_system_prompt(household_id)
+    transport = os.getenv("HEARTH_AGENT_TRANSPORT", "in_process").lower()
+    if transport == "mcp":
+        from pydantic_ai.mcp import MCPServerStreamableHTTP
+        mcp_url = os.getenv("HEARTH_MCP_URL", "http://127.0.0.1:8000/mcp/")
+        mcp_server = MCPServerStreamableHTTP(
+            mcp_url, headers={"Authorization": f"Bearer {user.raw_token}"}
+        )
+        agent = Agent(_MODEL, system_prompt=system_prompt, toolsets=[mcp_server])
+    else:
+        agent = Agent(
+            _MODEL, system_prompt=system_prompt,
+            tools=build_chat_toolset(ctx, proposer),
+        )
 
     if prior_history:
         try:
@@ -377,7 +436,15 @@ async def send_message(
         typed_prior = []
 
     try:
-        result = await agent.run(body.content, message_history=typed_prior)
+        if transport == "mcp":
+            # MCP servers are connection-managed; `async with agent` opens them.
+            async with agent:
+                result = await agent.run(body.content, message_history=typed_prior)
+            # Over MCP the write tools don't touch our proposer — they return
+            # descriptors. Harvest them from the run and queue them host-side.
+            _harvest_mcp_proposals(result.all_messages(), proposer)
+        else:
+            result = await agent.run(body.content, message_history=typed_prior)
     except Exception as e:
         raise HTTPException(500, f"Agent failed: {e}")
 

@@ -10,11 +10,12 @@ dependencies = [
     "dbt-duckdb>=1.8.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
-    "pydantic-ai-slim[openai]>=1.73.0",
+    "pydantic-ai-slim[openai,mcp]>=1.73.0",
     # Supabase auth + Postgres direct connection (real-product roadmap)
     "asyncpg>=0.29.0",
     "pyjwt[crypto]>=2.8.0",
     "supabase>=2.5.0",
+    "datasets>=4.8.5",
 ]
 
 [project.optional-dependencies]
