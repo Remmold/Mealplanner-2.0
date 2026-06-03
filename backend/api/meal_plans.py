@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -34,6 +35,33 @@ log = logging.getLogger("mealplan.generate")
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 router = APIRouter(prefix="/meal-plans", tags=["meal-plans"])
+
+# Descriptors + proteins stripped when reducing a dish name to its "family" so
+# that, e.g., "Classic Beef Tacos" and "Spicy Fish Tacos" both collapse to
+# "taco" — the household wants ONE taco night, not a week of taco variants.
+_DESC_WORDS = {
+    # connectors / adjectives
+    "with", "and", "the", "a", "of", "in", "on", "homemade", "classic", "fresh",
+    "spicy", "creamy", "grilled", "roasted", "baked", "fried", "easy", "quick",
+    "zesty", "savory", "hearty", "simple", "style", "served", "topped", "loaded",
+    # proteins (so the family is the dish, not the filling)
+    "beef", "chicken", "pork", "fish", "salmon", "cod", "tuna", "shrimp", "prawn",
+    "turkey", "lamb", "tofu", "veggie", "vegetable", "vegetarian", "vegan", "bean",
+    "lentil", "egg", "ham", "bacon", "sausage",
+}
+
+
+def _dish_family(text: str) -> str:
+    """Coarse dish key for variety dedup: lowercase, strip punctuation/descriptors,
+    singularise, keep the first few significant words. Best paired with a model-
+    provided short `dish_name`; falls back to a recipe name / prompt."""
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
+    words = [
+        w[:-1] if len(w) > 3 and w.endswith("s") else w
+        for w in cleaned.split()
+        if w and w not in _DESC_WORDS
+    ]
+    return " ".join(words[:4])
 
 
 # ----------------------------------------------------------------------------
@@ -276,6 +304,11 @@ class _PlannedMeal(BaseModel):
     use_recipe_id: str | None = None
     new_recipe_prompt: str | None = None
     portions: float = 1
+    # Short dish FAMILY in 1-2 words, lowercase, no adjectives/proteins — e.g.
+    # "tacos", "burger", "curry", "stir fry", "pasta". The server enforces at
+    # most one meal per family per plan (non-batch), so "beef tacos" and "fish
+    # tacos" (both family "tacos") never fill the week together.
+    dish_name: str | None = None
     # When generating (new_recipe_prompt), a short note on WHY a fresh recipe
     # instead of reusing — e.g. "no saved/pool match" or "user asked to try it".
     # Surfaced to the user so generation is never silent.
@@ -419,14 +452,19 @@ async def generate_meal_plan(
         "Rules:\n"
         "- Each cell: EITHER use_recipe_id OR new_recipe_prompt — never both, "
         "  never neither.\n"
-        "- VARIETY: never put the SAME dish (same use_recipe_id, or the same "
-        "  new_recipe_prompt) on two different days of this plan, UNLESS the user "
-        "  asked for batch-cooking / matlåda / leftovers. Week-to-week repeats are "
-        "  fine; the same dish twice in ONE plan is not.\n"
-        "- NAMED DISH = ONCE: if the brief names a specific dish to 'try' (e.g. "
-        "  'try the salmon burger'), put it on ONE day only and fill the OTHER "
-        "  days with different meals. Do NOT theme the whole week around it, and "
-        "  NEVER generate several near-identical variants of it.\n"
+        "- Set `dish_name` on EVERY meal to its short FAMILY (1-2 words, "
+        "  lowercase, no adjectives or proteins): tacos, burger, curry, stir "
+        "  fry, pasta, salad, soup, etc.\n"
+        "- VARIETY: a `dish_name` family may appear on AT MOST ONE day of the "
+        "  plan, UNLESS the user asked for batch-cooking / matlåda / leftovers. "
+        "  'beef tacos' and 'fish tacos' are BOTH family 'tacos' — pick one and "
+        "  move on. Week-to-week repeats are fine; the same family twice in ONE "
+        "  plan is not.\n"
+        "- NAMED DISHES = ONCE EACH: if the brief names dishes to 'try' (e.g. "
+        "  'tacos and salmon burgers'), include EACH named dish on exactly ONE "
+        "  day, then fill the REST of the days with DIFFERENT families. NEVER "
+        "  theme the whole week around the named dishes, and never generate "
+        "  several near-identical variants of one.\n"
         "- ALREADY ON THE CALENDAR: the brief may list meals already planned on "
         "  some days (kept). Do NOT plan those cells, and do NOT repeat those "
         "  dishes elsewhere in this plan.\n"
@@ -520,6 +558,7 @@ async def generate_meal_plan(
                 """
             )
         valid_ids = {r["id"] for r in saved_rows}
+        saved_by_id = {r["id"]: r for r in saved_rows}
 
         valid_meals: list[_PlannedMeal] = []
         unique_prompts: list[str] = []
@@ -558,45 +597,63 @@ async def generate_meal_plan(
                 prompt_to_reason[meal.new_recipe_prompt] = (meal.reason or "").strip()
 
         # ---- Enforce dish-level variety (the model ignores the prompt rule). ----
-        # In a non-batch slot (distinct_meals unset), a dish may appear on at most
-        # ONE day. Strip later repeats, then backfill the freed days with the
-        # household's OTHER saved recipes (reuse-first); generate only if the
-        # library can't cover them. This is what makes "try the X" land once.
-        def _dish_key(m: _PlannedMeal) -> str:
+        # In a non-batch slot a dish FAMILY may occupy at most one day. Families
+        # come from the model's `dish_name` (so "beef tacos" and "fish tacos" both
+        # collapse to "taco"); near-identical variants therefore can't fill the
+        # week. Strip the repeats and backfill freed days with the household's
+        # OTHER saved recipes (reuse-first); generate only if the library can't
+        # cover them. This is what makes "try tacos and salmon burgers" land each
+        # once with the rest of the days different.
+        def _meal_family(m: _PlannedMeal) -> str:
+            if m.dish_name and m.dish_name.strip():
+                return _dish_family(m.dish_name)
             if m.use_recipe_id:
-                return f"id:{m.use_recipe_id}"
-            return "p:" + " ".join((m.new_recipe_prompt or "").lower().split())
+                name = saved_by_id.get(m.use_recipe_id, {}).get("name", "")
+                return _dish_family(name) or f"id:{m.use_recipe_id}"
+            return _dish_family(m.new_recipe_prompt or "")
 
-        used_keys_by_slot: dict[str, set[str]] = {}
-        # Kept dishes already occupy their slot — don't reuse them elsewhere.
-        for c in kept:
+        used_fam: dict[str, set[str]] = {}   # slot -> dish families already taken
+        used_ids: dict[str, set[str]] = {}   # slot -> recipe ids already taken
+        for c in kept:                       # kept days occupy their slot already
+            fam = _dish_family(c.get("recipe_name") or "")
+            if fam:
+                used_fam.setdefault(c["slot"], set()).add(fam)
             if c.get("recipe_id"):
-                used_keys_by_slot.setdefault(c["slot"], set()).add(f"id:{c['recipe_id']}")
+                used_ids.setdefault(c["slot"], set()).add(c["recipe_id"])
 
         deduped: list[_PlannedMeal] = []
         freed_cells: list[tuple[int, str]] = []
         for meal in valid_meals:
             sc = slot_by_name[meal.slot]
             batch = sc.distinct_meals is not None and sc.distinct_meals > 0
-            used = used_keys_by_slot.setdefault(meal.slot, set())
-            key = _dish_key(meal)
-            if not batch and key in used:
+            fams = used_fam.setdefault(meal.slot, set())
+            ids = used_ids.setdefault(meal.slot, set())
+            fam = _meal_family(meal)
+            taken = (fam and fam in fams) or (meal.use_recipe_id and meal.use_recipe_id in ids)
+            if not batch and taken:
                 freed_cells.append((meal.day_offset, meal.slot))
                 continue
-            used.add(key)
+            if fam:
+                fams.add(fam)
+            if meal.use_recipe_id:
+                ids.add(meal.use_recipe_id)
             deduped.append(meal)
 
-        # Backfill freed days with distinct saved recipes, then fresh generation.
+        # Backfill freed days with distinct saved recipes (different family + id),
+        # then a fresh distinct generation if the library is exhausted.
         for doff, slot in freed_cells:
-            used = used_keys_by_slot.setdefault(slot, set())
+            fams = used_fam.setdefault(slot, set())
+            ids = used_ids.setdefault(slot, set())
             pick = next(
                 (r for r in saved_rows
-                 if f"id:{r['id']}" not in used
+                 if r["id"] not in ids
+                 and _dish_family(r["name"]) not in fams
                  and (not r["meal_type"] or r["meal_type"] == slot)),
                 None,
             )
             if pick:
-                used.add(f"id:{pick['id']}")
+                ids.add(pick["id"])
+                fams.add(_dish_family(pick["name"]))
                 deduped.append(_PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"]))
             else:
                 gen_prompt = (
