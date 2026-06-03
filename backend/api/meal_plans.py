@@ -565,97 +565,84 @@ def _assemble_week(
     return deduped, unique_prompts, prompt_to_reason
 
 
-@router.post("/generate")
-async def generate_meal_plan(
-    body: GenerateMealPlanRequest,
-    user: CurrentUser = Depends(get_current_user),
-    household_id: str = Depends(get_current_household_id),
-):
-    """LLM-powered weekly plan generator — streams NDJSON progress events.
+async def _save_generated_recipe(conn, gen, household_id: str, servings: int) -> str:
+    """Persist one generated recipe: insert it (+ valid ingredients), mirror to
+    the public pool for Explore, and schedule an image. Returns the new recipe id.
+    Shared by /generate and /regenerate."""
+    from api.image_gen import schedule_image, schedule_pool_image
+    from api.public_pool import mirror_to_pool
 
-    Response is `application/x-ndjson`: one JSON object per line, terminated
-    by `\\n`. Event types (the `type` field):
-
-      planning_start    {"brief": "...", "days": 7, "slots": ["dinner"]}
-      planning_done     {"meals_proposed": 7, "recipes_to_generate": 4,
-                         "plan_name": "Spring Mediterranean"}
-      recipe_start      {"prompt": "Lemon-Garlic Cod...", "reason": "no saved/pool match"}
-      recipe_done       {"name": "Lemon-Garlic Cod...", "duration": 9.2}
-      recipe_failed     {"prompt": "...", "error": "..."}
-      persisting        {}
-      complete          {"plan": <MealPlanOut>, "total_duration": 47.1}
-      error             {"message": "..."}
-
-    Frontend reads the stream, surfaces events live, and uses the `complete`
-    event's `plan` as the final result.
-    """
-    from api.agent_core.context import ToolContext
-    from api.agent_core.tools import _is_uuid, get_calendar_conflicts
-    from api.agent_tools import build_planner_search_tools
-    from api.credits import finalize_hold, hold, release_hold
-    from api.image_gen import schedule_image
-    from api.profile import load_profile, render_profile_context
-    from api.recipe_gen import generate_recipe
-
-    # Validation + credit hold happen synchronously up front so 4xx errors
-    # are normal HTTPExceptions (not mid-stream).
-    if body.days < 1 or body.days > 14:
-        raise HTTPException(400, "days must be 1..14")
-    if not body.slot_configs:
-        raise HTTPException(400, "slot_configs must not be empty")
-
-    # Calendar-aware pre-flight: which (day_offset, slot) cells are free to plan?
-    # Occupied cells the user did NOT mark for replacement are KEPT (skipped) so
-    # we never double-book a day they'd already planned.
-    ctx = ToolContext(user=user, household_id=household_id)
-    slot_names = [sc.slot for sc in body.slot_configs]
-    end_date = body.start_date + timedelta(days=body.days - 1)
-    conflicts = await get_calendar_conflicts(
-        ctx, body.start_date.isoformat(), end_date.isoformat(), slot_names
+    recipe_row = await conn.fetchrow(
+        """
+        INSERT INTO hearth.recipes (household_id, name, instructions, servings)
+        VALUES ($1::uuid, $2, $3::jsonb, $4)
+        RETURNING id::text AS id
+        """,
+        household_id, gen.name, gen.instructions, servings,
     )
-    replace_set = set(body.replace_entry_ids)
-    kept = [c for c in conflicts if c["entry_id"] not in replace_set]
-    kept_cells = {
-        ((date.fromisoformat(c["plan_date"]) - body.start_date).days, c["slot"])
-        for c in kept
-    }
-    fillable_cells = [
-        (d, sc.slot)
-        for d in range(body.days)
-        for sc in body.slot_configs
-        if (d, sc.slot) not in kept_cells
-    ]
-    if not fillable_cells:
-        raise HTTPException(
-            400,
-            "Every selected day is already planned. Mark a day Replace, or pick "
-            "a different range.",
+    rid = recipe_row["id"]
+    # Dedup by fdc_id (LLM sometimes emits the same code twice).
+    grams_by_fdc: dict[int, float] = {}
+    for ing in gen.ingredients:
+        grams_by_fdc[ing.fdc_id] = grams_by_fdc.get(ing.fdc_id, 0.0) + ing.quantity_g
+    if grams_by_fdc:
+        valid_rows = await conn.fetch(
+            "SELECT fdc_id FROM hearth.usda_ingredients WHERE fdc_id = ANY($1::int[])",
+            list(grams_by_fdc.keys()),
         )
+        valid_set = {r["fdc_id"] for r in valid_rows}
+        for fdc_id, qty in grams_by_fdc.items():
+            if fdc_id in valid_set:
+                await conn.execute(
+                    "INSERT INTO hearth.recipe_ingredients (recipe_id, fdc_id, quantity_g) "
+                    "VALUES ($1::uuid, $2, $3)",
+                    rid, fdc_id, qty,
+                )
 
-    max_cost = 1.0 + float(len(fillable_cells))
-    hold_id = await hold(household_id, "weekly_plan", max_cost)
-
-    slot_by_name: dict[str, SlotConfig] = {sc.slot: sc for sc in body.slot_configs}
-
-    # Build per-slot rules for the planner prompt.
-    slot_rules_lines: list[str] = []
-    for sc in body.slot_configs:
-        line = f"  * {sc.slot}: portions={sc.portions}"
-        if sc.distinct_meals is not None and sc.distinct_meals > 0:
-            line += (
-                f", HARD CAP of {sc.distinct_meals} distinct dishes across all "
-                f"{body.days} days (batch-cook / matlåda style — each dish repeats)"
+    public_id = await mirror_to_pool(
+        name=gen.name,
+        ingredients=[{"fdc_id": i.fdc_id, "name": i.name, "quantity_g": i.quantity_g}
+                     for i in gen.ingredients],
+        instructions=gen.instructions,
+        source="llm",
+        originating_household_id=household_id,
+    )
+    if public_id:
+        await conn.execute(
+            "UPDATE hearth.recipes SET public_origin_id = $1::uuid WHERE id = $2::uuid",
+            public_id, rid,
+        )
+        schedule_pool_image(public_id, gen.name)
+    else:
+        async with service_tx() as svc:
+            pool_row = await svc.fetchrow(
+                "SELECT id::text AS id, image_path FROM hearth.public_recipes "
+                "WHERE lower(name) = lower($1)",
+                gen.name,
             )
-        slot_rules_lines.append(line)
-    slot_rules = "\n".join(slot_rules_lines)
+        if pool_row:
+            await conn.execute(
+                "UPDATE hearth.recipes SET public_origin_id = $1::uuid, "
+                "image_path = COALESCE(image_path, $2) WHERE id = $3::uuid",
+                pool_row["id"], pool_row["image_path"], rid,
+            )
+        if not pool_row or not pool_row["image_path"]:
+            schedule_image(rid, gen.name, household_id)
+    return rid
 
-    brief_lc = body.prompt.lower()
-    # Explicit lunchbox intent only — "busy"/"work hard" over-triggered, turning
-    # ordinary weeks into leftover weeks.
-    lunchbox_mode = any(w in brief_lc for w in [
+
+def _is_lunchbox_brief(brief_lc: str) -> bool:
+    """Explicit lunchbox/batch intent in the brief. ('busy'/'work hard' were
+    dropped — they over-triggered, turning ordinary weeks into leftover weeks.)"""
+    return any(w in brief_lc for w in [
         "matlåd", "matlad", "batch", "meal prep", "mealprep", "lunchbox",
         "lunch box", "lunch-box", "leftover", "prep ahead", "prep-ahead",
     ])
+
+
+def _planner_system_prompt(slot_rules: str, lunchbox_mode: bool) -> str:
+    """The reuse-first / variety / lunchbox planner system prompt. Shared by
+    /generate and /regenerate so both behave identically."""
     matlada_hint = ""
     if lunchbox_mode:
         matlada_hint = (
@@ -665,22 +652,7 @@ async def generate_meal_plan(
             "be eaten again as next-day leftovers. Do NOT build the week around "
             "tacos, burgers, fried or fresh dishes — they don't keep as lunchboxes."
         )
-
-    cells_lines = "\n".join(f"  - day_offset={d}, slot={s}" for d, s in fillable_cells)
-    if kept:
-        kept_lines = "\n".join(
-            f"  - day_offset={(date.fromisoformat(c['plan_date']) - body.start_date).days}, "
-            f"slot={c['slot']}: {c['recipe_name']}"
-            for c in kept
-        )
-        kept_block = (
-            "\n\nAlready on the calendar — KEEP (do NOT plan these cells, do NOT "
-            f"repeat these dishes elsewhere in the plan):\n{kept_lines}"
-        )
-    else:
-        kept_block = ""
-
-    planner_system_prompt = (
+    return (
         "You are a weekly meal planner for a household that values REUSING the "
         "recipes it already has. You have search tools — use them before "
         "inventing anything.\n\n"
@@ -741,6 +713,111 @@ async def generate_meal_plan(
         "- plan_name should be evocative."
         + matlada_hint
     )
+
+
+@router.post("/generate")
+async def generate_meal_plan(
+    body: GenerateMealPlanRequest,
+    user: CurrentUser = Depends(get_current_user),
+    household_id: str = Depends(get_current_household_id),
+):
+    """LLM-powered weekly plan generator — streams NDJSON progress events.
+
+    Response is `application/x-ndjson`: one JSON object per line, terminated
+    by `\\n`. Event types (the `type` field):
+
+      planning_start    {"brief": "...", "days": 7, "slots": ["dinner"]}
+      planning_done     {"meals_proposed": 7, "recipes_to_generate": 4,
+                         "plan_name": "Spring Mediterranean"}
+      recipe_start      {"prompt": "Lemon-Garlic Cod...", "reason": "no saved/pool match"}
+      recipe_done       {"name": "Lemon-Garlic Cod...", "duration": 9.2}
+      recipe_failed     {"prompt": "...", "error": "..."}
+      persisting        {}
+      complete          {"plan": <MealPlanOut>, "total_duration": 47.1}
+      error             {"message": "..."}
+
+    Frontend reads the stream, surfaces events live, and uses the `complete`
+    event's `plan` as the final result.
+    """
+    from api.agent_core.context import ToolContext
+    from api.agent_core.tools import _is_uuid, get_calendar_conflicts
+    from api.agent_tools import build_planner_search_tools
+    from api.credits import finalize_hold, hold, release_hold
+    from api.profile import load_profile, render_profile_context
+    from api.recipe_gen import generate_recipe
+
+    # Validation + credit hold happen synchronously up front so 4xx errors
+    # are normal HTTPExceptions (not mid-stream).
+    if body.days < 1 or body.days > 14:
+        raise HTTPException(400, "days must be 1..14")
+    if not body.slot_configs:
+        raise HTTPException(400, "slot_configs must not be empty")
+
+    # Calendar-aware pre-flight: which (day_offset, slot) cells are free to plan?
+    # Occupied cells the user did NOT mark for replacement are KEPT (skipped) so
+    # we never double-book a day they'd already planned.
+    ctx = ToolContext(user=user, household_id=household_id)
+    slot_names = [sc.slot for sc in body.slot_configs]
+    end_date = body.start_date + timedelta(days=body.days - 1)
+    conflicts = await get_calendar_conflicts(
+        ctx, body.start_date.isoformat(), end_date.isoformat(), slot_names
+    )
+    replace_set = set(body.replace_entry_ids)
+    kept = [c for c in conflicts if c["entry_id"] not in replace_set]
+    kept_cells = {
+        ((date.fromisoformat(c["plan_date"]) - body.start_date).days, c["slot"])
+        for c in kept
+    }
+    fillable_cells = [
+        (d, sc.slot)
+        for d in range(body.days)
+        for sc in body.slot_configs
+        if (d, sc.slot) not in kept_cells
+    ]
+    if not fillable_cells:
+        raise HTTPException(
+            400,
+            "Every selected day is already planned. Mark a day Replace, or pick "
+            "a different range.",
+        )
+
+    max_cost = 1.0 + float(len(fillable_cells))
+    hold_id = await hold(household_id, "weekly_plan", max_cost)
+
+    slot_by_name: dict[str, SlotConfig] = {sc.slot: sc for sc in body.slot_configs}
+
+    # Build per-slot rules for the planner prompt.
+    slot_rules_lines: list[str] = []
+    for sc in body.slot_configs:
+        line = f"  * {sc.slot}: portions={sc.portions}"
+        if sc.distinct_meals is not None and sc.distinct_meals > 0:
+            line += (
+                f", HARD CAP of {sc.distinct_meals} distinct dishes across all "
+                f"{body.days} days (batch-cook / matlåda style — each dish repeats)"
+            )
+        slot_rules_lines.append(line)
+    slot_rules = "\n".join(slot_rules_lines)
+
+    brief_lc = body.prompt.lower()
+    # Explicit lunchbox intent only — "busy"/"work hard" over-triggered, turning
+    # ordinary weeks into leftover weeks.
+    lunchbox_mode = _is_lunchbox_brief(brief_lc)
+
+    cells_lines = "\n".join(f"  - day_offset={d}, slot={s}" for d, s in fillable_cells)
+    if kept:
+        kept_lines = "\n".join(
+            f"  - day_offset={(date.fromisoformat(c['plan_date']) - body.start_date).days}, "
+            f"slot={c['slot']}: {c['recipe_name']}"
+            for c in kept
+        )
+        kept_block = (
+            "\n\nAlready on the calendar — KEEP (do NOT plan these cells, do NOT "
+            f"repeat these dishes elsewhere in the plan):\n{kept_lines}"
+        )
+    else:
+        kept_block = ""
+
+    planner_system_prompt = _planner_system_prompt(slot_rules, lunchbox_mode)
 
     async def event_stream():
         def emit(event_type: str, **data) -> str:
@@ -928,74 +1005,9 @@ async def generate_meal_plan(
                 for prompt, gen in results:
                     if gen is None:
                         continue
-                    recipe_row = await conn.fetchrow(
-                        """
-                        INSERT INTO hearth.recipes
-                            (household_id, name, instructions, servings)
-                        VALUES ($1::uuid, $2, $3::jsonb, $4)
-                        RETURNING id::text AS id
-                        """,
-                        household_id, gen.name, gen.instructions, body.servings,
+                    prompt_to_recipe_id[prompt] = await _save_generated_recipe(
+                        conn, gen, household_id, body.servings
                     )
-                    rid = recipe_row["id"]
-                    # Dedup by fdc_id (LLM sometimes emits the same code twice).
-                    grams_by_fdc: dict[int, float] = {}
-                    for ing in gen.ingredients:
-                        grams_by_fdc[ing.fdc_id] = grams_by_fdc.get(ing.fdc_id, 0.0) + ing.quantity_g
-                    if grams_by_fdc:
-                        valid_rows = await conn.fetch(
-                            "SELECT fdc_id FROM hearth.usda_ingredients "
-                            "WHERE fdc_id = ANY($1::int[])",
-                            list(grams_by_fdc.keys()),
-                        )
-                        valid_set = {r["fdc_id"] for r in valid_rows}
-                        for fdc_id, qty in grams_by_fdc.items():
-                            if fdc_id not in valid_set:
-                                continue
-                            await conn.execute(
-                                "INSERT INTO hearth.recipe_ingredients "
-                                "(recipe_id, fdc_id, quantity_g) "
-                                "VALUES ($1::uuid, $2, $3)",
-                                rid, fdc_id, qty,
-                            )
-                    prompt_to_recipe_id[prompt] = rid
-
-                    # Auto-share into the global pool for Explore discovery,
-                    # and share images across all households that own this
-                    # recipe (per project policy).
-                    from api.image_gen import schedule_pool_image
-                    from api.public_pool import mirror_to_pool
-                    public_id = await mirror_to_pool(
-                        name=gen.name,
-                        ingredients=[{"fdc_id": i.fdc_id, "name": i.name, "quantity_g": i.quantity_g}
-                                     for i in gen.ingredients],
-                        instructions=gen.instructions,
-                        source="llm",
-                        originating_household_id=household_id,
-                    )
-                    if public_id:
-                        await conn.execute(
-                            "UPDATE hearth.recipes SET public_origin_id = $1::uuid "
-                            "WHERE id = $2::uuid",
-                            public_id, rid,
-                        )
-                        schedule_pool_image(public_id, gen.name)
-                    else:
-                        # Pool dedup hit — try to inherit the existing image.
-                        async with service_tx() as svc:
-                            pool_row = await svc.fetchrow(
-                                "SELECT id::text AS id, image_path FROM hearth.public_recipes "
-                                "WHERE lower(name) = lower($1)",
-                                gen.name,
-                            )
-                        if pool_row:
-                            await conn.execute(
-                                "UPDATE hearth.recipes SET public_origin_id = $1::uuid, "
-                                "image_path = COALESCE(image_path, $2) WHERE id = $3::uuid",
-                                pool_row["id"], pool_row["image_path"], rid,
-                            )
-                        if not pool_row or not pool_row["image_path"]:
-                            schedule_image(rid, gen.name, household_id)
 
                 # Fallback so a day is never silently blanked when its recipe
                 # can't be resolved (pool import miss / failed generation): grab an
@@ -1074,6 +1086,217 @@ async def generate_meal_plan(
         )
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+class RegenerateRequest(BaseModel):
+    flagged_entry_ids: list[str]
+    prompt: str = ""
+    servings: int = 4
+
+
+@router.post("/{plan_id}/regenerate", response_model=MealPlanOut)
+async def regenerate_meal_plan(
+    plan_id: str,
+    body: RegenerateRequest,
+    user: CurrentUser = Depends(get_current_user),
+    household_id: str = Depends(get_current_household_id),
+):
+    """Re-roll the flagged days of an existing plan, keeping the rest. Kept meals
+    are honoured for variety (their families/ids won't be repeated), and reuse-
+    first + lunchbox rules apply exactly as in the wizard. Non-streaming — the
+    user flags only a few days — returns the updated plan."""
+    from api.agent_core.context import ToolContext
+    from api.agent_core.tools import _is_uuid
+    from api.agent_tools import build_planner_search_tools
+    from api.credits import finalize_hold, hold, release_hold
+    from api.profile import load_profile, render_profile_context
+    from api.public_pool import copy_to_household
+    from api.recipe_gen import generate_recipe
+
+    flagged_set = {e for e in body.flagged_entry_ids if _is_uuid(e)}
+
+    async with user_tx(user) as conn:
+        plan = await conn.fetchrow(
+            "SELECT start_date FROM hearth.meal_plans WHERE id = $1::uuid", plan_id
+        )
+        if plan is None:
+            raise HTTPException(404, "Meal plan not found")
+        start_date = plan["start_date"]
+        entries = await conn.fetch(
+            """
+            SELECT e.id::text AS entry_id, e.plan_date, e.slot, e.portions,
+                   e.recipe_id::text AS recipe_id, r.name AS recipe_name
+            FROM hearth.meal_plan_entries e
+            LEFT JOIN hearth.recipes r ON r.id = e.recipe_id
+            WHERE e.meal_plan_id = $1::uuid
+            ORDER BY e.plan_date, e.slot
+            """,
+            plan_id,
+        )
+
+    flagged = [e for e in entries if e["entry_id"] in flagged_set]
+    if not flagged:
+        async with user_tx(user) as conn:
+            return await _build_plan_out(conn, plan_id)
+    kept_entries = [e for e in entries if e["entry_id"] not in flagged_set]
+
+    def _doff(d) -> int:
+        return (d - start_date).days
+
+    days = max(_doff(e["plan_date"]) for e in entries) + 1
+    fillable_cells = [(_doff(e["plan_date"]), e["slot"]) for e in flagged]
+    kept_cells = {(_doff(e["plan_date"]), e["slot"]) for e in kept_entries}
+    kept = [
+        {"slot": e["slot"], "recipe_id": e["recipe_id"],
+         "recipe_name": e["recipe_name"], "plan_date": e["plan_date"].isoformat()}
+        for e in kept_entries
+    ]
+    slot_by_name: dict[str, SlotConfig] = {}
+    for e in flagged:
+        slot_by_name.setdefault(e["slot"], SlotConfig(slot=e["slot"], portions=float(e["portions"])))
+
+    lunchbox_mode = _is_lunchbox_brief(body.prompt.lower())
+    hold_id = await hold(household_id, "weekly_plan", float(len(fillable_cells)))
+
+    try:
+        ctx = ToolContext(user=user, household_id=household_id)
+        slot_rules = "\n".join(
+            f"  * {s}: portions={sc.portions}" for s, sc in slot_by_name.items()
+        )
+        planner = Agent(
+            _PLAN_MODEL, output_type=_PlannedWeek,
+            system_prompt=_planner_system_prompt(slot_rules, lunchbox_mode),
+            tools=build_planner_search_tools(ctx),
+        )
+        cells_lines = "\n".join(f"  - day_offset={d}, slot={s}" for d, s in fillable_cells)
+        kept_lines = "\n".join(
+            f"  - day_offset={_doff(date.fromisoformat(c['plan_date']))}, "
+            f"slot={c['slot']}: {c['recipe_name']}"
+            for c in kept
+        )
+        kept_block = (
+            "\n\nAlready on the calendar — KEEP (do NOT plan these cells, do NOT "
+            f"repeat these dishes):\n{kept_lines}" if kept else ""
+        )
+        async with user_tx(user) as conn:
+            existing_recipes_listing = await _list_existing_recipes_for_planner(conn)
+        profile_block = render_profile_context(await load_profile(household_id))
+        user_brief = (
+            f"Brief: {body.prompt or 'replace the flagged days with different dishes the household will like'}\n\n"
+            f"Base servings per generated recipe: {body.servings}\n\n"
+            f"The user DISLIKED the dishes currently on these cells — replace each "
+            f"with a DIFFERENT dish (different family). Fill EXACTLY these cells:\n"
+            f"{cells_lines}{kept_block}\n\n"
+            f"--- Household profile ---\n{profile_block}\n\n"
+            f"Respect the household profile strictly.\n\n"
+            f"Some saved recipes (prefer reusing these):\n{existing_recipes_listing}"
+        )
+        planned = (await planner.run(user_brief)).output
+
+        async with user_tx(user) as conn:
+            saved_rows = await conn.fetch(
+                """
+                SELECT r.id::text AS id, r.name, r.meal_type,
+                       COALESCE(p.times_planned, 0) AS tp,
+                       (r.public_origin_id IS NOT NULL) AS fe
+                FROM hearth.recipes r
+                LEFT JOIN (
+                    SELECT recipe_id, COUNT(*)::int AS times_planned
+                    FROM hearth.meal_plan_entries GROUP BY recipe_id
+                ) p ON p.recipe_id = r.id
+                ORDER BY tp DESC, fe DESC, r.updated_at DESC
+                """
+            )
+        valid_ids = {r["id"] for r in saved_rows}
+
+        valid_meals, unique_prompts, _ = _assemble_week(
+            planned.meals, saved_rows=saved_rows, kept=kept, kept_cells=kept_cells,
+            slot_by_name=slot_by_name, days=days, lunchbox_mode=lunchbox_mode,
+            brief=body.prompt,
+        )
+
+        async def _gen(p: str):
+            try:
+                return p, await generate_recipe(p)
+            except Exception:
+                log.exception("[regen] recipe generation failed for %r", p[:60])
+                return p, None
+
+        results = await asyncio.gather(*[_gen(p) for p in unique_prompts]) if unique_prompts else []
+
+        pool_to_local: dict[str, str] = {}
+        for meal in valid_meals:
+            pid = meal.use_recipe_id
+            if pid and _is_uuid(pid) and pid not in valid_ids and pid not in pool_to_local:
+                local, _name = await copy_to_household(pid, household_id)
+                if local:
+                    pool_to_local[pid] = local
+                    valid_ids.add(local)
+
+        async with user_tx(user) as conn:
+            prompt_to_recipe_id: dict[str, str] = {}
+            for prompt, gen in results:
+                if gen is not None:
+                    prompt_to_recipe_id[prompt] = await _save_generated_recipe(
+                        conn, gen, household_id, body.servings
+                    )
+            # Replace: delete the flagged entries, then insert the new ones.
+            await conn.execute(
+                "DELETE FROM hearth.meal_plan_entries WHERE id = ANY($1::uuid[])",
+                list(flagged_set),
+            )
+            used_recipe_ids: set[str] = {
+                pool_to_local.get(m.use_recipe_id, m.use_recipe_id)
+                for m in valid_meals if m.use_recipe_id
+            }
+            used_recipe_ids |= {e["recipe_id"] for e in kept_entries if e["recipe_id"]}
+
+            def _fallback_recipe(slot: str) -> str | None:
+                for r in saved_rows:
+                    if r["id"] not in used_recipe_ids and (
+                        not r["meal_type"] or r["meal_type"] == slot
+                    ):
+                        return r["id"]
+                return None
+
+            for meal in valid_meals:
+                recipe_id: str | None = None
+                if meal.use_recipe_id:
+                    rid = pool_to_local.get(meal.use_recipe_id, meal.use_recipe_id)
+                    if rid in valid_ids:
+                        recipe_id = rid
+                if recipe_id is None and meal.new_recipe_prompt:
+                    recipe_id = prompt_to_recipe_id.get(meal.new_recipe_prompt)
+                if recipe_id is None:
+                    recipe_id = _fallback_recipe(meal.slot)
+                if not recipe_id:
+                    continue
+                used_recipe_ids.add(recipe_id)
+                plan_date = start_date + timedelta(days=meal.day_offset)
+                slot_cfg = slot_by_name.get(meal.slot)
+                portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
+                await conn.execute(
+                    """
+                    INSERT INTO hearth.meal_plan_entries
+                        (household_id, meal_plan_id, recipe_id, plan_date, slot, portions)
+                    VALUES ($1::uuid, $2::uuid, $3::uuid, $4::date, $5, $6)
+                    """,
+                    household_id, plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions),
+                )
+            out = await _build_plan_out(conn, plan_id)
+    except HTTPException:
+        try: await release_hold(hold_id)
+        except Exception: pass
+        raise
+    except Exception as e:
+        log.exception("[regen] failed")
+        try: await release_hold(hold_id)
+        except Exception: pass
+        raise HTTPException(500, f"Regeneration failed: {e}")
+
+    actual = len([1 for _, g in results if g is not None])
+    await finalize_hold(hold_id, 1.0 + float(actual))
+    return out
 
 
 @router.post("/{plan_id}/shopping-list", response_model=ShoppingListOut)

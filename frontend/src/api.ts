@@ -738,6 +738,31 @@ export async function generateMealPlan(
   return plan;
 }
 
+/** Re-roll the flagged days of a saved plan, keeping the rest. Returns the
+ * updated plan. The user flags only a few days, so this is a normal (non-stream)
+ * request — show a spinner while it runs. */
+export async function regenerateMealPlan(
+  planId: string,
+  flaggedEntryIds: string[],
+  prompt: string,
+  servings: number,
+): Promise<MealPlan> {
+  const res = await authFetch(`/meal-plans/${planId}/regenerate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ flagged_entry_ids: flaggedEntryIds, prompt, servings }),
+  });
+  if (!res.ok) {
+    let detail: string = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? detail;
+    } catch { /* keep statusText */ }
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return res.json();
+}
+
 export async function mealPlanShoppingList(id: string): Promise<ShoppingList> {
   const res = await authFetch(`/meal-plans/${id}/shopping-list`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);

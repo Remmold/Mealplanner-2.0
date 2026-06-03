@@ -9,6 +9,7 @@ import {
   mealsShoppingList,
   fetchRecipes,
   generateMealPlan,
+  regenerateMealPlan,
   fetchCalendarConflicts,
   navigateTo,
   onDataChanged,
@@ -16,6 +17,7 @@ import {
   type CalendarConflict,
   type GenerateEvent,
   type MealEntry,
+  type MealPlan,
   type Recipe,
   type ShoppingList,
 } from "../api";
@@ -101,10 +103,13 @@ export default function MealPlan() {
   // Generator wizard state (legacy path; still creates a plan + entries,
   // but those entries land on the flat calendar same as everything else).
   const [genOpen, setGenOpen] = useState(false);
-  const [genStep, setGenStep] = useState<0 | 1 | 2>(0);  // 0=basics, 1=brief, 2=conflicts
+  const [genStep, setGenStep] = useState<0 | 1 | 2 | 3>(0);  // 0=basics 1=brief 2=conflicts 3=review
   const [conflicts, setConflicts] = useState<CalendarConflict[]>([]);
   const [replaceIds, setReplaceIds] = useState<Set<string>>(new Set());
   const [checkingConflicts, setCheckingConflicts] = useState(false);
+  const [reviewPlan, setReviewPlan] = useState<MealPlan | null>(null);
+  const [flaggedIds, setFlaggedIds] = useState<Set<string>>(new Set());
+  const [regenerating, setRegenerating] = useState(false);
   const [genPrompt, setGenPrompt] = useState("");
   const [genStart, setGenStart] = useState(TODAY_MONDAY);
   const [genEnd, setGenEnd] = useState(addDays(TODAY_MONDAY, 6));
@@ -315,6 +320,8 @@ export default function MealPlan() {
     setGenStep(0);
     setConflicts([]);
     setReplaceIds(new Set());
+    setReviewPlan(null);
+    setFlaggedIds(new Set());
     setError("");
     setGenOpen(true);
   }
@@ -381,18 +388,54 @@ export default function MealPlan() {
           if (item) setFeed((prev) => [...prev, item]);
         },
       );
-      // Jump the calendar to the month containing the generated plan.
+      // Jump the calendar to the month containing the generated plan, then move
+      // to the review step so the user can flag days to re-roll before finishing.
       const startD = new Date(plan.start_date + "T00:00:00");
       setVisibleMonth({ year: startD.getFullYear(), month: startD.getMonth() });
       fetchRecipes().then(setRecipes).catch(() => {});
-      setGenOpen(false);
-      setGenPrompt("");
+      setReviewPlan(plan);
+      setFlaggedIds(new Set());
+      setGenStep(3);
     } catch (e) {
       setError(String(e));
     } finally {
       clearInterval(timer);
       setGenerating(false);
     }
+  }
+
+  function toggleFlag(entryId: string) {
+    setFlaggedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(entryId)) next.delete(entryId); else next.add(entryId);
+      return next;
+    });
+  }
+
+  async function regenerateFlagged() {
+    if (!reviewPlan || flaggedIds.size === 0 || regenerating) return;
+    setRegenerating(true); setError("");
+    try {
+      const updated = await regenerateMealPlan(
+        reviewPlan.id, Array.from(flaggedIds), genPrompt.trim(), genServings,
+      );
+      setReviewPlan(updated);
+      setFlaggedIds(new Set());
+      fetchRecipes().then(setRecipes).catch(() => {});
+      void reloadMeals(gridStart, gridEnd);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
+  function finishReview() {
+    setGenOpen(false);
+    setGenPrompt("");
+    setReviewPlan(null);
+    setFlaggedIds(new Set());
+    void reloadMeals(gridStart, gridEnd);
   }
 
   // =================================================================
@@ -682,49 +725,122 @@ export default function MealPlan() {
               </div>
             )}
 
+            {genStep === 3 && reviewPlan && (
+              <div className="col-2">
+                <h2 className="m-0">Happy with this week?</h2>
+                <p className="muted m-0">
+                  Flag any day you'd like Hearth to redo — the rest stay put.
+                  Regenerate as many times as you like, then finish.
+                </p>
+                <div className="col gap-2">
+                  {[...reviewPlan.entries]
+                    .sort((a, b) =>
+                      (a.plan_date + (a.slot ?? "")).localeCompare(b.plan_date + (b.slot ?? "")))
+                    .map((e) => {
+                      const flagged = flaggedIds.has(e.id);
+                      return (
+                        <div key={e.id} className="row gap-2 items-center pick-row">
+                          <div className="flex-1">
+                            <div className="fw-500">
+                              {formatDay(e.plan_date)}{e.slot ? ` · ${e.slot}` : ""}
+                            </div>
+                            <div className="tiny muted">{e.recipe_name ?? "Planned meal"}</div>
+                          </div>
+                          <Button
+                            size="xs"
+                            variant={flagged ? "primary" : "ghost"}
+                            onClick={() => toggleFlag(e.id)}
+                            disabled={regenerating}
+                          >
+                            {flagged ? "Will redo" : "Redo"}
+                          </Button>
+                        </div>
+                      );
+                    })}
+                </div>
+                <p className="tiny muted m-0">
+                  {flaggedIds.size === 0
+                    ? "Nothing flagged."
+                    : `Redoing ${flaggedIds.size} day${flaggedIds.size === 1 ? "" : "s"}.`}
+                </p>
+                {regenerating && (
+                  <div className="row gap-2 items-center">
+                    <div className="chat-typing"><span></span><span></span><span></span></div>
+                    <span className="tiny muted">Cooking up replacements…</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="row gap-2 mt-4">
-              {genStep > 0 ? (
-                <Button
-                  variant="ghost"
-                  onClick={() => setGenStep(genStep === 2 ? 1 : 0)}
-                  disabled={generating || checkingConflicts}
-                >
-                  Back
-                </Button>
+              {genStep === 3 ? (
+                <>
+                  <Button
+                    variant="ghost"
+                    onClick={regenerateFlagged}
+                    disabled={regenerating || flaggedIds.size === 0}
+                  >
+                    {regenerating
+                      ? "Regenerating…"
+                      : flaggedIds.size > 0
+                      ? `Regenerate ${flaggedIds.size}`
+                      : "Regenerate flagged"}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={finishReview}
+                    disabled={regenerating}
+                    className="flex-1"
+                  >
+                    Looks good
+                  </Button>
+                </>
               ) : (
-                <Button variant="ghost" onClick={closeGenerator} disabled={generating}>
-                  Cancel
-                </Button>
-              )}
-              {genStep === 0 && (
-                <Button
-                  variant="primary"
-                  onClick={() => setGenStep(1)}
-                  disabled={generating || genRangeError !== null}
-                  className="flex-1"
-                >
-                  Continue
-                </Button>
-              )}
-              {genStep === 1 && (
-                <Button
-                  variant="accent"
-                  onClick={prepareGenerate}
-                  disabled={generating || checkingConflicts}
-                  className="flex-1"
-                >
-                  {checkingConflicts ? "Checking your calendar…" : "Generate this week's plan"}
-                </Button>
-              )}
-              {genStep === 2 && (
-                <Button
-                  variant="accent"
-                  onClick={() => runWeeklyGenerator(Array.from(replaceIds))}
-                  disabled={generating}
-                  className="flex-1"
-                >
-                  {generating ? "Drafting your week..." : "Generate this week's plan"}
-                </Button>
+                <>
+                  {genStep > 0 ? (
+                    <Button
+                      variant="ghost"
+                      onClick={() => setGenStep(genStep === 2 ? 1 : 0)}
+                      disabled={generating || checkingConflicts}
+                    >
+                      Back
+                    </Button>
+                  ) : (
+                    <Button variant="ghost" onClick={closeGenerator} disabled={generating}>
+                      Cancel
+                    </Button>
+                  )}
+                  {genStep === 0 && (
+                    <Button
+                      variant="primary"
+                      onClick={() => setGenStep(1)}
+                      disabled={generating || genRangeError !== null}
+                      className="flex-1"
+                    >
+                      Continue
+                    </Button>
+                  )}
+                  {genStep === 1 && (
+                    <Button
+                      variant="accent"
+                      onClick={prepareGenerate}
+                      disabled={generating || checkingConflicts}
+                      className="flex-1"
+                    >
+                      {checkingConflicts ? "Checking your calendar…" : "Generate this week's plan"}
+                    </Button>
+                  )}
+                  {genStep === 2 && (
+                    <Button
+                      variant="accent"
+                      onClick={() => runWeeklyGenerator(Array.from(replaceIds))}
+                      disabled={generating}
+                      className="flex-1"
+                    >
+                      {generating ? "Drafting your week..." : "Generate this week's plan"}
+                    </Button>
+                  )}
+                </>
               )}
             </div>
 
