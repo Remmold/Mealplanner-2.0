@@ -506,6 +506,8 @@ export interface MealPlanEntry {
   plan_date: string;
   slot: string | null;
   portions: number;
+  source_entry_id: string | null;   // set on a lunch bag: the cook it came from
+  lunch_bags: number;                // on a cook: how many lunch bags it yields
 }
 
 // --- Flat calendar (the canonical model) -----------------------------------
@@ -518,6 +520,8 @@ export interface MealEntry {
   slot: "breakfast" | "lunch" | "dinner" | null;
   portions: number;
   image_path: string | null;
+  source_entry_id: string | null;   // set on a lunch bag: the cook it came from
+  lunch_bags: number;                // on a cook: how many lunch bags it yields
 }
 
 export async function fetchMeals(start: string, end: string): Promise<MealEntry[]> {

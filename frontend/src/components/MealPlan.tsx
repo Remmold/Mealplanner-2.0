@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { BookOpen, Check, ChevronLeft, ChevronRight, Plus, Save, ShoppingCart, Sparkles, X } from "lucide-react";
+import { BookOpen, Check, ChefHat, ChevronLeft, ChevronRight, Plus, Sandwich, Save, ShoppingCart, Sparkles, X } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   fetchMeals,
@@ -526,7 +526,7 @@ export default function MealPlan() {
                   )}
                 </div>
                 {dinner ? (
-                  <div className="month-cell-card">
+                  <div className={"month-cell-card" + (dinner.source_entry_id ? " month-cell-card-bag" : "")}>
                     {dinner.image_path ? (
                       <img
                         src={`/api/recipe-images/${dinner.image_path}`}
@@ -538,6 +538,11 @@ export default function MealPlan() {
                       <div className="month-cell-img month-cell-img-placeholder" />
                     )}
                     <div className="month-cell-card-name">{dinner.recipe_name}</div>
+                    {dinner.source_entry_id ? (
+                      <div className="cell-tag cell-tag-bag"><Sandwich size={11} /> lunch bag</div>
+                    ) : dinner.lunch_bags > 0 ? (
+                      <div className="cell-tag"><ChefHat size={11} /> cook · {dinner.lunch_bags} {dinner.lunch_bags === 1 ? "bag" : "bags"}</div>
+                    ) : null}
                     {cellMeals.length > 1 && (
                       <div className="month-cell-more">+{cellMeals.length - 1} more</div>
                     )}
@@ -572,6 +577,11 @@ export default function MealPlan() {
                 {dayMeals.map((m) => (
                   <div key={m.id} className="cell-recipe">
                     <div className="cell-recipe-name">{m.recipe_name}</div>
+                    {m.source_entry_id ? (
+                      <div className="cell-tag cell-tag-bag"><Sandwich size={11} /> lunch bag from an earlier cook</div>
+                    ) : m.lunch_bags > 0 ? (
+                      <div className="cell-tag"><ChefHat size={11} /> cooked here · makes {m.lunch_bags} lunch {m.lunch_bags === 1 ? "bag" : "bags"}</div>
+                    ) : null}
                     <div className="cell-recipe-meta">
                       <Input
                         type="number" min={1} value={m.portions}
@@ -755,6 +765,11 @@ export default function MealPlan() {
                               {formatDay(e.plan_date)}{e.slot ? ` · ${e.slot}` : ""}
                             </div>
                             <div className="tiny muted">{e.recipe_name ?? "Planned meal"}</div>
+                            {e.source_entry_id ? (
+                              <div className="cell-tag cell-tag-bag"><Sandwich size={11} /> lunch bag</div>
+                            ) : e.lunch_bags > 0 ? (
+                              <div className="cell-tag"><ChefHat size={11} /> cook · {e.lunch_bags} lunch {e.lunch_bags === 1 ? "bag" : "bags"}</div>
+                            ) : null}
                           </div>
                           <Button
                             size="xs"

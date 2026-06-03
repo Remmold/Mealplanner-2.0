@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel
 
 
@@ -129,6 +131,7 @@ class RecipeCreate(BaseModel):
     ingredients: list[RecipeIngredientIn] = []
     instructions: list[str] = []
     servings: int = 4
+    meal_type: str | None = None  # "breakfast" | "lunch" | "dinner" | None
 
 
 class RecipeUpdate(BaseModel):
@@ -136,6 +139,7 @@ class RecipeUpdate(BaseModel):
     ingredients: list[RecipeIngredientIn] | None = None
     instructions: list[str] | None = None
     servings: int | None = None
+    meal_type: str | None = None
 
 
 class GenerateRecipeRequest(BaseModel):
@@ -158,6 +162,7 @@ class RecipeIngredientOut(BaseModel):
     fdc_id: int
     quantity_g: float
     ingredient_name: str | None = None
+    from_pantry: bool = False    # in the household's staples list
 
 
 class RecipeOut(BaseModel):
@@ -167,6 +172,7 @@ class RecipeOut(BaseModel):
     ingredients: list[RecipeIngredientOut] = []
     instructions: list[str] = []
     servings: int = 4
+    meal_type: str | None = None
     image_path: str | None = None
     created_at: str
     updated_at: str
@@ -199,6 +205,7 @@ class ShoppingListCategory(BaseModel):
 
 class ShoppingListOut(BaseModel):
     categories: list[ShoppingListCategory]
+    pantry_check: list[ShoppingListItem] = []   # staples this week's recipes use
     missing_recipes: list[str] = []
 
 
@@ -226,20 +233,20 @@ class ShoppingTemplateItemOut(BaseModel):
 
 class MealPlanEntryIn(BaseModel):
     recipe_id: str
-    plan_date: str  # ISO date, e.g. "2026-04-14"
+    plan_date: date  # Pydantic parses "2026-04-14" into datetime.date.
     slot: str | None = None  # "breakfast" | "lunch" | "dinner" | None
     portions: float = 1
 
 
 class MealPlanCreate(BaseModel):
     name: str
-    start_date: str  # ISO date
+    start_date: date
     entries: list[MealPlanEntryIn] = []
 
 
 class MealPlanUpdate(BaseModel):
     name: str | None = None
-    start_date: str | None = None
+    start_date: date | None = None
     entries: list[MealPlanEntryIn] | None = None
 
 
@@ -250,6 +257,10 @@ class MealPlanEntryOut(BaseModel):
     plan_date: str
     slot: str | None = None
     portions: float
+    # Lunch-bag leftovers: source_entry_id is the cook a bag came from; lunch_bags
+    # is how many bags a cook produced (0 for a normal single meal).
+    source_entry_id: str | None = None
+    lunch_bags: int = 0
 
 
 class MealPlanOut(BaseModel):

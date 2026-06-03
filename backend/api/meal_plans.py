@@ -84,7 +84,11 @@ async def _build_plan_out(conn: asyncpg.Connection, plan_id: str) -> MealPlanOut
 
     entries = await conn.fetch(
         """
-        SELECT e.id, e.recipe_id, e.plan_date, e.slot, e.portions, r.name AS recipe_name
+        SELECT e.id, e.recipe_id, e.plan_date, e.slot, e.portions,
+               r.name AS recipe_name,
+               e.source_entry_id,
+               (SELECT count(*) FROM hearth.meal_plan_entries c
+                 WHERE c.source_entry_id = e.id) AS lunch_bags
         FROM hearth.meal_plan_entries e
         LEFT JOIN hearth.recipes r ON r.id = e.recipe_id
         WHERE e.meal_plan_id = $1::uuid
@@ -106,6 +110,8 @@ async def _build_plan_out(conn: asyncpg.Connection, plan_id: str) -> MealPlanOut
                 plan_date=e["plan_date"].isoformat() if e["plan_date"] else "",
                 slot=e["slot"],
                 portions=float(e["portions"]),
+                source_entry_id=str(e["source_entry_id"]) if e["source_entry_id"] else None,
+                lunch_bags=int(e["lunch_bags"] or 0),
             )
             for e in entries
         ],
@@ -322,6 +328,12 @@ class _PlannedMeal(BaseModel):
     # instead of reusing — e.g. "no saved/pool match" or "user asked to try it".
     # Surfaced to the user so generation is never silent.
     reason: str | None = None
+    # Lunch-bag layout (lunchbox/batch weeks): a cook on one day yields bags of
+    # the same dish on the following days in the same slot. A bag carries the
+    # cell (cook_offset, cook_slot) of its cook so persist can link them.
+    is_leftover: bool = False
+    cook_offset: int | None = None
+    cook_slot: str | None = None
 
 
 class _PlannedWeek(BaseModel):
@@ -342,6 +354,8 @@ def _assemble_week(
     days: int,
     lunchbox_mode: bool,
     brief: str,
+    base_servings: int = 4,
+    lay_bags: bool = False,
 ) -> tuple[list[_PlannedMeal], list[str], dict[str, str]]:
     """Turn the planner's raw meals into the final, variety-enforced plan.
 
@@ -522,36 +536,95 @@ def _assemble_week(
                     else "filling a day with a distinct dish"),
         )
 
-    for doff, slot in freed_cells:
-        fams = used_fam.setdefault(slot, set())
-        placed: _PlannedMeal | None = None
-        if lunchbox_mode:
-            # Cook-once-eat-again: reuse a lunchbox-friendly dish, else GENERATE a
-            # lunchbox-friendly one and add it to the pool so later days reuse it.
-            lo = _next_leftover(slot)
-            if lo:
-                lo.day_offset = doff
-                placed = lo
-            else:
-                placed = _make_generated(slot, doff)
-                leftover_sources.append(placed)
-                leftover_uses.append(0)
-        else:
-            pick = _pick_distinct_saved(slot, fams)
-            if pick:
-                placed_ids.add(pick["id"])
-                pf = _dish_family(pick["name"])
-                if pf:
-                    fams.add(pf)
-                placed = _PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"])
-            if placed is None:
+    def _servings_of(m: _PlannedMeal) -> int:
+        """Batch size of a cook: the saved recipe's servings, else the base."""
+        if m.use_recipe_id:
+            s = saved_by_id.get(m.use_recipe_id, {}).get("servings")
+            if s:
+                return int(s)
+        return base_servings
+
+    if lunchbox_mode and lay_bags:
+        # Cook-and-carry layout. For each slot, walk the days in order: cook a
+        # lunchbox-friendly dish, then place "lunch bags" of THAT dish on the
+        # following days in the SAME slot until the batch (servings) runs out,
+        # then cook the next dish. We don't spread dishes out — they extend
+        # forward and the user rearranges to taste. The distinct dishes that
+        # survived dedup are the cook pool; we generate more only if it empties.
+        laid: list[_PlannedMeal] = []
+        for slot in slot_by_name:
+            # Cook pool = only genuinely lunchbox-friendly survivors (a reused
+            # saved stew or a friendly generation the planner chose). We never
+            # batch-cook a taco/burger so its bags can't become soggy leftovers;
+            # non-friendly survivors are dropped and the slot generates friendly
+            # dishes instead.
+            pool = [m for m in deduped if m.slot == slot and m.lunchbox_friendly]
+            pool_i = 0
+            stock = 0
+            cook_cell: tuple[int, str] | None = None
+            cook_meal: _PlannedMeal | None = None
+            for doff in range(days):
+                cell = (doff, slot)
+                if cell in kept_cells:
+                    # A pre-planned meal interrupts the chain; the next free day
+                    # starts a fresh cook rather than a stale bag.
+                    stock, cook_cell, cook_meal = 0, None, None
+                    continue
+                if stock > 0 and cook_cell is not None and cook_meal is not None:
+                    laid.append(_PlannedMeal(
+                        day_offset=doff, slot=slot,
+                        use_recipe_id=cook_meal.use_recipe_id,
+                        new_recipe_prompt=cook_meal.new_recipe_prompt,
+                        dish_name=cook_meal.dish_name, lunchbox_friendly=True,
+                        is_leftover=True, cook_offset=cook_cell[0], cook_slot=slot,
+                        reason="lunch bag from the batch cook earlier this week",
+                    ))
+                    stock -= 1
+                    continue
+                # Stock is empty — cook the next distinct friendly dish.
+                cook: _PlannedMeal | None = None
+                if pool_i < len(pool):
+                    cook = pool[pool_i]
+                    pool_i += 1
+                if cook is None:
+                    cook = _make_generated(slot, doff)
+                cook.day_offset, cook.slot = doff, slot
+                cook.is_leftover, cook.cook_offset, cook.cook_slot = False, None, None
+                laid.append(cook)
+                cook_cell, cook_meal = (doff, slot), cook
+                stock = max(0, _servings_of(cook) - 1)
+        deduped = laid
+    else:
+        for doff, slot in freed_cells:
+            fams = used_fam.setdefault(slot, set())
+            placed: _PlannedMeal | None = None
+            if lunchbox_mode:
+                # Cook-once-eat-again: reuse a lunchbox-friendly dish, else
+                # GENERATE one and add it to the pool so later days reuse it.
                 lo = _next_leftover(slot)
                 if lo:
                     lo.day_offset = doff
                     placed = lo
-            if placed is None:
-                placed = _make_generated(slot, doff)
-        deduped.append(placed)
+                else:
+                    placed = _make_generated(slot, doff)
+                    leftover_sources.append(placed)
+                    leftover_uses.append(0)
+            else:
+                pick = _pick_distinct_saved(slot, fams)
+                if pick:
+                    placed_ids.add(pick["id"])
+                    pf = _dish_family(pick["name"])
+                    if pf:
+                        fams.add(pf)
+                    placed = _PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"])
+                if placed is None:
+                    lo = _next_leftover(slot)
+                    if lo:
+                        lo.day_offset = doff
+                        placed = lo
+                if placed is None:
+                    placed = _make_generated(slot, doff)
+            deduped.append(placed)
 
     # 4) Generation set + reasons from the final assignment.
     unique_prompts: list[str] = []
@@ -878,7 +951,7 @@ async def generate_meal_plan(
         async with user_tx(user) as conn:
             saved_rows = await conn.fetch(
                 """
-                SELECT r.id::text AS id, r.name, r.meal_type,
+                SELECT r.id::text AS id, r.name, r.meal_type, r.servings,
                        COALESCE(p.times_planned, 0) AS tp,
                        (r.public_origin_id IS NOT NULL) AS fe
                 FROM hearth.recipes r
@@ -900,6 +973,8 @@ async def generate_meal_plan(
             days=body.days,
             lunchbox_mode=lunchbox_mode,
             brief=body.prompt,
+            base_servings=body.servings,
+            lay_bags=True,
         )
 
         yield emit(
@@ -1028,6 +1103,7 @@ async def generate_meal_plan(
                     return None
 
                 dropped = 0
+                resolved: list[tuple[_PlannedMeal, str, date, float]] = []
                 for meal in valid_meals:
                     recipe_id: str | None = None
                     if meal.use_recipe_id:
@@ -1042,18 +1118,45 @@ async def generate_meal_plan(
                         dropped += 1
                         continue
                     used_recipe_ids.add(recipe_id)
-
                     plan_date = body.start_date + timedelta(days=meal.day_offset)
-
                     slot_cfg = slot_by_name.get(meal.slot)
                     portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
-                    await conn.execute(
+                    resolved.append((meal, recipe_id, plan_date, max(0.25, portions)))
+
+                # Pass 1: cooks first, capturing each cook's id by cell so the
+                # lunch bags in pass 2 can point at the cook that made them.
+                cook_id_by_cell: dict[tuple[int, str], str] = {}
+                for meal, recipe_id, plan_date, portions in resolved:
+                    if meal.is_leftover:
+                        continue
+                    row = await conn.fetchrow(
                         """
                         INSERT INTO hearth.meal_plan_entries
                             (household_id, meal_plan_id, recipe_id, plan_date, slot, portions)
                         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::date, $5, $6)
+                        RETURNING id::text AS id
                         """,
-                        household_id, plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions),
+                        household_id, plan_id, recipe_id, plan_date, meal.slot, portions,
+                    )
+                    cook_id_by_cell[(meal.day_offset, meal.slot)] = row["id"]
+
+                # Pass 2: lunch bags, linked to their cook via source_entry_id.
+                for meal, recipe_id, plan_date, portions in resolved:
+                    if not meal.is_leftover:
+                        continue
+                    source = (
+                        cook_id_by_cell.get((meal.cook_offset, meal.cook_slot))
+                        if meal.cook_offset is not None and meal.cook_slot is not None
+                        else None
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO hearth.meal_plan_entries
+                            (household_id, meal_plan_id, recipe_id, plan_date, slot,
+                             portions, source_entry_id)
+                        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::date, $5, $6, $7::uuid)
+                        """,
+                        household_id, plan_id, recipe_id, plan_date, meal.slot, portions, source,
                     )
 
                 out = await _build_plan_out(conn, plan_id)
@@ -1196,7 +1299,7 @@ async def regenerate_meal_plan(
         async with user_tx(user) as conn:
             saved_rows = await conn.fetch(
                 """
-                SELECT r.id::text AS id, r.name, r.meal_type,
+                SELECT r.id::text AS id, r.name, r.meal_type, r.servings,
                        COALESCE(p.times_planned, 0) AS tp,
                        (r.public_origin_id IS NOT NULL) AS fe
                 FROM hearth.recipes r
