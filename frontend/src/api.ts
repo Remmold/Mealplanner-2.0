@@ -647,6 +647,9 @@ export interface GenerateMealPlanInput {
   // Calendar entry_ids the user chose to overwrite in the pre-flight. Any other
   // already-occupied day is kept and skipped (never double-booked).
   replace_entry_ids?: string[];
+  // Day offsets (0 = start_date) flagged as "just one of us eating": sized for
+  // one portion and filled leftover-first.
+  solo_day_offsets?: number[];
 }
 
 export interface CalendarConflict {

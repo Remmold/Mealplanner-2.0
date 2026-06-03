@@ -306,6 +306,10 @@ class GenerateMealPlanRequest(BaseModel):
     # already-occupied (date, slot) is KEPT: the planner skips it and the old
     # meal stays. Empty => keep every occupied day (never double-book).
     replace_entry_ids: list[str] = []
+    # Day offsets (0 = start_date) the user flagged as "just one of us eating".
+    # Those dinners are sized for 1 portion and filled leftover-first (reuse a
+    # dish cooked earlier in the week rather than cook a whole new meal).
+    solo_day_offsets: list[int] = []
 
 
 class _PlannedMeal(BaseModel):
@@ -334,6 +338,9 @@ class _PlannedMeal(BaseModel):
     is_leftover: bool = False
     cook_offset: int | None = None
     cook_slot: str | None = None
+    # Solo night — just one person eating. Persisted at portions=1 and filled
+    # leftover-first (see _assemble_week's solo pass).
+    solo: bool = False
 
 
 class _PlannedWeek(BaseModel):
@@ -356,6 +363,7 @@ def _assemble_week(
     brief: str,
     base_servings: int = 4,
     lay_bags: bool = False,
+    solo_offsets: set[int] = frozenset(),
 ) -> tuple[list[_PlannedMeal], list[str], dict[str, str]]:
     """Turn the planner's raw meals into the final, variety-enforced plan.
 
@@ -625,6 +633,33 @@ def _assemble_week(
                 if placed is None:
                     placed = _make_generated(slot, doff)
             deduped.append(placed)
+
+    # 3b) Solo nights: just one person eating. Mark them (persist sizes these at
+    # 1 portion) and fill leftover-first — convert a solo cell into a bag of the
+    # nearest EARLIER lunchbox-friendly NON-solo cook in the same slot, so the
+    # solo eater reuses a dish already made instead of cooking a whole new meal.
+    # (No such cook → it stays its own dish, just cooked for one.)
+    if solo_offsets:
+        for m in deduped:
+            if m.day_offset in solo_offsets:
+                m.solo = True
+        for m in deduped:
+            if not m.solo or m.is_leftover:
+                continue
+            cook = None
+            for cand in deduped:
+                if (not cand.is_leftover and not cand.solo and cand.lunchbox_friendly
+                        and cand.slot == m.slot and cand.day_offset < m.day_offset):
+                    if cook is None or cand.day_offset > cook.day_offset:
+                        cook = cand
+            if cook is not None:
+                m.use_recipe_id = cook.use_recipe_id
+                m.new_recipe_prompt = cook.new_recipe_prompt
+                m.dish_name = cook.dish_name
+                m.lunchbox_friendly = True
+                m.is_leftover = True
+                m.cook_offset, m.cook_slot = cook.day_offset, cook.slot
+                m.reason = "solo night — leftovers from earlier this week"
 
     # 4) Generation set + reasons from the final assignment.
     unique_prompts: list[str] = []
@@ -975,6 +1010,7 @@ async def generate_meal_plan(
             brief=body.prompt,
             base_servings=body.servings,
             lay_bags=True,
+            solo_offsets={d for d in body.solo_day_offsets if 0 <= d < body.days},
         )
 
         yield emit(
@@ -1120,7 +1156,10 @@ async def generate_meal_plan(
                     used_recipe_ids.add(recipe_id)
                     plan_date = body.start_date + timedelta(days=meal.day_offset)
                     slot_cfg = slot_by_name.get(meal.slot)
-                    portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
+                    # Solo nights are for one; everything else uses the slot's portions.
+                    portions = 1.0 if meal.solo else (
+                        float(slot_cfg.portions) if slot_cfg else float(meal.portions)
+                    )
                     resolved.append((meal, recipe_id, plan_date, max(0.25, portions)))
 
                 # Pass 1: cooks first, capturing each cook's id by cell so the

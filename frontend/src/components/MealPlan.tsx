@@ -22,7 +22,7 @@ import {
   type ShoppingList,
 } from "../api";
 import { fetchProfile, type ProfileSummary } from "../lib/auth-api";
-import { Button, Card, Empty, ErrorBanner, Field, IconButton, Input, Modal, Pill, Textarea } from "./ui";
+import { Button, Card, Chip, Empty, ErrorBanner, Field, IconButton, Input, Modal, Pill, Textarea } from "./ui";
 import DateRangePicker from "./DateRangePicker";
 
 const SLOTS = ["breakfast", "lunch", "dinner"] as const;
@@ -114,6 +114,9 @@ export default function MealPlan() {
   const [genStart, setGenStart] = useState(TODAY_MONDAY);
   const [genEnd, setGenEnd] = useState(addDays(TODAY_MONDAY, 6));
   const [genServings, setGenServings] = useState(4);
+  // Day offsets (0 = genStart) the user flagged as "just me eating" — sized for
+  // one and filled leftover-first by the planner.
+  const [soloDays, setSoloDays] = useState<Set<number>>(new Set());
   // Always dinner now — the system is dinner-focused per household preference.
   const enabledSlots: Set<Slot> = useMemo(() => new Set<Slot>(["dinner"]), []);
   const [generating, setGenerating] = useState(false);
@@ -322,8 +325,16 @@ export default function MealPlan() {
     setReplaceIds(new Set());
     setReviewPlan(null);
     setFlaggedIds(new Set());
+    setSoloDays(new Set());
     setError("");
     setGenOpen(true);
+  }
+  function toggleSoloDay(offset: number) {
+    setSoloDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(offset)) next.delete(offset); else next.add(offset);
+      return next;
+    });
   }
   function closeGenerator() { if (!generating) setGenOpen(false); }
 
@@ -382,6 +393,7 @@ export default function MealPlan() {
           servings: genServings,
           slot_configs,
           replace_entry_ids: replaceEntryIds,
+          solo_day_offsets: Array.from(soloDays).filter((d) => d >= 0 && d < genDays),
         },
         (event) => {
           const item = buildFeedItem(event);
@@ -658,6 +670,28 @@ export default function MealPlan() {
                 <p className="small muted m-0 text-center">
                   {formatDay(genStart)} → {formatDay(genEnd)} · {genDays} {genDays === 1 ? "day" : "days"}
                 </p>
+                {genDays > 0 && (
+                  <div className="col-2 items-start">
+                    <span className="fw-500">Just one of you eating any nights?</span>
+                    <p className="tiny muted m-0">
+                      Tap a night — Hearth sizes it for one and reuses leftovers instead of cooking a whole meal.
+                    </p>
+                    <div className="row gap-2 wrap mt-1">
+                      {Array.from({ length: genDays }, (_, off) => {
+                        const d = addDays(genStart, off);
+                        return (
+                          <Chip
+                            key={off}
+                            active={soloDays.has(off)}
+                            onClick={() => toggleSoloDay(off)}
+                          >
+                            {new Date(d + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric" })}
+                          </Chip>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
