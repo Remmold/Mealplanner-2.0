@@ -350,6 +350,8 @@ export default function MealPlan() {
       return next;
     });
   }
+  function keepAll() { setReplaceIds(new Set()); }
+  function replaceAll() { setReplaceIds(new Set(conflicts.map((c) => c.entry_id))); }
 
   async function runWeeklyGenerator(replaceEntryIds: string[]) {
     const slot_configs = Array.from(enabledSlots).map((s) => ({
@@ -622,6 +624,27 @@ export default function MealPlan() {
                   Kept days are left exactly as they are — Hearth plans around them.
                   Choose <em>Replace</em> for any you'd like it to overwrite.
                 </p>
+                <div className="row gap-2 items-center">
+                  <span className="tiny muted flex-1">
+                    {conflicts.length} planned day{conflicts.length === 1 ? "" : "s"}
+                  </span>
+                  <Button
+                    size="xs"
+                    variant={replaceIds.size === 0 ? "primary" : "ghost"}
+                    onClick={keepAll}
+                    disabled={generating}
+                  >
+                    Keep all
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant={replaceIds.size === conflicts.length ? "primary" : "ghost"}
+                    onClick={replaceAll}
+                    disabled={generating}
+                  >
+                    Replace all
+                  </Button>
+                </div>
                 <div className="col gap-2">
                   {conflicts.map((c) => {
                     const replace = replaceIds.has(c.entry_id);
