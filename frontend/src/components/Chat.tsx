@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Check, Hand, Menu, TriangleAlert, X } from "lucide-react";
+import type { ReactNode } from "react";
+import { ArrowRight, Check, Hand, Menu, Sparkles, TriangleAlert, X } from "lucide-react";
 import {
   listChatSessions,
   createChatSession,
@@ -16,7 +17,15 @@ import {
   type ProposedAction,
   type Recipe,
 } from "../api";
-import { Button, Empty, ErrorBanner, IconButton, Textarea } from "./ui";
+import { Button, Empty, ErrorBanner, IconButton, Modal, Textarea } from "./ui";
+import { MarkdownMessage } from "../lib/markdown";
+
+interface ProgressItem {
+  id: string;
+  status: "running" | "done" | "failed";
+  icon: ReactNode;
+  text: string;
+}
 
 type PendingStatus = "pending" | "accepting" | "rejecting" | "accepted" | "rejected" | "failed";
 
@@ -41,7 +50,18 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [showSessions, setShowSessions] = useState(false);
+  const [progressItems, setProgressItems] = useState<ProgressItem[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const progressOpen = progressItems.length > 0;
+  const progressDone = progressOpen && progressItems.every((p) => p.status !== "running");
+
+  function pushProgress(item: ProgressItem) {
+    setProgressItems((prev) => [...prev, item]);
+  }
+  function updateProgress(id: string, patch: Partial<ProgressItem>) {
+    setProgressItems((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  }
 
   useEffect(() => { if (open) refreshSessions(); }, [open]);
   useEffect(() => {
@@ -136,10 +156,28 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
 
   async function handleAccept(card: PendingCard) {
     patchCard(card.id, { status: "accepting" });
+    pushProgress({
+      id: card.id,
+      status: "running",
+      icon: <Sparkles size={14} />,
+      text: card.summary,
+    });
     try {
       const res = await acceptPending(card.id);
       patchCard(card.id, { status: res.status, result: res.result, created: res.created });
+      updateProgress(card.id, {
+        status: res.status === "accepted" ? "done" : "failed",
+        icon: res.status === "accepted" ? <Check size={14} /> : <TriangleAlert size={14} />,
+        text: res.result || (res.status === "accepted" ? card.summary : "Failed"),
+      });
       if (res.status === "accepted") dataChanged("*");
+
+      // When an entry just landed on the meal plan, jump the calendar to the
+      // week that contains it so the user sees the addition live.
+      const planDate = res.created?.plan_date;
+      if (res.status === "accepted" && planDate) {
+        navigateTo({ tab: "plan", week_start: planDate });
+      }
 
       // For recipe.create we fetch the saved recipe so the user sees proof —
       // thumbnail, ingredient count, jump button. Poll every 5s for up to
@@ -161,6 +199,11 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
       }
     } catch (e) {
       patchCard(card.id, { status: "failed", result: String(e) });
+      updateProgress(card.id, {
+        status: "failed",
+        icon: <TriangleAlert size={14} />,
+        text: String(e),
+      });
     }
   }
 
@@ -250,7 +293,13 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
           const stillPending = m.pending?.filter((c) => c.status === "pending") ?? [];
           return (
             <div key={i} className={`chat-msg chat-msg-${m.role}`}>
-              {m.content && <div className="chat-msg-content">{m.content}</div>}
+              {m.content && (
+                <div className="chat-msg-content">
+                  {m.role === "assistant"
+                    ? <MarkdownMessage content={m.content} />
+                    : m.content}
+                </div>
+              )}
               {m.pending && m.pending.length > 0 && (
                 <div className="chat-pending">
                   <div className="chat-pending-header">
@@ -292,7 +341,7 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
                           <div className="pending-preview-body">
                             <div className="pending-preview-name">{c.preview.name}</div>
                             <div className="tiny muted">
-                              {c.preview.servings} servings · {c.preview.ingredients.length} ingredients · {c.preview.instructions.length} steps
+                              {c.preview.servings} servings · {c.preview.ingredients.filter((i) => !i.from_pantry).length} to buy · {c.preview.instructions.length} steps
                             </div>
                           </div>
                           <Button
@@ -328,6 +377,31 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
 
         <ErrorBanner>{error}</ErrorBanner>
       </div>
+
+      <Modal
+        open={progressOpen}
+        onClose={() => { if (progressDone) setProgressItems([]); }}
+      >
+        <h3 className="m-0">Applying actions</h3>
+        <p className="muted small mt-1">
+          {progressDone
+            ? "All done."
+            : "The assistant is working — leave this open until it finishes."}
+        </p>
+        <ul className="gen-feed-list mt-3">
+          {progressItems.map((item) => (
+            <li key={item.id} className={`gen-feed-item gen-feed-${item.status === "running" ? "pending" : item.status}`}>
+              <span className="gen-feed-icon">{item.icon}</span>
+              <span className="gen-feed-text">{item.text}</span>
+            </li>
+          ))}
+        </ul>
+        {progressDone && (
+          <Button onClick={() => setProgressItems([])} variant="primary" className="mt-3">
+            Done
+          </Button>
+        )}
+      </Modal>
 
       <div className="chat-input-row">
         <Textarea
