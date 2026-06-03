@@ -672,9 +672,9 @@ export async function fetchCalendarConflicts(
 export type GenerateEvent =
   | { type: "planning_start"; brief: string; days: number; slots: string[] }
   | { type: "planning_done"; meals_proposed: number; recipes_to_generate: number; plan_name: string }
-  | { type: "recipe_start"; prompt: string; reason?: string }
-  | { type: "recipe_done"; name: string; duration: number }
-  | { type: "recipe_failed"; prompt: string; error: string }
+  | { type: "recipe_start"; index: number; prompt: string; reason?: string }
+  | { type: "recipe_done"; index: number; name: string; duration: number }
+  | { type: "recipe_failed"; index: number; prompt: string; error: string }
   | { type: "persisting" }
   | { type: "complete"; plan: MealPlan; total_duration: number }
   | { type: "error"; message: string };

@@ -385,7 +385,17 @@ export default function MealPlan() {
         },
         (event) => {
           const item = buildFeedItem(event);
-          if (item) setFeed((prev) => [...prev, item]);
+          if (!item) return;
+          // Upsert by id: a terminal event (recipe_done / planning_done / complete)
+          // replaces its matching pending row in place so the spinner flips to a
+          // check rather than leaving a stale "Generating…" line behind.
+          setFeed((prev) => {
+            const idx = prev.findIndex((f) => f.id === item.id);
+            if (idx === -1) return [...prev, item];
+            const next = prev.slice();
+            next[idx] = item;
+            return next;
+          });
         },
       );
       // Jump the calendar to the month containing the generated plan, then move
@@ -994,27 +1004,30 @@ function buildFeedItem(event: GenerateEvent): {
   icon: ReactNode;
   text: string;
 } | null {
-  const id = `${event.type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  // Stable ids so a start event and its matching terminal event collapse onto
+  // one line (the spinner flips to a check) instead of leaving a dangling
+  // "Generating…" row. Recipe events are keyed by their backend index.
+  const rnd = () => `${event.type}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   switch (event.type) {
     case "planning_start":
-      return { id, status: "pending", icon: <Sparkles size={14} />,
+      return { id: "planning", status: "pending", icon: <Sparkles size={14} />,
         text: `Drafting the week (${event.days} ${event.days === 1 ? "day" : "days"}, ${event.slots.join(" + ")})` };
     case "planning_done":
-      return { id, status: "done", icon: <Check size={14} />,
+      return { id: "planning", status: "done", icon: <Check size={14} />,
         text: `Drafted "${event.plan_name}" — ${event.meals_proposed} meals, ${event.recipes_to_generate} new recipes to create` };
     case "recipe_start":
-      return { id, status: "pending", icon: <Sparkles size={14} />,
+      return { id: `recipe-${event.index}`, status: "pending", icon: <Sparkles size={14} />,
         text: `Generating recipe: ${event.prompt}${event.reason ? ` (${event.reason})` : ""}` };
     case "recipe_done":
-      return { id, status: "done", icon: <Check size={14} />, text: `Made "${event.name}" · ${event.duration}s` };
+      return { id: `recipe-${event.index}`, status: "done", icon: <Check size={14} />, text: `Made "${event.name}" · ${event.duration}s` };
     case "recipe_failed":
-      return { id, status: "failed", icon: <X size={14} />, text: `Failed: ${event.prompt} (${event.error})` };
+      return { id: `recipe-${event.index}`, status: "failed", icon: <X size={14} />, text: `Failed: ${event.prompt} (${event.error})` };
     case "persisting":
-      return { id, status: "pending", icon: <Save size={14} />, text: "Saving the plan and new recipes…" };
+      return { id: "finalize", status: "pending", icon: <Save size={14} />, text: "Saving the plan and new recipes…" };
     case "complete":
-      return { id, status: "done", icon: <Check size={14} />, text: `Done — plan ready (${event.total_duration}s total)` };
+      return { id: "finalize", status: "done", icon: <Check size={14} />, text: `Done — plan ready (${event.total_duration}s total)` };
     case "error":
-      return { id, status: "failed", icon: <X size={14} />, text: event.message };
+      return { id: rnd(), status: "failed", icon: <X size={14} />, text: event.message };
   }
 }
 

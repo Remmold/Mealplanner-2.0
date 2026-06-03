@@ -914,11 +914,11 @@ async def generate_meal_plan(
         sem = asyncio.Semaphore(concurrency)
         event_queue: asyncio.Queue = asyncio.Queue()
 
-        async def gen_one(prompt: str, reason: str):
+        async def gen_one(prompt: str, reason: str, index: int):
             async with sem:
                 t0 = time.monotonic()
                 await event_queue.put({
-                    "type": "recipe_start", "prompt": prompt[:100],
+                    "type": "recipe_start", "index": index, "prompt": prompt[:100],
                     "reason": reason or "no saved/pool match",
                 })
                 log.warning("[plan-gen] generating recipe: %r", prompt[:80])
@@ -927,7 +927,7 @@ async def generate_meal_plan(
                     duration = round(time.monotonic() - t0, 1)
                     log.warning("[plan-gen]   → '%s' in %.1fs", gen.name, duration)
                     await event_queue.put({
-                        "type": "recipe_done", "name": gen.name,
+                        "type": "recipe_done", "index": index, "name": gen.name,
                         "duration": duration,
                     })
                     return prompt, gen
@@ -935,14 +935,14 @@ async def generate_meal_plan(
                     duration = round(time.monotonic() - t0, 1)
                     log.warning("[plan-gen]   FAILED in %.1fs: %s", duration, e)
                     await event_queue.put({
-                        "type": "recipe_failed", "prompt": prompt[:100],
+                        "type": "recipe_failed", "index": index, "prompt": prompt[:100],
                         "error": str(e),
                     })
                     return prompt, None
 
         tasks = [
-            asyncio.create_task(gen_one(p, prompt_to_reason.get(p, "")))
-            for p in unique_prompts
+            asyncio.create_task(gen_one(p, prompt_to_reason.get(p, ""), i))
+            for i, p in enumerate(unique_prompts)
         ]
 
         # Drain the queue: each task pushes a recipe_start AND a terminal
