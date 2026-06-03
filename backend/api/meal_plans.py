@@ -36,32 +36,36 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 router = APIRouter(prefix="/meal-plans", tags=["meal-plans"])
 
-# Descriptors + proteins stripped when reducing a dish name to its "family" so
-# that, e.g., "Classic Beef Tacos" and "Spicy Fish Tacos" both collapse to
-# "taco" — the household wants ONE taco night, not a week of taco variants.
+# Descriptors + proteins stripped when reducing a dish name to its "family", so
+# the HEAD noun survives: "Grilled Salmon Burgers", "Gourmet Salmon Burgers" and
+# "Savory Salmon Burgers" all collapse to "burger" — the household wants one
+# burger night, not a week of burger variants.
 _DESC_WORDS = {
     # connectors / adjectives
     "with", "and", "the", "a", "of", "in", "on", "homemade", "classic", "fresh",
     "spicy", "creamy", "grilled", "roasted", "baked", "fried", "easy", "quick",
     "zesty", "savory", "hearty", "simple", "style", "served", "topped", "loaded",
+    "gourmet", "spiced", "seared", "crispy", "tender", "juicy", "rich", "light",
     # proteins (so the family is the dish, not the filling)
     "beef", "chicken", "pork", "fish", "salmon", "cod", "tuna", "shrimp", "prawn",
     "turkey", "lamb", "tofu", "veggie", "vegetable", "vegetarian", "vegan", "bean",
-    "lentil", "egg", "ham", "bacon", "sausage",
+    "lentil", "egg", "ham", "bacon", "sausage", "lax", "kyckling", "fläsk",
 }
 
 
 def _dish_family(text: str) -> str:
-    """Coarse dish key for variety dedup: lowercase, strip punctuation/descriptors,
-    singularise, keep the first few significant words. Best paired with a model-
-    provided short `dish_name`; falls back to a recipe name / prompt."""
-    cleaned = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
-    words = [
-        w[:-1] if len(w) > 3 and w.endswith("s") else w
-        for w in cleaned.split()
-        if w and w not in _DESC_WORDS
-    ]
-    return " ".join(words[:4])
+    """Coarse dish key for variety dedup. Cut the name at 'with'/'med'/comma to
+    drop garnishes, strip descriptors + proteins, and return the singularised
+    HEAD noun — so 'Grilled Salmon Burgers with Dressing', 'Gourmet Salmon
+    Burgers' and 'Savory Salmon Burgers' all become 'burger'. Best paired with
+    the model's short `dish_name`; also works on a recipe name or prompt."""
+    head_part = re.split(r"\bwith\b|\bmed\b|[,(/]", (text or "").lower())[0]
+    cleaned = re.sub(r"[^a-z0-9åäö ]+", " ", head_part)
+    words = [w for w in cleaned.split() if w and w not in _DESC_WORDS]
+    if not words:
+        return ""
+    head = words[-1]
+    return head[:-1] if len(head) > 3 and head.endswith("s") else head
 
 
 # ----------------------------------------------------------------------------
@@ -309,6 +313,11 @@ class _PlannedMeal(BaseModel):
     # most one meal per family per plan (non-batch), so "beef tacos" and "fish
     # tacos" (both family "tacos") never fill the week together.
     dish_name: str | None = None
+    # True if the dish reheats / travels well as a next-day lunchbox (stews,
+    # curries, pasta bakes, grain bowls, roasts) — false for crispy/fresh/fried
+    # things, burgers, leafy salads, delicate fish. The server reuses only
+    # lunchbox-friendly dishes as leftovers when filling extra days.
+    lunchbox_friendly: bool = False
     # When generating (new_recipe_prompt), a short note on WHY a fresh recipe
     # instead of reusing — e.g. "no saved/pool match" or "user asked to try it".
     # Surfaced to the user so generation is never silent.
@@ -321,6 +330,173 @@ class _PlannedWeek(BaseModel):
 
 
 _PLAN_MODEL = os.getenv("OPENAI_RECIPE_MODEL", "openai:gpt-4o")
+
+
+def _assemble_week(
+    planned_meals: list[_PlannedMeal],
+    *,
+    saved_rows,
+    kept: list[dict],
+    kept_cells: set[tuple[int, str]],
+    slot_by_name: dict[str, SlotConfig],
+    days: int,
+    lunchbox_mode: bool,
+    brief: str,
+) -> tuple[list[_PlannedMeal], list[str], dict[str, str]]:
+    """Turn the planner's raw meals into the final, variety-enforced plan.
+
+    The model ignores prompt-level variety rules, so the constraints are
+    enforced here instead. Steps:
+      1. Validate: in-range day, known slot, has a source, one meal per cell,
+         a recipe/prompt isn't split across slots, and kept (already-planned)
+         cells are never touched.
+      2. Dish-family dedup (non-batch slots): different recipes that are really
+         the SAME dish — "Grilled/Gourmet/Savory Salmon Burgers" all family
+         "burger" — collapse to one day. Named dishes therefore land once.
+      3. Backfill the freed days with "unique dishes OR lunchboxes": a DIFFERENT
+         saved dish (reuse-first), or leftovers of a lunchbox-friendly dish
+         already on the plan, or — last resort — a fresh distinct generation.
+         Default leans unique; lunchbox/matlåda mode leans on leftovers.
+
+    Returns (valid_meals, unique_prompts, prompt_to_reason).
+    """
+    saved_by_id = {r["id"]: r for r in saved_rows}
+
+    def _meal_family(m: _PlannedMeal) -> str:
+        if m.dish_name and m.dish_name.strip():
+            return _dish_family(m.dish_name)
+        if m.use_recipe_id:
+            name = saved_by_id.get(m.use_recipe_id, {}).get("name", "")
+            return _dish_family(name) or f"id:{m.use_recipe_id}"
+        return _dish_family(m.new_recipe_prompt or "")
+
+    # 1) Basic validation + one-meal-per-cell + slot-disjoint + skip kept cells.
+    valid_meals: list[_PlannedMeal] = []
+    prompt_to_slot: dict[str, str] = {}
+    recipe_id_to_slot: dict[str, str] = {}
+    filled_cells: set[tuple[int, str]] = set()
+    for meal in planned_meals:
+        if meal.day_offset < 0 or meal.day_offset >= days:
+            continue
+        if meal.slot not in slot_by_name:
+            continue
+        cell = (meal.day_offset, meal.slot)
+        if cell in kept_cells or cell in filled_cells:
+            continue
+        if not meal.use_recipe_id and not meal.new_recipe_prompt:
+            continue
+        if meal.use_recipe_id:
+            prior = recipe_id_to_slot.get(meal.use_recipe_id)
+            if prior and prior != meal.slot:
+                continue
+            recipe_id_to_slot[meal.use_recipe_id] = meal.slot
+        if meal.new_recipe_prompt:
+            prior = prompt_to_slot.get(meal.new_recipe_prompt)
+            if prior and prior != meal.slot:
+                continue
+            prompt_to_slot[meal.new_recipe_prompt] = meal.slot
+        filled_cells.add(cell)
+        valid_meals.append(meal)
+
+    # 2) Dish-family dedup: one recipe per family per slot (non-batch).
+    used_fam: dict[str, set[str]] = {}   # slot -> dish families already taken
+    used_ids: dict[str, set[str]] = {}   # slot -> recipe ids already taken
+    for c in kept:                       # kept days occupy their slot already
+        fam = _dish_family(c.get("recipe_name") or "")
+        if fam:
+            used_fam.setdefault(c["slot"], set()).add(fam)
+        if c.get("recipe_id"):
+            used_ids.setdefault(c["slot"], set()).add(c["recipe_id"])
+
+    deduped: list[_PlannedMeal] = []
+    freed_cells: list[tuple[int, str]] = []
+    for meal in valid_meals:
+        sc = slot_by_name[meal.slot]
+        batch = sc.distinct_meals is not None and sc.distinct_meals > 0
+        fams = used_fam.setdefault(meal.slot, set())
+        ids = used_ids.setdefault(meal.slot, set())
+        fam = _meal_family(meal)
+        taken = (fam and fam in fams) or (meal.use_recipe_id and meal.use_recipe_id in ids)
+        if not batch and taken:
+            freed_cells.append((meal.day_offset, meal.slot))
+            continue
+        if fam:
+            fams.add(fam)
+        if meal.use_recipe_id:
+            ids.add(meal.use_recipe_id)
+        deduped.append(meal)
+
+    # 3) Backfill freed days: unique saved dish OR lunchbox leftovers OR gen.
+    leftover_sources = list(deduped)     # dishes actually cooked this week
+    leftover_uses = [0] * len(leftover_sources)
+
+    def _pick_distinct_saved(slot: str, fams: set[str], ids: set[str]):
+        return next(
+            (r for r in saved_rows
+             if r["id"] not in ids
+             and _dish_family(r["name"]) not in fams
+             and (not r["meal_type"] or r["meal_type"] == slot)),
+            None,
+        )
+
+    def _next_leftover(slot: str) -> _PlannedMeal | None:
+        elig = [
+            i for i, m in enumerate(leftover_sources)
+            if m.lunchbox_friendly and m.slot == slot and leftover_uses[i] < 2
+        ]
+        if not elig:
+            return None
+        i = min(elig, key=lambda i: leftover_uses[i])
+        leftover_uses[i] += 1
+        src = leftover_sources[i]
+        return _PlannedMeal(
+            day_offset=0, slot=slot,
+            use_recipe_id=src.use_recipe_id,
+            new_recipe_prompt=src.new_recipe_prompt,
+            dish_name=src.dish_name, lunchbox_friendly=True,
+            reason="leftovers from earlier in the week",
+        )
+
+    for doff, slot in freed_cells:
+        fams = used_fam.setdefault(slot, set())
+        ids = used_ids.setdefault(slot, set())
+        placed: _PlannedMeal | None = None
+        order = ("leftover", "distinct") if lunchbox_mode else ("distinct", "leftover")
+        for strategy in order:
+            if strategy == "distinct":
+                pick = _pick_distinct_saved(slot, fams, ids)
+                if pick:
+                    ids.add(pick["id"])
+                    fams.add(_dish_family(pick["name"]))
+                    placed = _PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"])
+                    break
+            else:
+                lo = _next_leftover(slot)
+                if lo:
+                    lo.day_offset = doff
+                    placed = lo
+                    break
+        if placed is None:
+            placed = _PlannedMeal(
+                day_offset=doff, slot=slot,
+                new_recipe_prompt=(
+                    f"A {slot} fitting the brief ({brief}), different from every "
+                    f"other dish this week — distinct option for day {doff + 1}."
+                ),
+                reason="filling a day with a distinct dish",
+            )
+        deduped.append(placed)
+
+    # 4) Generation set + reasons from the final assignment.
+    unique_prompts: list[str] = []
+    seen: set[str] = set()
+    prompt_to_reason: dict[str, str] = {}
+    for meal in deduped:
+        if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen:
+            seen.add(meal.new_recipe_prompt)
+            unique_prompts.append(meal.new_recipe_prompt)
+            prompt_to_reason[meal.new_recipe_prompt] = (meal.reason or "").strip()
+    return deduped, unique_prompts, prompt_to_reason
 
 
 @router.post("/generate")
@@ -407,13 +583,17 @@ async def generate_meal_plan(
         slot_rules_lines.append(line)
     slot_rules = "\n".join(slot_rules_lines)
 
-    matlada_hint = ""
     brief_lc = body.prompt.lower()
-    if any(w in brief_lc for w in ["matlåd", "matlad", "batch", "meal prep", "work hard", "busy"]):
+    lunchbox_mode = any(w in brief_lc for w in [
+        "matlåd", "matlad", "batch", "meal prep", "mealprep", "lunchbox",
+        "lunch box", "lunch-box", "leftover", "prep ahead", "work hard", "busy",
+    ])
+    matlada_hint = ""
+    if lunchbox_mode:
         matlada_hint = (
-            "\n- The user wants a matlåda / batch-cooking style week. Default to "
-            "2–3 distinct dishes per slot cooked in bigger portions, each eaten "
-            "across 2–4 days. Don't design 7 unique dinners for a busy household."
+            "\n- The user wants a lunchbox / matlåda / batch-cooking week. Plan "
+            "FEWER distinct dishes and lean on lunchbox_friendly meals eaten again "
+            "as next-day leftovers, rather than cooking something new every day."
         )
 
     cells_lines = "\n".join(f"  - day_offset={d}, slot={s}" for d, s in fillable_cells)
@@ -455,6 +635,10 @@ async def generate_meal_plan(
         "- Set `dish_name` on EVERY meal to its short FAMILY (1-2 words, "
         "  lowercase, no adjectives or proteins): tacos, burger, curry, stir "
         "  fry, pasta, salad, soup, etc.\n"
+        "- Set `lunchbox_friendly` = true for dishes that reheat and travel well "
+        "  as a next-day lunchbox (stews, curries, chili, pasta bakes, grain "
+        "  bowls, roasts, soups); false for crispy/fried/fresh dishes, burgers, "
+        "  leafy salads and delicate fish.\n"
         "- VARIETY: a `dish_name` family may appear on AT MOST ONE day of the "
         "  plan, UNLESS the user asked for batch-cooking / matlåda / leftovers. "
         "  'beef tacos' and 'fish tacos' are BOTH family 'tacos' — pick one and "
@@ -558,123 +742,17 @@ async def generate_meal_plan(
                 """
             )
         valid_ids = {r["id"] for r in saved_rows}
-        saved_by_id = {r["id"]: r for r in saved_rows}
 
-        valid_meals: list[_PlannedMeal] = []
-        unique_prompts: list[str] = []
-        seen_prompts: set[str] = set()
-        prompt_to_slot: dict[str, str] = {}
-        recipe_id_to_slot: dict[str, str] = {}
-        prompt_to_reason: dict[str, str] = {}
-        filled_cells: set[tuple[int, str]] = set()
-        for meal in planned.meals:
-            if meal.day_offset < 0 or meal.day_offset >= body.days:
-                continue
-            if meal.slot not in slot_by_name:
-                continue
-            cell = (meal.day_offset, meal.slot)
-            # Enforce calendar-awareness server-side: never plan a kept cell, and
-            # only one meal per (day, slot).
-            if cell in kept_cells or cell in filled_cells:
-                continue
-            if not meal.use_recipe_id and not meal.new_recipe_prompt:
-                continue
-            if meal.use_recipe_id:
-                prior = recipe_id_to_slot.get(meal.use_recipe_id)
-                if prior and prior != meal.slot:
-                    continue
-                recipe_id_to_slot[meal.use_recipe_id] = meal.slot
-            if meal.new_recipe_prompt:
-                prior = prompt_to_slot.get(meal.new_recipe_prompt)
-                if prior and prior != meal.slot:
-                    continue
-                prompt_to_slot[meal.new_recipe_prompt] = meal.slot
-            filled_cells.add(cell)
-            valid_meals.append(meal)
-            if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen_prompts:
-                seen_prompts.add(meal.new_recipe_prompt)
-                unique_prompts.append(meal.new_recipe_prompt)
-                prompt_to_reason[meal.new_recipe_prompt] = (meal.reason or "").strip()
-
-        # ---- Enforce dish-level variety (the model ignores the prompt rule). ----
-        # In a non-batch slot a dish FAMILY may occupy at most one day. Families
-        # come from the model's `dish_name` (so "beef tacos" and "fish tacos" both
-        # collapse to "taco"); near-identical variants therefore can't fill the
-        # week. Strip the repeats and backfill freed days with the household's
-        # OTHER saved recipes (reuse-first); generate only if the library can't
-        # cover them. This is what makes "try tacos and salmon burgers" land each
-        # once with the rest of the days different.
-        def _meal_family(m: _PlannedMeal) -> str:
-            if m.dish_name and m.dish_name.strip():
-                return _dish_family(m.dish_name)
-            if m.use_recipe_id:
-                name = saved_by_id.get(m.use_recipe_id, {}).get("name", "")
-                return _dish_family(name) or f"id:{m.use_recipe_id}"
-            return _dish_family(m.new_recipe_prompt or "")
-
-        used_fam: dict[str, set[str]] = {}   # slot -> dish families already taken
-        used_ids: dict[str, set[str]] = {}   # slot -> recipe ids already taken
-        for c in kept:                       # kept days occupy their slot already
-            fam = _dish_family(c.get("recipe_name") or "")
-            if fam:
-                used_fam.setdefault(c["slot"], set()).add(fam)
-            if c.get("recipe_id"):
-                used_ids.setdefault(c["slot"], set()).add(c["recipe_id"])
-
-        deduped: list[_PlannedMeal] = []
-        freed_cells: list[tuple[int, str]] = []
-        for meal in valid_meals:
-            sc = slot_by_name[meal.slot]
-            batch = sc.distinct_meals is not None and sc.distinct_meals > 0
-            fams = used_fam.setdefault(meal.slot, set())
-            ids = used_ids.setdefault(meal.slot, set())
-            fam = _meal_family(meal)
-            taken = (fam and fam in fams) or (meal.use_recipe_id and meal.use_recipe_id in ids)
-            if not batch and taken:
-                freed_cells.append((meal.day_offset, meal.slot))
-                continue
-            if fam:
-                fams.add(fam)
-            if meal.use_recipe_id:
-                ids.add(meal.use_recipe_id)
-            deduped.append(meal)
-
-        # Backfill freed days with distinct saved recipes (different family + id),
-        # then a fresh distinct generation if the library is exhausted.
-        for doff, slot in freed_cells:
-            fams = used_fam.setdefault(slot, set())
-            ids = used_ids.setdefault(slot, set())
-            pick = next(
-                (r for r in saved_rows
-                 if r["id"] not in ids
-                 and _dish_family(r["name"]) not in fams
-                 and (not r["meal_type"] or r["meal_type"] == slot)),
-                None,
-            )
-            if pick:
-                ids.add(pick["id"])
-                fams.add(_dish_family(pick["name"]))
-                deduped.append(_PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"]))
-            else:
-                gen_prompt = (
-                    f"A {slot} fitting the brief ({body.prompt}), different from every "
-                    f"other dish this week — distinct option for day {doff + 1}."
-                )
-                deduped.append(_PlannedMeal(
-                    day_offset=doff, slot=slot, new_recipe_prompt=gen_prompt,
-                    reason="filling a day with a distinct dish",
-                ))
-
-        # Rebuild the meal list + generation set from the enforced assignment.
-        valid_meals = deduped
-        unique_prompts = []
-        seen_prompts = set()
-        prompt_to_reason = {}
-        for meal in valid_meals:
-            if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen_prompts:
-                seen_prompts.add(meal.new_recipe_prompt)
-                unique_prompts.append(meal.new_recipe_prompt)
-                prompt_to_reason[meal.new_recipe_prompt] = (meal.reason or "").strip()
+        valid_meals, unique_prompts, prompt_to_reason = _assemble_week(
+            planned.meals,
+            saved_rows=saved_rows,
+            kept=kept,
+            kept_cells=kept_cells,
+            slot_by_name=slot_by_name,
+            days=body.days,
+            lunchbox_mode=lunchbox_mode,
+            brief=body.prompt,
+        )
 
         yield emit(
             "planning_done",
