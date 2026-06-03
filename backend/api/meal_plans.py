@@ -502,10 +502,24 @@ async def generate_meal_plan(
             yield emit("error", message=f"Plan generation failed: {e}")
             return
 
-        # Dedup + slot-disjoint validation of planner output.
+        # Dedup + slot-disjoint validation of planner output. Pull saved recipes
+        # ranked reuse-first (most-cooked, then Explore-liked) so we can backfill
+        # any day the planner duplicated a dish onto.
         async with user_tx(user) as conn:
-            rows = await conn.fetch("SELECT id::text AS id FROM hearth.recipes")
-            valid_ids = {r["id"] for r in rows}
+            saved_rows = await conn.fetch(
+                """
+                SELECT r.id::text AS id, r.name, r.meal_type,
+                       COALESCE(p.times_planned, 0) AS tp,
+                       (r.public_origin_id IS NOT NULL) AS fe
+                FROM hearth.recipes r
+                LEFT JOIN (
+                    SELECT recipe_id, COUNT(*)::int AS times_planned
+                    FROM hearth.meal_plan_entries GROUP BY recipe_id
+                ) p ON p.recipe_id = r.id
+                ORDER BY tp DESC, fe DESC, r.updated_at DESC
+                """
+            )
+        valid_ids = {r["id"] for r in saved_rows}
 
         valid_meals: list[_PlannedMeal] = []
         unique_prompts: list[str] = []
@@ -538,6 +552,68 @@ async def generate_meal_plan(
                 prompt_to_slot[meal.new_recipe_prompt] = meal.slot
             filled_cells.add(cell)
             valid_meals.append(meal)
+            if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen_prompts:
+                seen_prompts.add(meal.new_recipe_prompt)
+                unique_prompts.append(meal.new_recipe_prompt)
+                prompt_to_reason[meal.new_recipe_prompt] = (meal.reason or "").strip()
+
+        # ---- Enforce dish-level variety (the model ignores the prompt rule). ----
+        # In a non-batch slot (distinct_meals unset), a dish may appear on at most
+        # ONE day. Strip later repeats, then backfill the freed days with the
+        # household's OTHER saved recipes (reuse-first); generate only if the
+        # library can't cover them. This is what makes "try the X" land once.
+        def _dish_key(m: _PlannedMeal) -> str:
+            if m.use_recipe_id:
+                return f"id:{m.use_recipe_id}"
+            return "p:" + " ".join((m.new_recipe_prompt or "").lower().split())
+
+        used_keys_by_slot: dict[str, set[str]] = {}
+        # Kept dishes already occupy their slot — don't reuse them elsewhere.
+        for c in kept:
+            if c.get("recipe_id"):
+                used_keys_by_slot.setdefault(c["slot"], set()).add(f"id:{c['recipe_id']}")
+
+        deduped: list[_PlannedMeal] = []
+        freed_cells: list[tuple[int, str]] = []
+        for meal in valid_meals:
+            sc = slot_by_name[meal.slot]
+            batch = sc.distinct_meals is not None and sc.distinct_meals > 0
+            used = used_keys_by_slot.setdefault(meal.slot, set())
+            key = _dish_key(meal)
+            if not batch and key in used:
+                freed_cells.append((meal.day_offset, meal.slot))
+                continue
+            used.add(key)
+            deduped.append(meal)
+
+        # Backfill freed days with distinct saved recipes, then fresh generation.
+        for doff, slot in freed_cells:
+            used = used_keys_by_slot.setdefault(slot, set())
+            pick = next(
+                (r for r in saved_rows
+                 if f"id:{r['id']}" not in used
+                 and (not r["meal_type"] or r["meal_type"] == slot)),
+                None,
+            )
+            if pick:
+                used.add(f"id:{pick['id']}")
+                deduped.append(_PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"]))
+            else:
+                gen_prompt = (
+                    f"A {slot} fitting the brief ({body.prompt}), different from every "
+                    f"other dish this week — distinct option for day {doff + 1}."
+                )
+                deduped.append(_PlannedMeal(
+                    day_offset=doff, slot=slot, new_recipe_prompt=gen_prompt,
+                    reason="filling a day with a distinct dish",
+                ))
+
+        # Rebuild the meal list + generation set from the enforced assignment.
+        valid_meals = deduped
+        unique_prompts = []
+        seen_prompts = set()
+        prompt_to_reason = {}
+        for meal in valid_meals:
             if meal.new_recipe_prompt and meal.new_recipe_prompt not in seen_prompts:
                 seen_prompts.add(meal.new_recipe_prompt)
                 unique_prompts.append(meal.new_recipe_prompt)
