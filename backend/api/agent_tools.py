@@ -97,8 +97,8 @@ def build_chat_toolset(ctx: ToolContext, proposer: PendingProposer) -> list[Tool
     async def propose_pantry_remove(fdc_id: int) -> str:
         return _emit(proposer, await core.propose_pantry_remove(ctx, fdc_id))
 
-    async def propose_profile_field(field: str, value: str) -> str:
-        return _emit(proposer, await core.propose_profile_field(ctx, field, value))
+    async def propose_profile_field(field: str, value: str, mode: str = "add") -> str:
+        return _emit(proposer, await core.propose_profile_field(ctx, field, value, mode))
 
     async def propose_profile_note(note: str) -> str:
         return _emit(proposer, await core.propose_profile_note(ctx, note))

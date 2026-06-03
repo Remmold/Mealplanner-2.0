@@ -18,7 +18,7 @@ from datetime import date
 from api.agent_core.context import Proposal, ToolContext
 from api.db import user_tx
 from api.ingredients import load_all_curated_meta
-from api.profile import coerce_profile_value
+from api.profile import ADDITIVE_LIST_FIELDS, coerce_profile_value
 
 
 def _is_uuid(value) -> bool:
@@ -521,7 +521,9 @@ async def propose_pantry_remove(ctx: ToolContext, fdc_id: int) -> Proposal | str
     )
 
 
-async def propose_profile_field(ctx: ToolContext, field: str, value: str) -> Proposal | str:
+async def propose_profile_field(
+    ctx: ToolContext, field: str, value: str, mode: str = "add",
+) -> Proposal | str:
     """PROPOSE updating a structured profile field. ALWAYS prefer this over
     propose_profile_note when the user's statement maps to a structured field.
 
@@ -539,16 +541,39 @@ async def propose_profile_field(ctx: ToolContext, field: str, value: str) -> Pro
         set visible_slots to "lunch,dinner". For "only dinner" set it to
         "dinner". Empty / unset means show all three.
 
+    `mode` (for the list fields dietary/allergies/dislikes/likes/cuisines/
+    kitchen_equipment) controls how `value` combines with what's already stored:
+      - 'add' (DEFAULT): append the new item(s), keeping existing ones. Use this
+        for "we also dislike X", "we love Thai" — never wipes prior preferences.
+      - 'remove': drop the listed item(s) from the field.
+      - 'set': replace the whole list (only when the user clearly restates the
+        entire list, e.g. "our only allergy is peanuts").
+    `mode` is ignored for visible_slots and scalar/enum fields — those always
+    replace, so pass the full intended value.
+
     propose_profile_note is the LAST resort — only use it for genuinely
     free-form observations that no structured field captures."""
+    mode = (mode or "add").strip().lower()
+    if mode not in {"add", "remove", "set"}:
+        return f"Invalid mode '{mode}'. Use 'add', 'remove', or 'set'."
     try:
         coerced = coerce_profile_value(field, value)
     except ValueError as e:
         return str(e)
+    if field in ADDITIVE_LIST_FIELDS:
+        if mode == "remove":
+            summary = f"Remove {coerced!r} from profile.{field}"
+        elif mode == "set":
+            summary = f"Replace profile.{field} with {coerced!r}"
+        else:
+            summary = f"Add {coerced!r} to profile.{field} (keeps existing)"
+    else:
+        mode = "set"
+        summary = f"Set profile.{field} to {coerced!r}"
     return Proposal(
         kind="profile.field",
-        summary=f"Set profile.{field} to {coerced!r}",
-        params={"field": field, "value": coerced},
+        summary=summary,
+        params={"field": field, "value": coerced, "mode": mode},
     )
 
 

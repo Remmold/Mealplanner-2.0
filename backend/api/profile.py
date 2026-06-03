@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from api.db import get_current_household_id, service_tx
@@ -40,10 +40,23 @@ PROFILE_FIELDS: dict[str, str] = {
     "kitchen_equipment": "List: 'oven', 'stove', 'slow cooker', 'pressure cooker', 'grill', 'wok', 'blender', ...",
     "cuisines": "Preferred cuisines in rough priority order.",
     "budget_level": "'thrifty' | 'moderate' | 'splurge'.",
+    "visible_slots": "Which meal slots the household plans on the calendar. "
+        "Subset of ['breakfast','lunch','dinner']. If the user says e.g. "
+        "\"we generally don't want our breakfasts planned\", set this to "
+        "['lunch','dinner']. Empty list / unset = all three slots shown.",
+    "max_ingredients_to_buy": "Comfort threshold — how many NON-staple "
+        "ingredients the household is comfortable shopping for per recipe. "
+        "Default 8. Used to rank recipes (over-threshold sinks in Explore + "
+        "the meal-plan generator avoids them); not a hard filter.",
 }
 
-LIST_FIELDS = {"dietary", "allergies", "dislikes", "likes", "cuisines", "kitchen_equipment"}
-INT_FIELDS = {"family_size", "typical_cook_time_min"}
+LIST_FIELDS = {"dietary", "allergies", "dislikes", "likes", "cuisines", "kitchen_equipment", "visible_slots"}
+# Additive list fields ACCUMULATE: "we also dislike X" should append to the
+# existing list, not replace it. visible_slots is deliberately NOT additive — it
+# is a full set ("we plan lunch and dinner"), so it always replaces.
+ADDITIVE_LIST_FIELDS = LIST_FIELDS - {"visible_slots"}
+VALID_SLOTS: set[str] = {"breakfast", "lunch", "dinner"}
+INT_FIELDS = {"family_size", "typical_cook_time_min", "max_ingredients_to_buy"}
 ENUM_FIELDS: dict[str, set[str]] = {
     "batch_cook_preference": {"none", "moderate", "heavy"},
     "budget_level": {"thrifty", "moderate", "splurge"},
@@ -62,7 +75,15 @@ def coerce_profile_value(field: str, value: Any) -> Any:
         raise ValueError(f"Unknown field '{field}'. Valid: {', '.join(PROFILE_FIELDS)}")
     if field in LIST_FIELDS:
         items = value if isinstance(value, list) else str(value).split(",")
-        return [str(s).strip() for s in items if str(s).strip()]
+        cleaned = [str(s).strip().lower() for s in items if str(s).strip()]
+        if field == "visible_slots":
+            invalid = [s for s in cleaned if s not in VALID_SLOTS]
+            if invalid:
+                raise ValueError(
+                    f"visible_slots must contain only 'breakfast', 'lunch', 'dinner' "
+                    f"(got {invalid!r})."
+                )
+        return cleaned
     if field in INT_FIELDS:
         s = str(value).strip()
         try:
@@ -84,6 +105,28 @@ def coerce_profile_value(field: str, value: Any) -> Any:
     return str(value).strip()
 
 
+def apply_field_mode(field: str, existing: Any, incoming: list, mode: str) -> list:
+    """Combine an incoming list-field value with what's already stored.
+
+    Additive list fields default to 'add' (union, order-preserving, deduped) so a
+    statement like "we also dislike spicy food" appends rather than clobbering the
+    existing dislikes. 'remove' drops the incoming items; 'set' replaces wholesale.
+    Non-additive fields (visible_slots) always replace and never reach the merge."""
+    if field not in ADDITIVE_LIST_FIELDS:
+        return incoming
+    base = list(existing) if isinstance(existing, list) else []
+    if mode == "set":
+        return incoming
+    if mode == "remove":
+        drop = set(incoming)
+        return [x for x in base if x not in drop]
+    merged = list(base)                       # 'add' (default)
+    for x in incoming:
+        if x not in merged:
+            merged.append(x)
+    return merged
+
+
 class HouseholdProfile(BaseModel):
     family_size: int | None = None
     dietary: list[str] = Field(default_factory=list)
@@ -96,6 +139,8 @@ class HouseholdProfile(BaseModel):
     cuisines: list[str] = Field(default_factory=list)
     budget_level: str | None = None
     notes: list[str] = Field(default_factory=list)
+    visible_slots: list[str] = Field(default_factory=list)
+    max_ingredients_to_buy: int | None = None
     updated_at: str | None = None
 
 

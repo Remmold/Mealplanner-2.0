@@ -191,8 +191,8 @@ async def propose_pantry_remove(fdc_id: int) -> dict:
     return _proposal_payload(await core.propose_pantry_remove(await _ctx_from_token(), fdc_id))
 
 
-async def propose_profile_field(field: str, value: str) -> dict:
-    return _proposal_payload(await core.propose_profile_field(await _ctx_from_token(), field, value))
+async def propose_profile_field(field: str, value: str, mode: str = "add") -> dict:
+    return _proposal_payload(await core.propose_profile_field(await _ctx_from_token(), field, value, mode))
 
 
 async def propose_profile_note(note: str) -> dict:
