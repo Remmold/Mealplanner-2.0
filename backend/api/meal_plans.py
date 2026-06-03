@@ -509,8 +509,8 @@ def _assemble_week(
                     placed = lo
                     break
         if placed is None:
-            # Last resort: generate, but with a distinct style not already used.
-            hint = "something different from the rest of the week"
+            # Last resort: generate, with a distinct style not already used.
+            hint = None
             for _ in range(len(_GEN_HINTS)):
                 famword, text = _GEN_HINTS[gen_cursor % len(_GEN_HINTS)]
                 gen_cursor += 1
@@ -518,12 +518,20 @@ def _assemble_week(
                     hint = text
                     fams.add(famword)
                     break
-            placed = _PlannedMeal(
-                day_offset=doff, slot=slot,
-                new_recipe_prompt=(
+            if hint is not None:
+                gen_prompt = (
                     f"{hint.capitalize()} for {slot}, fitting the brief ({brief}); "
                     f"different from every other dish this week."
-                ),
+                )
+            else:
+                # Hints exhausted (many freed days) — keep prompts UNIQUE per day
+                # so they don't dedup into one repeated dish.
+                gen_prompt = (
+                    f"A distinct {slot} fitting the brief ({brief}), unlike any other "
+                    f"dish this week — variation for day {doff + 1}."
+                )
+            placed = _PlannedMeal(
+                day_offset=doff, slot=slot, new_recipe_prompt=gen_prompt,
                 reason="filling a day with a distinct dish",
             )
         deduped.append(placed)
@@ -975,11 +983,13 @@ async def generate_meal_plan(
                     pool_to_local.get(m.use_recipe_id, m.use_recipe_id)
                     for m in valid_meals if m.use_recipe_id
                 }
-                fallback_iter = iter(saved_rows)
-
-                def _fallback_recipe() -> str | None:
-                    for r in fallback_iter:
-                        if r["id"] not in used_recipe_ids:
+                def _fallback_recipe(slot: str) -> str | None:
+                    # Prefer a slot-appropriate unused saved recipe (untagged or
+                    # matching meal_type) — never put a breakfast recipe at dinner.
+                    for r in saved_rows:
+                        if r["id"] not in used_recipe_ids and (
+                            not r["meal_type"] or r["meal_type"] == slot
+                        ):
                             return r["id"]
                     return None
 
@@ -993,7 +1003,7 @@ async def generate_meal_plan(
                     if recipe_id is None and meal.new_recipe_prompt:
                         recipe_id = prompt_to_recipe_id.get(meal.new_recipe_prompt)
                     if recipe_id is None:
-                        recipe_id = _fallback_recipe()
+                        recipe_id = _fallback_recipe(meal.slot)
                     if not recipe_id:
                         dropped += 1
                         continue
