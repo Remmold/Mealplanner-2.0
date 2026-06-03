@@ -385,6 +385,10 @@ def _assemble_week(
             continue
         if not meal.use_recipe_id and not meal.new_recipe_prompt:
             continue
+        # Never both: prefer reusing an existing recipe over an orphan generation
+        # (the model is told "never both" but sometimes sets both anyway).
+        if meal.use_recipe_id and meal.new_recipe_prompt:
+            meal.new_recipe_prompt = None
         if meal.use_recipe_id:
             prior = recipe_id_to_slot.get(meal.use_recipe_id)
             if prior and prior != meal.slot:
@@ -429,11 +433,15 @@ def _assemble_week(
     # 3) Backfill freed days: unique saved dish OR lunchbox leftovers OR gen.
     leftover_sources = list(deduped)     # dishes actually cooked this week
     leftover_uses = [0] * len(leftover_sources)
+    # Plan-wide recipe ids already placed (any slot) so backfill never reuses the
+    # same recipe across two slots.
+    placed_ids: set[str] = {m.use_recipe_id for m in deduped if m.use_recipe_id}
+    placed_ids |= {c["recipe_id"] for c in kept if c.get("recipe_id")}
 
-    def _pick_distinct_saved(slot: str, fams: set[str], ids: set[str]):
+    def _pick_distinct_saved(slot: str, fams: set[str]):
         return next(
             (r for r in saved_rows
-             if r["id"] not in ids
+             if r["id"] not in placed_ids
              and _dish_family(r["name"]) not in fams
              and (not r["meal_type"] or r["meal_type"] == slot)),
             None,
@@ -444,6 +452,13 @@ def _assemble_week(
             i for i, m in enumerate(leftover_sources)
             if m.lunchbox_friendly and m.slot == slot and leftover_uses[i] < 2
         ]
+        if not elig and lunchbox_mode:
+            # Explicit lunchbox/matlåda week but nothing flagged friendly — reuse
+            # SOME earlier dish rather than cooking new every day.
+            elig = [
+                i for i, m in enumerate(leftover_sources)
+                if m.slot == slot and leftover_uses[i] < 2
+            ]
         if not elig:
             return None
         i = min(elig, key=lambda i: leftover_uses[i])
@@ -457,17 +472,34 @@ def _assemble_week(
             reason="leftovers from earlier in the week",
         )
 
+    # Distinct style hints for last-resort generation, so a tiny library doesn't
+    # yield several near-identical "a dinner fitting the brief" dishes.
+    _GEN_HINTS = [
+        ("soup", "a comforting soup or stew"),
+        ("bowl", "a grain or rice bowl"),
+        ("stir", "a quick stir-fry"),
+        ("roast", "a sheet-pan roast"),
+        ("pasta", "a baked or saucy pasta"),
+        ("curry", "a fragrant curry"),
+        ("salad", "a substantial main salad"),
+        ("frittata", "an egg-based frittata or omelette"),
+        ("wrap", "a wrap or flatbread plate"),
+        ("chili", "a hearty chili"),
+    ]
+    gen_cursor = 0
+
     for doff, slot in freed_cells:
         fams = used_fam.setdefault(slot, set())
-        ids = used_ids.setdefault(slot, set())
         placed: _PlannedMeal | None = None
         order = ("leftover", "distinct") if lunchbox_mode else ("distinct", "leftover")
         for strategy in order:
             if strategy == "distinct":
-                pick = _pick_distinct_saved(slot, fams, ids)
+                pick = _pick_distinct_saved(slot, fams)
                 if pick:
-                    ids.add(pick["id"])
-                    fams.add(_dish_family(pick["name"]))
+                    placed_ids.add(pick["id"])
+                    pf = _dish_family(pick["name"])
+                    if pf:
+                        fams.add(pf)
                     placed = _PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"])
                     break
             else:
@@ -477,11 +509,20 @@ def _assemble_week(
                     placed = lo
                     break
         if placed is None:
+            # Last resort: generate, but with a distinct style not already used.
+            hint = "something different from the rest of the week"
+            for _ in range(len(_GEN_HINTS)):
+                famword, text = _GEN_HINTS[gen_cursor % len(_GEN_HINTS)]
+                gen_cursor += 1
+                if famword not in fams:
+                    hint = text
+                    fams.add(famword)
+                    break
             placed = _PlannedMeal(
                 day_offset=doff, slot=slot,
                 new_recipe_prompt=(
-                    f"A {slot} fitting the brief ({brief}), different from every "
-                    f"other dish this week — distinct option for day {doff + 1}."
+                    f"{hint.capitalize()} for {slot}, fitting the brief ({brief}); "
+                    f"different from every other dish this week."
                 ),
                 reason="filling a day with a distinct dish",
             )
@@ -819,6 +860,20 @@ async def generate_meal_plan(
         try:
             yield emit("persisting")
 
+            # The planner is told to reuse pool recipes by setting use_recipe_id
+            # to a public_recipe_id. Those aren't in the household's saved recipes,
+            # so import each referenced pool recipe once (free, no LLM credit) and
+            # remember the local id — otherwise the day would be dropped at insert.
+            from api.public_pool import copy_to_household
+            pool_to_local: dict[str, str] = {}
+            for meal in valid_meals:
+                pid = meal.use_recipe_id
+                if pid and pid not in valid_ids and pid not in pool_to_local:
+                    local, _name = await copy_to_household(pid, household_id)
+                    if local:
+                        pool_to_local[pid] = local
+                        valid_ids.add(local)
+
             prompt_to_recipe_id: dict[str, str] = {}
             async with user_tx(user) as conn:
                 plan_row = await conn.fetchrow(
@@ -912,14 +967,37 @@ async def generate_meal_plan(
                         if not pool_row or not pool_row["image_path"]:
                             schedule_image(rid, gen.name, household_id)
 
+                # Fallback so a day is never silently blanked when its recipe
+                # can't be resolved (pool import miss / failed generation): grab an
+                # unused saved recipe, reuse-first. Seed "used" with every planned
+                # saved/pool id so the fallback doesn't collide with an intended dish.
+                used_recipe_ids: set[str] = {
+                    pool_to_local.get(m.use_recipe_id, m.use_recipe_id)
+                    for m in valid_meals if m.use_recipe_id
+                }
+                fallback_iter = iter(saved_rows)
+
+                def _fallback_recipe() -> str | None:
+                    for r in fallback_iter:
+                        if r["id"] not in used_recipe_ids:
+                            return r["id"]
+                    return None
+
+                dropped = 0
                 for meal in valid_meals:
                     recipe_id: str | None = None
-                    if meal.use_recipe_id and meal.use_recipe_id in valid_ids:
-                        recipe_id = meal.use_recipe_id
-                    elif meal.new_recipe_prompt:
+                    if meal.use_recipe_id:
+                        rid = pool_to_local.get(meal.use_recipe_id, meal.use_recipe_id)
+                        if rid in valid_ids:
+                            recipe_id = rid
+                    if recipe_id is None and meal.new_recipe_prompt:
                         recipe_id = prompt_to_recipe_id.get(meal.new_recipe_prompt)
+                    if recipe_id is None:
+                        recipe_id = _fallback_recipe()
                     if not recipe_id:
+                        dropped += 1
                         continue
+                    used_recipe_ids.add(recipe_id)
 
                     plan_date = body.start_date + timedelta(days=meal.day_offset)
 
@@ -935,6 +1013,9 @@ async def generate_meal_plan(
                     )
 
                 out = await _build_plan_out(conn, plan_id)
+            if dropped:
+                log.warning("[plan-gen] %d planned day(s) could not be filled "
+                            "(empty library + failed generation)", dropped)
         except Exception as e:
             log.exception("[plan-gen] persist failed")
             try: await release_hold(hold_id)
