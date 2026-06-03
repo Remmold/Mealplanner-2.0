@@ -1156,7 +1156,7 @@ async def regenerate_meal_plan(
         slot_by_name.setdefault(e["slot"], SlotConfig(slot=e["slot"], portions=float(e["portions"])))
 
     lunchbox_mode = _is_lunchbox_brief(body.prompt.lower())
-    hold_id = await hold(household_id, "weekly_plan", float(len(fillable_cells)))
+    hold_id = await hold(household_id, "weekly_plan", 1.0 + float(len(fillable_cells)))
 
     try:
         ctx = ToolContext(user=user, household_id=household_id)
@@ -1214,6 +1214,14 @@ async def regenerate_meal_plan(
             slot_by_name=slot_by_name, days=days, lunchbox_mode=lunchbox_mode,
             brief=body.prompt,
         )
+        # Only touch the flagged cells — the planner may propose meals on other
+        # in-range empty cells, which we must not fabricate during a regenerate.
+        fillable_set = set(fillable_cells)
+        valid_meals = [m for m in valid_meals if (m.day_offset, m.slot) in fillable_set]
+        unique_prompts = [
+            p for p in unique_prompts
+            if any(m.new_recipe_prompt == p for m in valid_meals)
+        ]
 
         async def _gen(p: str):
             try:
@@ -1240,11 +1248,6 @@ async def regenerate_meal_plan(
                     prompt_to_recipe_id[prompt] = await _save_generated_recipe(
                         conn, gen, household_id, body.servings
                     )
-            # Replace: delete the flagged entries, then insert the new ones.
-            await conn.execute(
-                "DELETE FROM hearth.meal_plan_entries WHERE id = ANY($1::uuid[])",
-                list(flagged_set),
-            )
             used_recipe_ids: set[str] = {
                 pool_to_local.get(m.use_recipe_id, m.use_recipe_id)
                 for m in valid_meals if m.use_recipe_id
@@ -1259,6 +1262,8 @@ async def regenerate_meal_plan(
                         return r["id"]
                 return None
 
+            # Resolve each flagged cell to a replacement recipe first.
+            resolved: list[tuple[int, str, str]] = []  # (day_offset, slot, recipe_id)
             for meal in valid_meals:
                 recipe_id: str | None = None
                 if meal.use_recipe_id:
@@ -1272,16 +1277,34 @@ async def regenerate_meal_plan(
                 if not recipe_id:
                     continue
                 used_recipe_ids.add(recipe_id)
-                plan_date = start_date + timedelta(days=meal.day_offset)
-                slot_cfg = slot_by_name.get(meal.slot)
-                portions = float(slot_cfg.portions) if slot_cfg else float(meal.portions)
+                resolved.append((meal.day_offset, meal.slot, recipe_id))
+
+            # Replace ONLY the flagged entries that actually got a new dish, scoped
+            # to THIS plan (never another plan's entry). A flagged day we couldn't
+            # refill keeps its existing meal rather than going empty.
+            flagged_by_cell = {
+                (_doff(e["plan_date"]), e["slot"]): e["entry_id"] for e in flagged
+            }
+            replace_ids = [
+                flagged_by_cell[(d, s)] for (d, s, _) in resolved if (d, s) in flagged_by_cell
+            ]
+            if replace_ids:
+                await conn.execute(
+                    "DELETE FROM hearth.meal_plan_entries "
+                    "WHERE id = ANY($1::uuid[]) AND meal_plan_id = $2::uuid",
+                    replace_ids, plan_id,
+                )
+            for doff_, slot_, recipe_id in resolved:
+                plan_date = start_date + timedelta(days=doff_)
+                slot_cfg = slot_by_name.get(slot_)
+                portions = float(slot_cfg.portions) if slot_cfg else 1.0
                 await conn.execute(
                     """
                     INSERT INTO hearth.meal_plan_entries
                         (household_id, meal_plan_id, recipe_id, plan_date, slot, portions)
                     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::date, $5, $6)
                     """,
-                    household_id, plan_id, recipe_id, plan_date, meal.slot, max(0.25, portions),
+                    household_id, plan_id, recipe_id, plan_date, slot_, max(0.25, portions),
                 )
             out = await _build_plan_out(conn, plan_id)
     except HTTPException:
