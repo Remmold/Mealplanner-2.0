@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Plus, Save, ShoppingCart, Sparkles, X } from "lucide-react";
+import { BookOpen, Check, ChevronLeft, ChevronRight, Plus, Save, ShoppingCart, Sparkles, X } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   fetchMeals,
@@ -10,6 +10,7 @@ import {
   fetchRecipes,
   generateMealPlan,
   fetchCalendarConflicts,
+  navigateTo,
   onDataChanged,
   onNavigate,
   type CalendarConflict,
@@ -523,9 +524,17 @@ export default function MealPlan() {
                         className="input-mini"
                       />
                       <span className="tiny muted">portions</span>
+                      <Button
+                        onClick={() => navigateTo({ tab: "recipe", recipe_id: m.recipe_id })}
+                        variant="ghost"
+                        size="xs"
+                        className="ml-auto"
+                      >
+                        <BookOpen size={12} /> View recipe
+                      </Button>
                       <IconButton
                         onClick={() => removeMeal(m.id)}
-                        className="icon-btn-sm ml-auto"
+                        className="icon-btn-sm"
                         aria-label="Remove"
                       >
                         <X size={11} />
