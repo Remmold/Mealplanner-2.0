@@ -448,17 +448,12 @@ def _assemble_week(
         )
 
     def _next_leftover(slot: str) -> _PlannedMeal | None:
+        # ONLY reuse genuinely lunchbox-friendly dishes — never make a soggy
+        # taco/burger a "leftover".
         elig = [
             i for i, m in enumerate(leftover_sources)
             if m.lunchbox_friendly and m.slot == slot and leftover_uses[i] < 2
         ]
-        if not elig and lunchbox_mode:
-            # Explicit lunchbox/matlåda week but nothing flagged friendly — reuse
-            # SOME earlier dish rather than cooking new every day.
-            elig = [
-                i for i, m in enumerate(leftover_sources)
-                if m.slot == slot and leftover_uses[i] < 2
-            ]
         if not elig:
             return None
         i = min(elig, key=lambda i: leftover_uses[i])
@@ -472,68 +467,90 @@ def _assemble_week(
             reason="leftovers from earlier in the week",
         )
 
-    # Distinct style hints for last-resort generation, so a tiny library doesn't
-    # yield several near-identical "a dinner fitting the brief" dishes.
+    # Distinct style hints for generated backfill. `friendly` marks dishes that
+    # keep as lunchboxes, so a lunchbox week never generates tacos/burgers.
     _GEN_HINTS = [
-        ("soup", "a comforting soup or stew"),
-        ("bowl", "a grain or rice bowl"),
-        ("stir", "a quick stir-fry"),
-        ("roast", "a sheet-pan roast"),
-        ("pasta", "a baked or saucy pasta"),
-        ("curry", "a fragrant curry"),
-        ("salad", "a substantial main salad"),
-        ("frittata", "an egg-based frittata or omelette"),
-        ("wrap", "a wrap or flatbread plate"),
-        ("chili", "a hearty chili"),
+        ("soup", "a comforting soup or stew", True),
+        ("curry", "a fragrant curry", True),
+        ("bowl", "a grain or rice bowl", True),
+        ("pasta", "a baked or saucy pasta", True),
+        ("roast", "a sheet-pan roast", True),
+        ("chili", "a hearty chili", True),
+        ("frittata", "a frittata or egg bake", True),
+        ("stir", "a quick stir-fry", False),
+        ("salad", "a substantial main salad", False),
+        ("wrap", "a wrap or flatbread plate", False),
     ]
     gen_cursor = 0
+
+    def _make_generated(slot: str, doff: int) -> _PlannedMeal:
+        nonlocal gen_cursor
+        fams = used_fam.setdefault(slot, set())
+        hint = hint_fam = None
+        for _ in range(len(_GEN_HINTS)):
+            famword, text, friendly = _GEN_HINTS[gen_cursor % len(_GEN_HINTS)]
+            gen_cursor += 1
+            if lunchbox_mode and not friendly:
+                continue
+            if famword not in fams:
+                hint, hint_fam = text, famword
+                fams.add(famword)
+                break
+        if hint is not None and lunchbox_mode:
+            prompt = (
+                f"{hint.capitalize()} for {slot} — a batch-cook dish that reheats "
+                f"and travels well as a lunchbox, fitting the brief ({brief}); "
+                f"different from every other dish this week."
+            )
+        elif hint is not None:
+            prompt = (
+                f"{hint.capitalize()} for {slot}, fitting the brief ({brief}); "
+                f"different from every other dish this week."
+            )
+        else:
+            # styles exhausted — keep the prompt UNIQUE per day so it doesn't
+            # dedup into one repeated dish.
+            kind = "batch-cook lunchbox-friendly " if lunchbox_mode else ""
+            prompt = (
+                f"A distinct {kind}{slot} fitting the brief ({brief}), unlike any "
+                f"other dish this week — variation for day {doff + 1}."
+            )
+        return _PlannedMeal(
+            day_offset=doff, slot=slot, new_recipe_prompt=prompt,
+            dish_name=hint_fam, lunchbox_friendly=lunchbox_mode,
+            reason=("batch-cooked for lunchboxes" if lunchbox_mode
+                    else "filling a day with a distinct dish"),
+        )
 
     for doff, slot in freed_cells:
         fams = used_fam.setdefault(slot, set())
         placed: _PlannedMeal | None = None
-        order = ("leftover", "distinct") if lunchbox_mode else ("distinct", "leftover")
-        for strategy in order:
-            if strategy == "distinct":
-                pick = _pick_distinct_saved(slot, fams)
-                if pick:
-                    placed_ids.add(pick["id"])
-                    pf = _dish_family(pick["name"])
-                    if pf:
-                        fams.add(pf)
-                    placed = _PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"])
-                    break
+        if lunchbox_mode:
+            # Cook-once-eat-again: reuse a lunchbox-friendly dish, else GENERATE a
+            # lunchbox-friendly one and add it to the pool so later days reuse it.
+            lo = _next_leftover(slot)
+            if lo:
+                lo.day_offset = doff
+                placed = lo
             else:
+                placed = _make_generated(slot, doff)
+                leftover_sources.append(placed)
+                leftover_uses.append(0)
+        else:
+            pick = _pick_distinct_saved(slot, fams)
+            if pick:
+                placed_ids.add(pick["id"])
+                pf = _dish_family(pick["name"])
+                if pf:
+                    fams.add(pf)
+                placed = _PlannedMeal(day_offset=doff, slot=slot, use_recipe_id=pick["id"])
+            if placed is None:
                 lo = _next_leftover(slot)
                 if lo:
                     lo.day_offset = doff
                     placed = lo
-                    break
-        if placed is None:
-            # Last resort: generate, with a distinct style not already used.
-            hint = None
-            for _ in range(len(_GEN_HINTS)):
-                famword, text = _GEN_HINTS[gen_cursor % len(_GEN_HINTS)]
-                gen_cursor += 1
-                if famword not in fams:
-                    hint = text
-                    fams.add(famword)
-                    break
-            if hint is not None:
-                gen_prompt = (
-                    f"{hint.capitalize()} for {slot}, fitting the brief ({brief}); "
-                    f"different from every other dish this week."
-                )
-            else:
-                # Hints exhausted (many freed days) — keep prompts UNIQUE per day
-                # so they don't dedup into one repeated dish.
-                gen_prompt = (
-                    f"A distinct {slot} fitting the brief ({brief}), unlike any other "
-                    f"dish this week — variation for day {doff + 1}."
-                )
-            placed = _PlannedMeal(
-                day_offset=doff, slot=slot, new_recipe_prompt=gen_prompt,
-                reason="filling a day with a distinct dish",
-            )
+            if placed is None:
+                placed = _make_generated(slot, doff)
         deduped.append(placed)
 
     # 4) Generation set + reasons from the final assignment.
@@ -633,16 +650,20 @@ async def generate_meal_plan(
     slot_rules = "\n".join(slot_rules_lines)
 
     brief_lc = body.prompt.lower()
+    # Explicit lunchbox intent only — "busy"/"work hard" over-triggered, turning
+    # ordinary weeks into leftover weeks.
     lunchbox_mode = any(w in brief_lc for w in [
         "matlåd", "matlad", "batch", "meal prep", "mealprep", "lunchbox",
-        "lunch box", "lunch-box", "leftover", "prep ahead", "work hard", "busy",
+        "lunch box", "lunch-box", "leftover", "prep ahead", "prep-ahead",
     ])
     matlada_hint = ""
     if lunchbox_mode:
         matlada_hint = (
-            "\n- The user wants a lunchbox / matlåda / batch-cooking week. Plan "
-            "FEWER distinct dishes and lean on lunchbox_friendly meals eaten again "
-            "as next-day leftovers, rather than cooking something new every day."
+            "\n- LUNCHBOX / matlåda / batch-cooking week: plan FEWER distinct "
+            "dishes, and choose ones that are genuinely lunchbox_friendly (stews, "
+            "curries, chilis, pasta bakes, grain bowls, roasts, soups) so they can "
+            "be eaten again as next-day leftovers. Do NOT build the week around "
+            "tacos, burgers, fried or fresh dishes — they don't keep as lunchboxes."
         )
 
     cells_lines = "\n".join(f"  - day_offset={d}, slot={s}" for d, s in fillable_cells)
@@ -684,10 +705,11 @@ async def generate_meal_plan(
         "- Set `dish_name` on EVERY meal to its short FAMILY (1-2 words, "
         "  lowercase, no adjectives or proteins): tacos, burger, curry, stir "
         "  fry, pasta, salad, soup, etc.\n"
-        "- Set `lunchbox_friendly` = true for dishes that reheat and travel well "
-        "  as a next-day lunchbox (stews, curries, chili, pasta bakes, grain "
-        "  bowls, roasts, soups); false for crispy/fried/fresh dishes, burgers, "
-        "  leafy salads and delicate fish.\n"
+        "- Set `lunchbox_friendly` = true ONLY for dishes that genuinely reheat "
+        "  and travel well as a next-day lunchbox: stews, curries, chili, pasta "
+        "  bakes, grain/rice bowls, roasts, soups, casseroles. Set it FALSE for "
+        "  tacos, burgers, sandwiches/wraps, anything crispy or fried, leafy "
+        "  salads, and delicate fish — these go soggy and are NOT lunchboxes.\n"
         "- VARIETY: a `dish_name` family may appear on AT MOST ONE day of the "
         "  plan, UNLESS the user asked for batch-cooking / matlåda / leftovers. "
         "  'beef tacos' and 'fish tacos' are BOTH family 'tacos' — pick one and "
