@@ -12,12 +12,24 @@ them directly, and the in-process adapter mirrors them. Keep both in sync.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 from api.agent_core.context import Proposal, ToolContext
 from api.db import user_tx
 from api.ingredients import load_all_curated_meta
 from api.profile import coerce_profile_value
+
+
+def _is_uuid(value) -> bool:
+    """True if `value` is a well-formed UUID string. Tools validate ids before
+    querying so a mangled id from the LLM (e.g. an extra digit) returns a
+    retryable error instead of crashing asyncpg's ::uuid cast."""
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 # Both list_recipes and search_recipes rank by signals the agent should prefer
 # when picking a meal: how many times the household has previously planned this
@@ -118,6 +130,8 @@ async def search_pool_recipes(ctx: ToolContext, query: str) -> str:
 
 async def get_recipe(ctx: ToolContext, recipe_id: str) -> str:
     """Get full details of a saved recipe: name, servings, ingredients, instructions."""
+    if not _is_uuid(recipe_id):
+        return f"Invalid recipe id '{recipe_id}'. Use an exact id from a search result."
     async with user_tx(ctx.user) as conn:
         row = await conn.fetchrow(
             "SELECT id::text AS id, name, servings, instructions "
@@ -308,6 +322,8 @@ async def search_usda_for_staple(ctx: ToolContext, query: str) -> str:
 async def propose_rename_recipe(ctx: ToolContext, recipe_id: str, new_name: str) -> Proposal | str:
     """PROPOSE renaming a saved recipe. Does NOT apply the change — the user
     must accept it in the UI."""
+    if not _is_uuid(recipe_id):
+        return f"Invalid recipe id '{recipe_id}'."
     async with user_tx(ctx.user) as conn:
         row = await conn.fetchrow(
             "SELECT name FROM hearth.recipes WHERE id = $1::uuid",
@@ -324,6 +340,8 @@ async def propose_rename_recipe(ctx: ToolContext, recipe_id: str, new_name: str)
 
 async def propose_update_recipe_servings(ctx: ToolContext, recipe_id: str, servings: int) -> Proposal | str:
     """PROPOSE changing a recipe's base serving count."""
+    if not _is_uuid(recipe_id):
+        return f"Invalid recipe id '{recipe_id}'."
     async with user_tx(ctx.user) as conn:
         row = await conn.fetchrow(
             "SELECT name FROM hearth.recipes WHERE id = $1::uuid",
@@ -340,6 +358,8 @@ async def propose_update_recipe_servings(ctx: ToolContext, recipe_id: str, servi
 
 async def propose_delete_recipe(ctx: ToolContext, recipe_id: str) -> Proposal | str:
     """PROPOSE deleting a recipe."""
+    if not _is_uuid(recipe_id):
+        return f"Invalid recipe id '{recipe_id}'."
     async with user_tx(ctx.user) as conn:
         row = await conn.fetchrow(
             "SELECT name FROM hearth.recipes WHERE id = $1::uuid",
@@ -371,6 +391,8 @@ async def propose_import_pool_recipe(ctx: ToolContext, public_recipe_id: str) ->
     """PROPOSE importing an existing recipe from the global pool into this
     household's saved recipes. Free, instant — no LLM credit spent.
     Use this whenever search_pool_recipes returns a fit."""
+    if not _is_uuid(public_recipe_id):
+        return f"Invalid pool recipe id '{public_recipe_id}'."
     async with user_tx(ctx.user) as conn:
         row = await conn.fetchrow(
             "SELECT name FROM hearth.public_recipes WHERE id = $1::uuid",
@@ -393,6 +415,8 @@ async def propose_add_meal_to_calendar(
     date and slot. Use this — not the old plan-based variant — for any
     meal-adding interaction. plan_date is ISO YYYY-MM-DD; slot is
     breakfast/lunch/dinner."""
+    if not _is_uuid(recipe_id):
+        return f"Invalid recipe id '{recipe_id}'."
     async with user_tx(ctx.user) as conn:
         recipe = await conn.fetchrow(
             "SELECT name FROM hearth.recipes WHERE id = $1::uuid",
@@ -413,6 +437,8 @@ async def propose_add_meal_to_calendar(
 
 async def propose_remove_meal_from_calendar(ctx: ToolContext, entry_id: str) -> Proposal | str:
     """PROPOSE removing a single meal from the household calendar."""
+    if not _is_uuid(entry_id):
+        return f"Invalid meal id '{entry_id}'."
     async with user_tx(ctx.user) as conn:
         row = await conn.fetchrow(
             """
@@ -435,6 +461,8 @@ async def propose_remove_meal_from_calendar(ctx: ToolContext, entry_id: str) -> 
 
 async def propose_update_meal_portions(ctx: ToolContext, entry_id: str, portions: float) -> Proposal | str:
     """PROPOSE changing the portions for a meal on the calendar."""
+    if not _is_uuid(entry_id):
+        return f"Invalid meal id '{entry_id}'."
     async with user_tx(ctx.user) as conn:
         row = await conn.fetchrow(
             """

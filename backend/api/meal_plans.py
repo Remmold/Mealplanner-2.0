@@ -590,7 +590,7 @@ async def generate_meal_plan(
     event's `plan` as the final result.
     """
     from api.agent_core.context import ToolContext
-    from api.agent_core.tools import get_calendar_conflicts
+    from api.agent_core.tools import _is_uuid, get_calendar_conflicts
     from api.agent_tools import build_planner_search_tools
     from api.credits import finalize_hold, hold, release_hold
     from api.image_gen import schedule_image
@@ -898,7 +898,7 @@ async def generate_meal_plan(
             pool_to_local: dict[str, str] = {}
             for meal in valid_meals:
                 pid = meal.use_recipe_id
-                if pid and pid not in valid_ids and pid not in pool_to_local:
+                if pid and _is_uuid(pid) and pid not in valid_ids and pid not in pool_to_local:
                     local, _name = await copy_to_household(pid, household_id)
                     if local:
                         pool_to_local[pid] = local
