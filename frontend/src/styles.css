@@ -319,6 +319,13 @@ a:hover { text-decoration: underline; }
   border-color: var(--sage);
   box-shadow: 0 0 0 3px rgba(74, 107, 70, 0.15);
 }
+/* Placeholders are hints, not values — keep them clearly lighter than the dark
+   --ink of real input text so a filled field reads as obviously filled.
+   (opacity:1 stops Firefox from dimming the colour further.) */
+.input::placeholder, .select::placeholder, .textarea::placeholder {
+  color: var(--taupe-3);
+  opacity: 1;
+}
 .textarea { resize: vertical; min-height: 36px; }
 .textarea-autogrow { overflow: hidden; resize: none; }
 
