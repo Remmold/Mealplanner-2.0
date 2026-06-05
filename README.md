@@ -1,6 +1,60 @@
-# Mealplanner 2.0
+# Hearth — Mealplanner 2.0
 
-A meal planning application backed by real nutritional data from [Open Food Facts](https://world.openfoodfacts.org/).
+Hearth is a household meal-planning web app. A household plans dinners on a shared
+calendar, keeps a recipe library, a pantry and a profile, and gets help from an AI
+kitchen assistant that can read and — with the user's approval — modify all of it.
+
+The assistant's toolbox is exposed two ways: **in-process** and over the
+**Model Context Protocol (MCP)**, so any MCP-compatible client (Claude, ChatGPT,
+other agents) can drive it with the user's Supabase login.
+
+> The MCP integration is the subject of a degree thesis: the *same* shared tool core
+> is reached both in-process and over MCP, so the two integration mechanisms can be
+> compared directly, with the toolset held constant.
+
+---
+
+## Features
+
+- **Recipe library** — save, search, and LLM-generate recipes with USDA-backed nutrition.
+- **Shared calendar** — plan dinners by date / slot / portions; a week wizard builds a coherent menu.
+- **Pantry & shopping list** — household staples shape an auto-generated shopping list.
+- **Household profile** — dietary needs, likes/dislikes, allergies, cuisines, cook-time and batch-cook preferences.
+- **Explore** — a public recipe pool; like and import community + starter recipes.
+- **AI assistant** — natural-language chat that calls tools to manage all of the above. Every write is a *proposal* the user accepts or rejects; nothing auto-mutates.
+- **MCP server** — the same toolbox over Streamable HTTP, reachable by any MCP client with a Supabase JWT.
+- **Capped AI** — per-household monthly credits plus a global spend kill-switch.
+
+---
+
+## Architecture
+
+```
+React SPA ──HTTP──▶ FastAPI ──asyncpg (RLS)──▶ Supabase Postgres
+                      │
+                      ├─ PydanticAI chat agent
+                      │     ├─ in-process tools  (api/agent_tools.py)   ◀ default
+                      │     └─ MCP client ──HTTP──▶ MCP server (api/mcp_server.py)
+                      │
+                      └─ shared tool core (api/agent_core/tools.py)   ◀ single source of truth
+```
+
+- **Shared tool core** (`api/agent_core/tools.py`) — pure, transport-agnostic tool functions; their docstrings are the canonical tool descriptions.
+- **Two adapters** expose that core identically: in-process (PydanticAI) and the MCP server (FastMCP, Streamable HTTP, per-request Supabase JWT). Pick one with the `HEARTH_AGENT_TRANSPORT` env var.
+- **Human-in-the-loop writes** — tools return proposals buffered as `pending_actions`; a per-kind executor applies them only after the user accepts.
+- **Identity & isolation** — every request carries a Supabase JWT; Postgres Row-Level Security (RLS) scopes all data to the caller's household.
+
+---
+
+## Tech stack
+
+| Layer | Tech |
+|---|---|
+| Frontend | React 19, TypeScript, Vite; `@supabase/supabase-js`; `lucide-react`; in-house primitive UI library |
+| Backend | Python 3.11+, FastAPI, Uvicorn; PydanticAI (OpenAI); MCP SDK (FastMCP); asyncpg; PyJWT |
+| Database | Supabase — Postgres + Auth + Row-Level Security |
+| Data | USDA FoodData Central + Open Food Facts; DuckDB + dlt + dbt for the product catalogue |
+| Tooling | uv, ruff, pytest |
 
 ---
 
@@ -9,77 +63,135 @@ A meal planning application backed by real nutritional data from [Open Food Fact
 ```
 Mealplanner-2.0/
 ├── backend/
-│   ├── pipeline/               # Data ingestion (OFF → DuckDB)
-│   │   ├── sources/
-│   │   │   └── open_food_facts.py
-│   │   └── run.py
-│   ├── .dlt/config.toml        # dlt runtime config
-│   ├── pyproject.toml          # Python project + dependencies
-│   └── .env.example            # Environment variable template
+│   ├── api/                     # FastAPI application
+│   │   ├── main.py              # app entry — routers + mounted MCP server (/mcp)
+│   │   ├── agent_core/          # shared, transport-agnostic tool core
+│   │   │   ├── tools.py         #   the 22 tool implementations (single source of truth)
+│   │   │   └── context.py
+│   │   ├── agent_tools.py       # in-process tool adapter (PydanticAI)
+│   │   ├── mcp_server.py        # MCP server adapter (FastMCP, Streamable HTTP)
+│   │   ├── chat.py              # chat agent orchestration + sessions
+│   │   ├── pending_actions.py   # propose → accept → execute pipeline
+│   │   ├── recipe_gen.py        # LLM recipe generation (structured output)
+│   │   ├── public_pool.py       # Explore public recipe pool
+│   │   ├── credits.py           # capped-AI credit ledger
+│   │   ├── db.py / auth.py       # asyncpg pool (RLS) + Supabase JWT auth
+│   │   └── …                    # recipes, meals, shopping, staples, profile, households, …
+│   ├── scripts/                 # seeding / data-pipeline scripts
+│   ├── seeds/                   # committed seed data (recipes, USDA aliases)
+│   ├── pipeline/                # legacy Open Food Facts → DuckDB ingestion
+│   ├── pyproject.toml
+│   └── .env.example
+├── frontend/                    # React + Vite single-page app
+│   └── src/
+│       ├── components/          # feature screens + ui/ primitive library
+│       ├── auth/                # Supabase auth + onboarding
+│       └── lib/                 # Supabase client + API helpers
+├── supabase/
+│   ├── config.toml
+│   └── migrations/              # Postgres schema + RLS migrations
 └── README.md
 ```
 
 ---
 
-## Backend — data pipeline
+## Getting started
 
-The pipeline streams the Open Food Facts daily data dump, filters by meal-planning categories, and loads the results into a local DuckDB database.
+### Prerequisites
 
-### Requirements
+- **Python 3.11+** and [uv](https://docs.astral.sh/uv/)
+- **Node 20+** and npm (required by Vite 8)
+- A **Supabase** project and the [Supabase CLI](https://supabase.com/docs/guides/cli) (for migrations)
+- An **OpenAI** API key
 
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (`pip install uv`)
+### 1. Database
 
-### Setup
+Apply the schema + RLS migrations to your linked Supabase project:
+
+```bash
+supabase db push        # applies supabase/migrations/
+```
+
+### 2. Backend
 
 ```bash
 cd backend
-
-# Install dependencies
 uv sync
-
-# Copy and configure environment variables
-cp .env.example .env
+cp .env.example .env     # fill in your Supabase + OpenAI values
+uv run uvicorn api.main:app --reload --port 8000
 ```
 
-Edit `.env` if you want to change the dump path, target categories, or destination database.
+- API: <http://127.0.0.1:8000> — health at `/health`, interactive docs at `/docs`.
+- The MCP server is mounted at **`/mcp`**.
 
-### Run
+### 3. Frontend
 
 ```bash
-uv run python -m pipeline.run
+cd frontend
+npm install
+cp .env.example .env     # VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
+npm run dev
 ```
 
-**First run:** downloads the OFF dump (~5 GB compressed) then ingests matching products. Expect 30–90 minutes depending on internet speed and hardware.
+App: <http://localhost:5173>.
 
-**Subsequent runs:** sends a `HEAD` request to check if OFF has published a new dump. If unchanged, the cached file is reused and only the load step runs.
+### Routing the assistant through MCP
 
-### Quick test (5 000 records)
+The chat agent uses in-process tools by default. To make it reach the *same* tools
+over the MCP server instead:
 
 ```bash
-OFF_MAX_RECORDS=5000 uv run python -m pipeline.run
+HEARTH_AGENT_TRANSPORT=mcp uv run uvicorn api.main:app --port 8000
 ```
 
-### Output
+Any MCP client can also connect directly to `http://127.0.0.1:8000/mcp/` with an
+`Authorization: Bearer <supabase-jwt>` header.
 
-Tables are written to `food_data.duckdb` under the `off` schema:
+---
 
-| Table | Description |
+## Data & seeding
+
+The ingredient catalogue is USDA-based; the (dev-only) product browser data comes
+from Open Food Facts. Seeding/pipeline scripts live in `backend/scripts/` — run them
+from `backend/`, e.g. `uv run python -m scripts.seed_public_pool`:
+
+| Script | Purpose |
 |---|---|
-| `off.products` | One row per product — name, brand, nutriscore, nova group, macros per 100g |
-| `off.products__categories_tags` | Product ↔ category tag |
-| `off.products__allergens_tags` | Product ↔ allergen tag |
-| `off.products__countries_tags` | Product ↔ country tag |
+| `build_starter_corpus.py`, `seed_public_pool.py` | Build + load the starter recipe pool |
+| `extract_swedish_ingredients.py` → `build_amcoff_pool_seed.py` → `ingest_amcoff_pool.py` | Swedish (amcoff/ICA) recipe pipeline that produces `backend/seeds/` |
+| `backfill_amcoff_images.py` | Backfill pool recipe images from source `og:image` |
+| `seed_more_units.py` | Seed per-piece display units |
 
-### Environment variables
+The legacy OFF → DuckDB ingestion lives in `backend/pipeline/`
+(`uv run python -m pipeline.run`).
 
-| Variable | Default | Description |
-|---|---|---|
-| `OFF_DUMP_PATH` | `off_dump.jsonl.gz` | Local path for the downloaded dump |
-| `OFF_CATEGORIES` | (built-in list) | Comma-separated OFF category tags to ingest |
-| `OFF_MAX_RECORDS` | `0` (unlimited) | Cap matched records — useful for testing |
-| `DUCKDB_PATH` | `food_data.duckdb` | Output DuckDB file |
-| `DESTINATION` | `duckdb` | `duckdb` or `postgres` |
-| `POSTGRES_CONNECTION_STRING` | — | Required when `DESTINATION=postgres` |
+---
 
-For a full explanation of every file and the pipeline internals, see [backend/PIPELINE.md](backend/PIPELINE.md).
+## Environment variables (backend)
+
+See [`backend/.env.example`](backend/.env.example) for the full list. The essentials:
+
+| Variable | Description |
+|---|---|
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_ANON_KEY` | Anon public key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service-role key (backend only — never commit) |
+| `SUPABASE_JWT_SECRET` | JWT secret (HS256) used to validate access tokens |
+| `DATABASE_URL` | Direct Postgres connection (transaction pooler, port 6543) |
+| `OPENAI_API_KEY` | Required for recipe generation, chat, and the planner |
+| `OPENAI_RECIPE_MODEL` | LLM model (default `gpt-4o-mini`) |
+| `HEARTH_PUBLIC_URL` | Base URL for invite links (the frontend in dev) |
+| `HEARTH_AGENT_TRANSPORT` | `in_process` (default) or `mcp` |
+| `MONTHLY_CREDIT_GRANT` / `MONTHLY_BUDGET_USD` | Capped-AI tuning (optional) |
+
+**Frontend** (`frontend/.env`): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`.
+
+---
+
+## Conventions
+
+- Frontend UI is composed from the primitives in `frontend/src/components/ui/` — see
+  [`frontend/CLAUDE.md`](frontend/CLAUDE.md) for the rules.
+- `backend/_*.py`, `backend/query_ing*.py`, and `backend/check_cuisines.py` are
+  throwaway scratch scripts, not part of the application.
+```
