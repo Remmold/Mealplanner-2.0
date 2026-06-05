@@ -1,0 +1,87 @@
+simple_name,fdc_id,category,subcategory
+Pasta,169736,Grains,Pasta
+Pasta (whole wheat),169738,Grains,Pasta
+Rice (white),168877,Grains,Rice
+Rice (brown),169703,Grains,Rice
+Bread (white),172818,Grains,Bread
+Bread (whole wheat),172688,Grains,Bread
+Oats,173904,Grains,Breakfast Cereals
+Flour (all-purpose),168936,Grains,Flour
+Couscous,169699,Grains,
+Quinoa,168874,Grains,Quinoa
+Cornmeal,169697,Grains,
+Chicken breast,171075,Meat & Poultry,Chicken
+Chicken thigh,172385,Meat & Poultry,Chicken
+Ground beef,171796,Meat & Poultry,Beef
+Beef steak,168634,Meat & Poultry,Beef
+Pork chop,167830,Meat & Poultry,Pork
+Ground pork,167902,Meat & Poultry,Pork
+Bacon,168277,Meat & Poultry,Sausages
+Turkey breast,172876,Meat & Poultry,Turkey
+Lamb (ground),174370,Meat & Poultry,
+Salmon,173686,Fish & Seafood,Fish
+Tuna (canned),173709,Fish & Seafood,Fish
+Shrimp,174210,Fish & Seafood,Seafood
+Egg,171287,Dairy & Eggs,
+Milk (whole),171265,Dairy & Eggs,
+Butter,173410,Dairy & Eggs,
+Cream,170859,Dairy & Eggs,
+Cheddar cheese,170899,Dairy & Eggs,
+Mozzarella,170845,Dairy & Eggs,
+Parmesan,170848,Dairy & Eggs,
+Yogurt,171284,Dairy & Eggs,
+Cream cheese,173418,Dairy & Eggs,
+Tofu,172448,Protein,
+Tomato,170457,Vegetables,Vegetables
+Onion,170000,Vegetables,Vegetables
+Garlic,169230,Vegetables,Vegetables
+Potato,170026,Vegetables,Vegetables
+Carrot,170393,Vegetables,Vegetables
+Broccoli,170379,Vegetables,Vegetables
+Spinach,168462,Vegetables,Vegetables
+Bell pepper,170108,Vegetables,Vegetables
+Mushroom,169251,Vegetables,Vegetables
+Zucchini,169291,Vegetables,Vegetables
+Cucumber,168409,Vegetables,Vegetables
+Lettuce,169247,Vegetables,Salads
+Corn,169998,Vegetables,Vegetables
+Green beans,169961,Vegetables,Vegetables
+Peas,170419,Vegetables,Vegetables
+Cabbage,169975,Vegetables,Vegetables
+Cauliflower,169986,Vegetables,Vegetables
+Celery,169988,Vegetables,Vegetables
+Eggplant,169228,Vegetables,Vegetables
+Sweet potato,168482,Vegetables,Vegetables
+Avocado,171705,Vegetables,Vegetables
+Asparagus,168389,Vegetables,Vegetables
+Apple,171688,Fruits,
+Banana,173944,Fruits,
+Lemon,167746,Fruits,
+Orange,169917,Fruits,
+Strawberry,167762,Fruits,
+Blueberry,171711,Fruits,
+Olive oil,171413,Oils & Fats,
+Vegetable oil,172336,Oils & Fats,
+Coconut oil,171412,Oils & Fats,
+Black beans,173734,Legumes & Nuts,Legumes
+Chickpeas,173756,Legumes & Nuts,Legumes
+Lentils,172420,Legumes & Nuts,Legumes
+Kidney beans,173744,Legumes & Nuts,Legumes
+Peanut butter,174266,Legumes & Nuts,Spreads
+Almonds,170567,Legumes & Nuts,Seeds & Nuts
+Walnuts,170187,Legumes & Nuts,Seeds & Nuts
+Salt,173468,Seasonings,
+Black pepper,170931,Seasonings,
+Basil (fresh),172232,Seasonings,
+Oregano (dried),171328,Seasonings,
+Cumin,170923,Seasonings,
+Paprika,171329,Seasonings,
+Cinnamon,171320,Seasonings,
+Ginger,169231,Seasonings,
+Soy sauce,174278,Sauces & Condiments,
+Tomato paste,170459,Sauces & Condiments,
+Tomato sauce,170054,Sauces & Condiments,Soups
+Vinegar,172237,Sauces & Condiments,
+Sugar,169655,Other,
+Honey,169640,Other,Honey
+Cocoa powder,169593,Other,Chocolate
