@@ -4,8 +4,9 @@ import { onNavigate } from "./api";
 import { useAuth } from "./auth/AuthProvider";
 import SignIn from "./auth/SignIn";
 import CreateOrJoinHousehold from "./auth/CreateOrJoinHousehold";
-import ProfileWizard, { wizardWasDismissed } from "./auth/ProfileWizard";
+import ProfileWizard from "./auth/ProfileWizard";
 import WelcomeTour, { resetWelcomeTour, welcomeTourSeen } from "./tutorial/WelcomeTour";
+import { fetchProfile } from "./lib/auth-api";
 import PrivacyPolicy from "./legal/PrivacyPolicy";
 import TermsOfService from "./legal/TermsOfService";
 import { Button } from "./components/ui";
@@ -14,17 +15,50 @@ import ShoppingList from "./components/ShoppingList";
 import MealPlan from "./components/MealPlan";
 import Chat from "./components/Chat";
 import Profile from "./components/Profile";
+import Explore from "./components/Explore";
 
-type Tab = "plan" | "recipe" | "shopping" | "profile";
+type Tab = "plan" | "recipe" | "explore" | "shopping" | "profile";
 
 // Meal Plan is the primary surface — it's where the value-prop starts
 // (plan the week -> shopping list). Recipes is a supporting library.
 const TABS: { id: Tab; label: string }[] = [
   { id: "plan",       label: "Meal Plan" },
   { id: "recipe",     label: "Recipes" },
+  { id: "explore",    label: "Explore" },
   { id: "shopping",   label: "Shopping" },
   { id: "profile",    label: "Household" },
 ];
+
+// URL ↔ tab mapping. Keep paths singular-noun-style to match the existing
+// `recipe_id` deep link. Anything else falls through to "plan".
+const PATH_TO_TAB: Record<string, Tab> = {
+  "": "plan",
+  "plan": "plan",
+  "recipes": "recipe",
+  "explore": "explore",
+  "shopping": "shopping",
+  "profile": "profile",
+};
+
+interface Route { tab: Tab; recipeId: string | null }
+
+function parseRoute(pathname: string): Route {
+  const seg = pathname.split("/").filter(Boolean);
+  if (seg[0] === "recipes" && seg[1]) {
+    return { tab: "recipe", recipeId: decodeURIComponent(seg[1]) };
+  }
+  const tab = PATH_TO_TAB[seg[0] ?? ""] ?? "plan";
+  return { tab, recipeId: null };
+}
+
+function buildRoute(tab: Tab, recipeId: string | null): string {
+  if (tab === "recipe") return recipeId ? `/recipes/${encodeURIComponent(recipeId)}` : "/recipes";
+  if (tab === "plan") return "/plan";
+  if (tab === "explore") return "/explore";
+  if (tab === "shopping") return "/shopping";
+  if (tab === "profile") return "/profile";
+  return "/plan";
+}
 
 // Pull `/join/<token>` off the URL on mount. Returns null if the path is
 // anything else. Mutates history so the token doesn't sit in the address bar.
@@ -55,23 +89,96 @@ export default function App() {
   const initialJoinToken = useMemo(consumeJoinTokenFromUrl, []);
   const [pendingInviteToken, setPendingInviteToken] = useState<string | null>(initialJoinToken);
 
-  const [tab, setTab] = useState<Tab>("plan");
+  // Initial tab + recipe come from the URL (so refresh / shared link works).
+  // The join-token route is consumed upstream so it never reaches us here.
+  const initialRoute = useMemo(() => parseRoute(window.location.pathname), []);
+  const [tab, setTabRaw] = useState<Tab>(initialRoute.tab);
   const [chatOpen, setChatOpen] = useState(false);
-  const [initialRecipeId, setInitialRecipeId] = useState<string | null>(null);
-  const [showWizardDismissed, setShowWizardDismissed] = useState(wizardWasDismissed);
+  const [initialRecipeId, setInitialRecipeId] = useState<string | null>(initialRoute.recipeId);
+  // Whether the household profile is empty enough that the user should see
+  // the ProfileWizard. We derive this from the server so a reset (or fresh
+  // signup) re-triggers onboarding even if a stale localStorage flag from a
+  // previous session said "done".
+  // null = still checking, true = empty -> show wizard, false = filled or dismissed
+  const [wizardNeeded, setWizardNeeded] = useState<boolean | null>(null);
   const [tourSeen, setTourSeen] = useState(welcomeTourSeen);
   const [legalOpen, setLegalOpen] = useState<"privacy" | "terms" | null>(null);
+
+  // Normalise the URL on first paint so refreshes always land on /plan,
+  // /recipes, etc. — not the bare "/" we may have started at.
+  useEffect(() => {
+    // Don't touch the URL if Supabase still needs to consume the auth hash
+    // from a Google OAuth or magic-link redirect. replaceState would drop
+    // the hash and the session would never establish.
+    const hash = window.location.hash;
+    if (hash.includes("access_token") || hash.includes("error_code") || hash.includes("provider_token")) {
+      return;
+    }
+    const desired = buildRoute(initialRoute.tab, initialRoute.recipeId);
+    if (window.location.pathname !== desired) {
+      window.history.replaceState({}, "", desired);
+    }
+  }, []);
+
+  // Single source of truth: state changes push history; back/forward pops
+  // history and re-syncs state.
+  function setTab(next: Tab, recipeId: string | null = null) {
+    setTabRaw(next);
+    if (recipeId !== null) setInitialRecipeId(recipeId);
+    const path = buildRoute(next, recipeId);
+    if (window.location.pathname !== path) {
+      window.history.pushState({}, "", path);
+    }
+  }
+
+  useEffect(() => {
+    function onPop() {
+      const r = parseRoute(window.location.pathname);
+      setTabRaw(r.tab);
+      if (r.recipeId) setInitialRecipeId(r.recipeId);
+    }
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Decide whether the profile wizard should fire. Fresh / reset profiles
+  // (no family_size, no dietary, no cuisines, no allergies) are treated as
+  // empty regardless of any localStorage flag from a past session.
+  useEffect(() => {
+    if (!session || !me?.household) { setWizardNeeded(null); return; }
+    fetchProfile().then((p) => {
+      const empty =
+        !p.family_size
+        && p.dietary.length === 0
+        && p.cuisines.length === 0
+        && p.allergies.length === 0
+        && !p.typical_cook_time_min;
+      setWizardNeeded(empty);
+      // If we're (re)firing onboarding, also reset the welcome tour so the
+      // user gets the full intro again.
+      if (empty) {
+        resetWelcomeTour();
+        setTourSeen(false);
+      }
+    }).catch(() => setWizardNeeded(false));
+  }, [session, me?.household]);
 
   useEffect(() => {
     return onNavigate((intent) => {
       if (intent.tab === "recipe") {
-        setTab("recipe");
-        if (intent.recipe_id) setInitialRecipeId(intent.recipe_id);
-        setChatOpen(false);
+        setTab("recipe", intent.recipe_id ?? null);
       } else if (intent.tab === "plan") {
         setTab("plan");
-        setChatOpen(false);
+        // The `openGenerator` flag is handled by MealPlan's own listener.
+      } else if (intent.tab === "shopping") {
+        setTab("shopping");
+      } else if (intent.tab === "profile") {
+        setTab("profile");
+      } else if (intent.tab === "explore") {
+        setTab("explore");
       }
+      // Keep chat open after a chat-link navigation — the user is mid-thought
+      // and should be able to keep talking after landing on the destination.
     });
   }, []);
 
@@ -88,8 +195,11 @@ export default function App() {
     );
   }
 
-  if (!showWizardDismissed) {
-    return <ProfileWizard onComplete={() => setShowWizardDismissed(true)} />;
+  // Wait until we've checked the profile before deciding whether to render
+  // the wizard. Avoids a brief flash of the main app for fresh accounts.
+  if (wizardNeeded === null) return <LoadingShell />;
+  if (wizardNeeded) {
+    return <ProfileWizard onComplete={() => setWizardNeeded(false)} />;
   }
 
   if (!tourSeen) {
@@ -97,7 +207,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={"app-shell" + (chatOpen ? " app-shell-chat-open" : "")}>
       <header className="app-header">
         <div className="app-header-row">
           <div className="brand">
@@ -146,6 +256,7 @@ export default function App() {
           />
         )}
         {tab === "plan" && <MealPlan />}
+        {tab === "explore" && <Explore />}
         {tab === "shopping" && <ShoppingList />}
         {tab === "profile" && <Profile />}
       </main>

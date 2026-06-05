@@ -79,8 +79,23 @@ async def _load_all_ingredients() -> list[dict]:
     ]
 
 
+# USDA food_groups that hold branded / pre-prepared / restaurant items —
+# never useful as a recipe building block. The LLM would otherwise sometimes
+# pick "DENNY'S, french fries" when searching for "potato".
+_BLOCKED_FOOD_GROUPS: tuple[str, ...] = (
+    "Restaurant Foods",
+    "Fast Foods",
+    "Meals, Entrees, and Side Dishes",
+    "Snacks",
+    "Baby Foods",
+    "American Indian/Alaska Native Foods",
+)
+
+
 async def _search_usda_fallback(query: str, limit: int = 25) -> list[dict]:
-    """Search the full USDA table when curated has no hits."""
+    """Search the full USDA table when curated has no hits. Filters out
+    branded / restaurant / pre-prepared entries that look real but aren't
+    suitable as recipe ingredients."""
     from api.db import get_pool
     from api.ingredients import map_food_group
 
@@ -93,10 +108,14 @@ async def _search_usda_fallback(query: str, limit: int = 25) -> list[dict]:
                    energy_kcal, protein_g, carbs_g, fat_g
             FROM hearth.usda_ingredients
             WHERE lower(description) LIKE $1
+              AND food_group <> ALL($2::text[])
+              -- skip rows whose description starts with an UPPERCASE brand
+              -- like "DENNY'S, ..." or "ON THE BORDER, ..."
+              AND NOT description ~ '^[A-Z][A-Z'' ]{2,},'
             ORDER BY length(description), description
-            LIMIT $2
+            LIMIT $3
             """,
-            like, limit,
+            like, list(_BLOCKED_FOOD_GROUPS), limit,
         )
     return [
         {

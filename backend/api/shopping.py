@@ -36,14 +36,17 @@ async def _usda_meta_for(
     our display category. Used as a fallback for ids outside the curated catalog."""
     if not fdc_ids:
         return {}
-    from api.ingredients import map_food_group
+    from api.ingredients import clean_usda_name, map_food_group
     rows = await conn.fetch(
         "SELECT fdc_id, description, food_group FROM hearth.usda_ingredients "
         "WHERE fdc_id = ANY($1::int[])",
         list({int(f) for f in fdc_ids}),
     )
     return {
-        r["fdc_id"]: {"name": r["description"], "category": map_food_group(r["food_group"])}
+        r["fdc_id"]: {
+            "name": clean_usda_name(r["description"]),
+            "category": map_food_group(r["food_group"]),
+        }
         for r in rows
     }
 
@@ -57,6 +60,12 @@ async def generate_shopping_list(
 ):
     from api.ingredients import load_all_curated_meta, resolve_fdc_id
     from api import catalog_cache
+    from api.staples import list_staple_fdc_ids
+
+    # Pantry staples are silently omitted from the buy list and surfaced
+    # below in a 'Check pantry' section so the user can verify nothing has
+    # actually run out.
+    staple_ids = await list_staple_fdc_ids(household_id)
 
     aliases = catalog_cache.get_aliases()
     curated = load_all_curated_meta()
@@ -129,8 +138,10 @@ async def generate_shopping_list(
         if missing_ids:
             meta.update(await _usda_meta_for(conn, missing_ids))
 
-    # Build items with unit conversion.
+    # Build items with unit conversion. Pantry staples go into a separate
+    # bucket (pantry_check) instead of the grouped buy list.
     grouped: dict[str, list[ShoppingListItem]] = defaultdict(list)
+    pantry_check: list[ShoppingListItem] = []
     for fdc_id, grams in totals_g.items():
         info = meta.get(fdc_id)
         if not info:
@@ -155,7 +166,7 @@ async def generate_shopping_list(
         else:
             source_label = "both"
 
-        grouped[category].append(ShoppingListItem(
+        item = ShoppingListItem(
             fdc_id=fdc_id,
             name=name,
             category=category,
@@ -164,7 +175,11 @@ async def generate_shopping_list(
             display_unit=display_unit,
             source=source_label,
             note=notes.get(fdc_id),
-        ))
+        )
+        if fdc_id in staple_ids:
+            pantry_check.append(item)
+        else:
+            grouped[category].append(item)
 
     DEFAULT_SORT = 9999
     categories = []
@@ -176,8 +191,13 @@ async def generate_shopping_list(
             items=items,
         ))
     categories.sort(key=lambda c: (c.sort_index, c.category))
+    pantry_check.sort(key=lambda it: it.name.lower())
 
-    return ShoppingListOut(categories=categories, missing_recipes=missing)
+    return ShoppingListOut(
+        categories=categories,
+        pantry_check=pantry_check,
+        missing_recipes=missing,
+    )
 
 
 # ----------------------------------------------------------------------------

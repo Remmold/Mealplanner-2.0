@@ -41,11 +41,12 @@ async def _usda_names_for(
 async def _load_ingredient_names(
     conn: asyncpg.Connection, fdc_ids: list[int]
 ) -> dict[int, str]:
-    """Map fdc_id -> simple_name. Curated pantry wins; USDA description falls back.
-    Aliases dereferenced via the in-memory catalog cache."""
+    """Map fdc_id -> kitchen-friendly display name. Curated pantry wins; if
+    we fall back to USDA we clean the description first so the user sees
+    'Tomatoes' instead of 'Tomatoes, red, ripe, raw'."""
     if not fdc_ids:
         return {}
-    from api.ingredients import load_all_curated_meta, resolve_fdc_id
+    from api.ingredients import clean_usda_name, load_all_curated_meta, resolve_fdc_id
 
     meta = load_all_curated_meta()
     result: dict[int, str] = {}
@@ -60,17 +61,25 @@ async def _load_ingredient_names(
     if missing:
         usda = await _usda_names_for(conn, [canonicals[m] for m in missing])
         for fid in missing:
-            name = usda.get(canonicals[fid])
-            if name:
-                result[fid] = name
+            raw = usda.get(canonicals[fid])
+            if raw:
+                result[fid] = clean_usda_name(raw)
     return result
+
+
+async def _household_staple_fdc_ids(conn: asyncpg.Connection, household_id: str) -> set[int]:
+    rows = await conn.fetch(
+        "SELECT fdc_id FROM hearth.household_staples WHERE household_id = $1::uuid",
+        household_id,
+    )
+    return {int(r["fdc_id"]) for r in rows}
 
 
 async def _build_recipe_out(
     conn: asyncpg.Connection, recipe_id: str
 ) -> RecipeOut:
     row = await conn.fetchrow(
-        "SELECT id, household_id, name, instructions, servings, "
+        "SELECT id, household_id, name, instructions, servings, meal_type, "
         "image_path, created_at, updated_at "
         "FROM hearth.recipes WHERE id = $1::uuid",
         recipe_id,
@@ -86,6 +95,7 @@ async def _build_recipe_out(
 
     fdc_ids = [r["fdc_id"] for r in ing_rows]
     names = await _load_ingredient_names(conn, fdc_ids)
+    staples = await _household_staple_fdc_ids(conn, str(row["household_id"]))
 
     # instructions is jsonb; the codec returns a Python list directly.
     instructions = row["instructions"] if isinstance(row["instructions"], list) else []
@@ -99,11 +109,13 @@ async def _build_recipe_out(
                 fdc_id=r["fdc_id"],
                 quantity_g=float(r["quantity_g"]),
                 ingredient_name=names.get(r["fdc_id"]),
+                from_pantry=int(r["fdc_id"]) in staples,
             )
             for r in ing_rows
         ],
         instructions=instructions,
         servings=row["servings"],
+        meal_type=row["meal_type"],
         image_path=row["image_path"],
         created_at=row["created_at"].isoformat() if row["created_at"] else "",
         updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
@@ -129,12 +141,67 @@ async def _ensure_recipe_visible(
 
 
 @router.get("", response_model=list[RecipeOut])
-async def list_recipes(user: CurrentUser = Depends(get_current_user)):
+async def list_recipes(
+    user: CurrentUser = Depends(get_current_user),
+    household_id: str = Depends(get_current_household_id),
+):
+    """Batched fetch: one SELECT per table instead of the per-recipe walk
+    that _build_recipe_out does for a single recipe. Cuts ~4N queries down
+    to a constant ~5."""
     async with user_tx(user) as conn:
-        rows = await conn.fetch(
-            "SELECT id::text AS id FROM hearth.recipes ORDER BY updated_at DESC"
+        recipe_rows = await conn.fetch(
+            "SELECT id::text AS id, household_id, name, instructions, servings, "
+            "meal_type, image_path, created_at, updated_at "
+            "FROM hearth.recipes ORDER BY updated_at DESC"
         )
-        return [await _build_recipe_out(conn, r["id"]) for r in rows]
+        if not recipe_rows:
+            return []
+
+        recipe_ids = [r["id"] for r in recipe_rows]
+
+        ing_rows = await conn.fetch(
+            "SELECT recipe_id::text AS recipe_id, fdc_id, quantity_g, id "
+            "FROM hearth.recipe_ingredients "
+            "WHERE recipe_id = ANY($1::uuid[]) ORDER BY recipe_id, id",
+            recipe_ids,
+        )
+
+        # Group ingredients per recipe and collect the global fdc_id set so
+        # we can resolve names + staple membership in one shot.
+        ings_by_recipe: dict[str, list] = {}
+        all_fdc_ids: set[int] = set()
+        for ir in ing_rows:
+            ings_by_recipe.setdefault(ir["recipe_id"], []).append(ir)
+            all_fdc_ids.add(int(ir["fdc_id"]))
+
+        names = await _load_ingredient_names(conn, list(all_fdc_ids))
+        staples = await _household_staple_fdc_ids(conn, household_id)
+
+    out: list[RecipeOut] = []
+    for r in recipe_rows:
+        instructions = r["instructions"] if isinstance(r["instructions"], list) else []
+        ings = ings_by_recipe.get(r["id"], [])
+        out.append(RecipeOut(
+            id=r["id"],
+            household_id=str(r["household_id"]),
+            name=r["name"],
+            ingredients=[
+                RecipeIngredientOut(
+                    fdc_id=ing["fdc_id"],
+                    quantity_g=float(ing["quantity_g"]),
+                    ingredient_name=names.get(ing["fdc_id"]),
+                    from_pantry=int(ing["fdc_id"]) in staples,
+                )
+                for ing in ings
+            ],
+            instructions=instructions,
+            servings=r["servings"],
+            meal_type=r["meal_type"],
+            image_path=r["image_path"],
+            created_at=r["created_at"].isoformat() if r["created_at"] else "",
+            updated_at=r["updated_at"].isoformat() if r["updated_at"] else "",
+        ))
+    return out
 
 
 @router.post("", response_model=RecipeOut, status_code=201)
@@ -146,11 +213,11 @@ async def create_recipe(
     async with user_tx(user) as conn:
         new_row = await conn.fetchrow(
             """
-            INSERT INTO hearth.recipes (household_id, name, instructions, servings)
-            VALUES ($1::uuid, $2, $3::jsonb, $4)
+            INSERT INTO hearth.recipes (household_id, name, instructions, servings, meal_type)
+            VALUES ($1::uuid, $2, $3::jsonb, $4, $5)
             RETURNING id::text AS id
             """,
-            household_id, body.name, body.instructions, body.servings,
+            household_id, body.name, body.instructions, body.servings, body.meal_type,
         )
         recipe_id = new_row["id"]
 
@@ -228,6 +295,13 @@ async def update_recipe(
                 "UPDATE hearth.recipes SET servings = $1, updated_at = now() "
                 "WHERE id = $2::uuid",
                 body.servings, recipe_id,
+            )
+
+        if body.meal_type is not None:
+            await conn.execute(
+                "UPDATE hearth.recipes SET meal_type = $1, updated_at = now() "
+                "WHERE id = $2::uuid",
+                body.meal_type or None, recipe_id,
             )
 
         if body.ingredients is not None:

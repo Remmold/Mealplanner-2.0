@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, X } from "lucide-react";
 import {
   fetchProfile,
@@ -6,8 +6,12 @@ import {
   resetProfile,
   onDataChanged,
   dataChanged,
+  fetchStaples,
+  addStaple,
+  removeStaple,
   type HouseholdProfile,
   type ProfilePatch,
+  type StapleEntry,
 } from "../api";
 import { Button, Card, Empty, ErrorBanner, Field, IconButton, Input, Select } from "./ui";
 
@@ -79,6 +83,8 @@ export default function Profile() {
         typical_cook_time_min: draft.typical_cook_time_min,
         batch_cook_preference: draft.batch_cook_preference || null,
         budget_level: draft.budget_level || null,
+        visible_slots: draft.visible_slots ?? [],
+        max_ingredients_to_buy: draft.max_ingredients_to_buy,
       };
       for (const f of LIST_FIELDS) {
         patch[f.key as keyof ProfilePatch] = splitCsv(listDrafts[f.key] ?? "") as never;
@@ -184,7 +190,20 @@ export default function Profile() {
                   ))}
                 </Select>
               </Field>
+              <Field>
+                Max non-staple ingredients
+                <Input
+                  type="number" min={3} max={20} numeric
+                  value={draft.max_ingredients_to_buy ?? ""}
+                  placeholder="8"
+                  onChange={(e) =>
+                    updateDraft("max_ingredients_to_buy",
+                      e.target.value === "" ? null : Math.max(3, Math.min(20, Number(e.target.value))))
+                  }
+                />
+              </Field>
             </div>
+
           </Card>
 
           <Card className="mt-4">
@@ -255,6 +274,91 @@ export default function Profile() {
           </Card>
         </div>
       </div>
+
+      <PantrySection />
     </div>
+  );
+}
+
+
+function PantrySection() {
+  const [items, setItems] = useState<StapleEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [seededNow, setSeededNow] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetchStaples();
+      setItems(res.items);
+      setSeededNow(res.seeded_now);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  async function toggle(fdc_id: number, currentlyIn: boolean) {
+    if (currentlyIn) {
+      setItems((prev) => prev.filter((i) => i.fdc_id !== fdc_id));
+      try { await removeStaple(fdc_id); }
+      catch (e) { setErr(e instanceof Error ? e.message : String(e)); void load(); }
+    } else {
+      try { await addStaple(fdc_id); void load(); }
+      catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    }
+  }
+
+  const grouped = useMemo(() => {
+    const m: Record<string, StapleEntry[]> = {};
+    for (const it of items) (m[it.category] ||= []).push(it);
+    for (const k of Object.keys(m)) m[k].sort((a, b) => a.name.localeCompare(b.name));
+    return m;
+  }, [items]);
+
+  return (
+    <Card className="mt-4">
+      <div className="row gap-2 items-baseline">
+        <h3 className="m-0 flex-1">Pantry staples</h3>
+        <span className="small muted">{items.length} items · always-have</span>
+      </div>
+      <p className="small muted">
+        These are silently omitted from shopping lists and shown under{" "}
+        <em>From your pantry</em> in recipes. Uncheck things you've run out of.
+        Use the chat (&ldquo;we ran out of soy sauce&rdquo;) for natural-language edits.
+      </p>
+      {seededNow && (
+        <p className="small">Just seeded from the system list filtered by your cuisines.</p>
+      )}
+      {err && <ErrorBanner>{err}</ErrorBanner>}
+      {loading && <p className="muted">Loading…</p>}
+      {!loading && Object.keys(grouped).length === 0 && (
+        <Empty>No staples yet.</Empty>
+      )}
+      <div className="col-2">
+        {Object.entries(grouped).map(([cat, list]) => (
+          <div key={cat}>
+            <h4 className="overline muted m-0 mt-2">{cat}</h4>
+            <div className="row wrap gap-2 mt-2">
+              {list.map((it) => (
+                <button
+                  key={it.fdc_id}
+                  type="button"
+                  className="chip chip-active"
+                  onClick={() => toggle(it.fdc_id, true)}
+                  title="Click to remove from pantry"
+                >
+                  {it.name} <X size={11} />
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }

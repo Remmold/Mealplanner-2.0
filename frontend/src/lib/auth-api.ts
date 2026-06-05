@@ -138,6 +138,7 @@ export interface ProfileSummary {
   typical_cook_time_min: number | null;
   batch_cook_preference: string | null;
   notes: string[];
+  visible_slots: string[];   // [] = all three slots; otherwise a subset of breakfast/lunch/dinner
 }
 
 export async function fetchProfile(): Promise<ProfileSummary> {

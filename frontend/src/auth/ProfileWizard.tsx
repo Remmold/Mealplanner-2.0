@@ -4,6 +4,7 @@ import { ChevronRight } from "lucide-react";
 import { Button, Card, Chip, ErrorBanner, Field, Input } from "../components/ui";
 import { patchProfile } from "../lib/auth-api";
 import type { ProfilePatch } from "../lib/auth-api";
+import { seedStarterRecipes } from "../api";
 
 const DIETARY = [
   "vegetarian", "vegan", "pescatarian", "gluten-free",
@@ -106,6 +107,11 @@ export default function ProfileWizard({ onComplete }: Props) {
         setBusy(false);
       }
     }
+
+    // Seed starter recipes in the background. Don't block wizard completion
+    // if the corpus isn't available yet or seeding fails — the user can
+    // re-trigger from the Recipes tab empty state.
+    seedStarterRecipes(12).catch(() => {});
 
     try { localStorage.setItem(STORAGE_KEY, "1"); } catch { /* ignore */ }
     onComplete();

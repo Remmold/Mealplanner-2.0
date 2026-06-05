@@ -47,6 +47,94 @@ FOOD_GROUP_MAP = {
     "Soups, Sauces, and Gravies": "Sauces & Condiments",
 }
 
+# ----------------------------------------------------------------------------
+# Display-name cleanup: USDA descriptions are designed for nutrition tables,
+# not kitchen labels ("Spices, salt, table", "Tomatoes, red, ripe, raw").
+# Run user-facing code paths through clean_usda_name so the user sees
+# "Salt", "Tomatoes" instead.
+# ----------------------------------------------------------------------------
+
+# Words USDA tacks on as preparation modifiers — safe to drop everywhere.
+_NOISE_WORDS = {
+    "raw", "cooked", "boiled", "drained", "unprepared", "unenriched", "enriched",
+    "with salt", "without salt", "added salt", "added vitamin d", "added calcium",
+    "uncooked", "regular", "natural", "fresh", "ripe", "table", "ground", "whole",
+    "dry", "dried, packed", "low-sodium", "low sodium", "reduced sodium",
+    "reduced fat", "low fat", "skim", "ready-to-serve", "ready to serve",
+    "as purchased", "commercial", "homemade", "prepared", "dehydrated", "instant",
+}
+
+
+def clean_usda_name(desc: str | None) -> str:
+    """Convert a USDA description into a kitchen-friendly display name.
+
+    Mostly heuristic but reliable on the families that turn up in starter
+    recipes: spices, oils, vinegars, sauces, leavening agents, soups, cheeses,
+    and common produce/meat. Falls back to the first comma-separated segment
+    (title-cased) for anything we don't have a rule for.
+    """
+    if not desc:
+        return ""
+    parts = [p.strip() for p in desc.split(",") if p.strip()]
+    if not parts:
+        return desc
+    head = parts[0].lower()
+    tail = parts[1:]
+    # nontrivial = tail without preparation/noise modifiers like
+    # "ready-to-serve", "raw", "whole" so we can find the real descriptor.
+    nontrivial = [p for p in tail if p.lower() not in _NOISE_WORDS]
+    first = nontrivial[0] if nontrivial else (tail[0] if tail else "")
+
+    # Reorderings: "X, Y" reads better as "Y X" for these families.
+    if head in {"spices", "spice"} and tail:
+        # Spices, pepper, black -> "Black pepper"
+        # Spices, salt, table   -> "Salt" (table is noise)
+        # Spices, garlic powder -> "Garlic powder"
+        if len(nontrivial) >= 2:
+            return f"{nontrivial[1]} {nontrivial[0]}".strip().capitalize()
+        return first.capitalize()
+    if head in {"oil", "oils"} and first:
+        return f"{first.capitalize()} oil"
+    if head in {"vinegar", "vinegars"} and first:
+        return f"{first.capitalize()} vinegar"
+    if head in {"sauce", "sauces"} and first:
+        # "Sauce, ready-to-serve, Worcestershire" -> "Worcestershire sauce"
+        return f"{first.capitalize()} sauce"
+    if head == "soup" and first:
+        return first.capitalize()
+    if head in {"leavening agents", "leavening agent"} and first:
+        return first.capitalize()
+    if head == "cheese" and first:
+        return f"{first.capitalize()} cheese"
+    if head in {"flour", "flours"} and first:
+        return f"{first.capitalize()} flour"
+    if head == "syrups" and first:
+        return f"{first.capitalize()} syrup"
+    if head in {"beans", "bean"} and first:
+        return f"{first.capitalize()} beans"
+    # Note: "Milk, whole..." falls through to default → "Milk".
+
+    # Generic produce / meat / fish: take the first segment, drop the noise.
+    # Special-case chicken/beef/pork to keep the cut.
+    if head in {"chicken", "beef", "pork", "lamb", "turkey", "duck"}:
+        for p in nontrivial:
+            for cut in ("breast", "thigh", "wing", "drumstick", "tenderloin",
+                        "loin", "shoulder", "shank", "ground", "ribeye", "sirloin"):
+                if cut in p.lower():
+                    return f"{parts[0].capitalize()} {cut}"
+        return parts[0].capitalize()
+
+    if head in {"tomatoes", "tomato"}:
+        if any("canned" in p.lower() for p in tail):
+            return "Canned tomatoes"
+        if any("sun-dried" in p.lower() or "dried" in p.lower() for p in tail):
+            return "Sun-dried tomatoes"
+        return "Tomatoes"
+
+    # Default: capitalise the head segment.
+    return parts[0].capitalize()
+
+
 VALID_CATEGORIES = {
     "Dairy & Eggs", "Fish & Seafood", "Fruits", "Grains", "Legumes & Nuts",
     "Meat & Poultry", "Oils & Fats", "Other", "Protein", "Sauces & Condiments",
