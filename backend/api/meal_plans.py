@@ -73,7 +73,7 @@ def _dish_family(text: str) -> str:
 # ----------------------------------------------------------------------------
 
 
-async def _build_plan_out(conn: asyncpg.Connection, plan_id: str) -> MealPlanOut:
+async def _build_plan_out(conn: asyncpg.Connection, plan_id: str, locale: str = "en") -> MealPlanOut:
     row = await conn.fetchrow(
         "SELECT id, household_id, name, start_date, created_at, updated_at "
         "FROM hearth.meal_plans WHERE id = $1::uuid",
@@ -85,7 +85,7 @@ async def _build_plan_out(conn: asyncpg.Connection, plan_id: str) -> MealPlanOut
     entries = await conn.fetch(
         """
         SELECT e.id, e.recipe_id, e.plan_date, e.slot, e.portions,
-               r.name AS recipe_name,
+               COALESCE(r.translations -> $2 ->> 'name', r.name) AS recipe_name,
                e.source_entry_id,
                (SELECT count(*) FROM hearth.meal_plan_entries c
                  WHERE c.source_entry_id = e.id) AS lunch_bags
@@ -94,7 +94,7 @@ async def _build_plan_out(conn: asyncpg.Connection, plan_id: str) -> MealPlanOut
         WHERE e.meal_plan_id = $1::uuid
         ORDER BY e.plan_date, e.slot
         """,
-        plan_id,
+        plan_id, locale,
     )
 
     return MealPlanOut(
@@ -310,6 +310,9 @@ class GenerateMealPlanRequest(BaseModel):
     # Those dinners are sized for 1 portion and filled leftover-first (reuse a
     # dish cooked earlier in the week rather than cook a whole new meal).
     solo_day_offsets: list[int] = []
+    # Active UI language ('en' | 'sv'); biases generated recipes to that language
+    # since the wizard brief alone gives the recipe agent no language signal.
+    locale: str = "en"
 
 
 class _PlannedMeal(BaseModel):
@@ -341,6 +344,10 @@ class _PlannedMeal(BaseModel):
     # Solo night — just one person eating. Persisted at portions=1 and filled
     # leftover-first (see _assemble_week's solo pass).
     solo: bool = False
+    # User PIN: the brief explicitly placed this dish on this specific day (by date
+    # or weekday). Pinned meals are FIXED — the server never dedups, moves, drops, or
+    # substitutes them; the variety rules apply only to the rest of the week.
+    pinned: bool = False
 
 
 class _PlannedWeek(BaseModel):
@@ -349,6 +356,17 @@ class _PlannedWeek(BaseModel):
 
 
 _PLAN_MODEL = os.getenv("OPENAI_RECIPE_MODEL", "openai:gpt-4o")
+
+
+def _label_cells(cells, start_date: date) -> str:
+    """Render fillable (day_offset, slot) cells WITH each cell's calendar date +
+    weekday, so the planner can honor date/weekday references in the brief
+    ('tacos on the 11th', 'salmon on Friday') instead of seeing bare offsets."""
+    lines = []
+    for d, s in cells:
+        dt = start_date + timedelta(days=d)
+        lines.append(f"  - day_offset={d} = {dt.isoformat()} ({dt.strftime('%a')}), slot={s}")
+    return "\n".join(lines)
 
 
 def _assemble_week(
@@ -436,12 +454,22 @@ def _assemble_week(
 
     deduped: list[_PlannedMeal] = []
     freed_cells: list[tuple[int, str]] = []
-    for meal in valid_meals:
+    # Pinned meals first: they claim their (family, id) and are NEVER deduped, so an
+    # unpinned same-family meal later loses its slot to the user's pin — not the reverse.
+    for meal in sorted(valid_meals, key=lambda m: not m.pinned):
         sc = slot_by_name[meal.slot]
         batch = sc.distinct_meals is not None and sc.distinct_meals > 0
         fams = used_fam.setdefault(meal.slot, set())
         ids = used_ids.setdefault(meal.slot, set())
         fam = _meal_family(meal)
+        if meal.pinned:
+            # User explicitly placed this dish on this day — keep it unconditionally.
+            if fam:
+                fams.add(fam)
+            if meal.use_recipe_id:
+                ids.add(meal.use_recipe_id)
+            deduped.append(meal)
+            continue
         taken = (fam and fam in fams) or (meal.use_recipe_id and meal.use_recipe_id in ids)
         if not batch and taken:
             freed_cells.append((meal.day_offset, meal.slot))
@@ -452,13 +480,42 @@ def _assemble_week(
             ids.add(meal.use_recipe_id)
         deduped.append(meal)
 
+    # Plan-wide recipe ids already placed (any slot) so we never reuse the same
+    # recipe across two slots.
+    placed_ids: set[str] = {m.use_recipe_id for m in deduped if m.use_recipe_id}
+    placed_ids |= {c["recipe_id"] for c in kept if c.get("recipe_id")}
+
+    # 2.5) REUSE-FIRST enforcement. The model is told to prefer saved recipes but
+    # often generates anyway, so enforce it here: for each meal it chose to GENERATE,
+    # swap in a saved recipe of the SAME dish family (right slot, not already placed).
+    # Generation is the genuine last resort. Respect pins and any explicit
+    # "user wants to try something new" reason.
+    def _wants_new(reason: str | None) -> bool:
+        r = (reason or "").lower()
+        return any(w in r for w in ("try", "asked", "new", "request"))
+
+    for meal in deduped:
+        if meal.pinned or meal.use_recipe_id or not meal.new_recipe_prompt or _wants_new(meal.reason):
+            continue
+        fam = _meal_family(meal)
+        if not fam:
+            continue
+        match = next(
+            (r for r in saved_rows
+             if r["id"] not in placed_ids
+             and _dish_family(r["name"]) == fam
+             and (not r["meal_type"] or r["meal_type"] == meal.slot)),
+            None,
+        )
+        if match:
+            meal.use_recipe_id = match["id"]
+            meal.new_recipe_prompt = None
+            meal.reason = "reused your saved recipe (same dish) instead of generating"
+            placed_ids.add(match["id"])
+
     # 3) Backfill freed days: unique saved dish OR lunchbox leftovers OR gen.
     leftover_sources = list(deduped)     # dishes actually cooked this week
     leftover_uses = [0] * len(leftover_sources)
-    # Plan-wide recipe ids already placed (any slot) so backfill never reuses the
-    # same recipe across two slots.
-    placed_ids: set[str] = {m.use_recipe_id for m in deduped if m.use_recipe_id}
-    placed_ids |= {c["recipe_id"] for c in kept if c.get("recipe_id")}
 
     def _pick_distinct_saved(slot: str, fams: set[str]):
         return next(
@@ -748,6 +805,15 @@ def _is_lunchbox_brief(brief_lc: str) -> bool:
     ])
 
 
+def _recipe_lang_suffix(locale: str) -> str:
+    """Append-only language directive for generate_recipe. The recipe agent is
+    told to write in the request's language; the wizard's per-dish prompts are
+    English, so for a Swedish UI we nudge each one to Swedish. Empty for English."""
+    if (locale or "").lower().startswith("sv"):
+        return "\n\nWrite the entire recipe — name, ingredient names, and every step — in Swedish."
+    return ""
+
+
 def _planner_system_prompt(slot_rules: str, lunchbox_mode: bool) -> str:
     """The reuse-first / variety / lunchbox planner system prompt. Shared by
     /generate and /regenerate so both behave identically."""
@@ -780,6 +846,13 @@ def _planner_system_prompt(slot_rules: str, lunchbox_mode: bool) -> str:
         "that reuses 5 saved recipes and generates 2 is BETTER than one that "
         "generates 7.\n\n"
         "Rules:\n"
+        "- USER-PINNED DAYS COME FIRST: if the brief assigns a specific dish to a "
+        "  specific day — by date ('on Jun 11', 'the 14th') or weekday ('on "
+        "  Wednesday') — place EXACTLY that dish on EXACTLY that cell (match the "
+        "  date/weekday shown next to each day_offset) and set pinned=true. Pinned "
+        "  meals are FIXED: the variety, named-dish, and dedup rules below do NOT "
+        "  apply to them — never move, drop, substitute, or collapse a pinned meal. "
+        "  Apply variety only to the remaining, unpinned days.\n"
         "- Each cell: EITHER use_recipe_id OR new_recipe_prompt — never both, "
         "  never neither.\n"
         "- Set `dish_name` on EVERY meal to its short FAMILY (1-2 words, "
@@ -811,11 +884,20 @@ def _planner_system_prompt(slot_rules: str, lunchbox_mode: bool) -> str:
         "  and dinner are disjoint dish sets.\n"
         "- SHARE INGREDIENTS across the week when reasonable to shorten the "
         "  shopping list — lean toward overlap; don't sacrifice the brief for it.\n"
-        "- Honour dietary constraints (vegetarian, gluten-free, allergies) "
-        "  strictly.\n"
+        "- ALLERGIES & DISLIKES come first. The profile's allergies and dislikes "
+        "  may be written in another language (often Swedish) — interpret them by "
+        "  MEANING, not spelling (e.g. 'lök' = onion, 'skaldjur' = shellfish, "
+        "  'laktos' = dairy). A recipe's NAME is not enough to clear it: before "
+        "  you reuse a saved or pool recipe, call get_recipe and check its "
+        "  ingredients. NEVER place a recipe that contains an allergen, and avoid "
+        "  disliked ingredients. When you generate instead, write the "
+        "  new_recipe_prompt so the dish leaves out every allergen and dislike.\n"
+        "- Honour dietary constraints (vegetarian, gluten-free, etc.) strictly.\n"
         "- new_recipe_prompt should be evocative and specific, and match the "
         "  slot — breakfast prompts should be breakfast food.\n"
-        "- day_offset is 0-indexed from the plan start.\n"
+        "- Each available cell shows its date + weekday next to its day_offset "
+        "  (`day_offset=N = YYYY-MM-DD (Wkd)`); day_offset is 0-indexed from the plan "
+        "  start. Use the date/weekday to honor any day the brief names.\n"
         "- The `portions` field on _PlannedMeal is advisory; the server overrides "
         "  it with the slot's configured portions.\n"
         "- plan_name should be evocative."
@@ -911,7 +993,7 @@ async def generate_meal_plan(
     # ordinary weeks into leftover weeks.
     lunchbox_mode = _is_lunchbox_brief(brief_lc)
 
-    cells_lines = "\n".join(f"  - day_offset={d}, slot={s}" for d, s in fillable_cells)
+    cells_lines = _label_cells(fillable_cells, body.start_date)
     if kept:
         kept_lines = "\n".join(
             f"  - day_offset={(date.fromisoformat(c['plan_date']) - body.start_date).days}, "
@@ -953,7 +1035,8 @@ async def generate_meal_plan(
 
             async with user_tx(user) as conn:
                 existing_recipes_listing = await _list_existing_recipes_for_planner(conn)
-            profile_block = render_profile_context(await load_profile(household_id))
+            planner_profile = await load_profile(household_id)
+            profile_block = render_profile_context(planner_profile)
 
             user_brief = (
                 f"Brief: {body.prompt}\n\n"
@@ -962,7 +1045,10 @@ async def generate_meal_plan(
                 f"{kept_block}\n\n"
                 f"--- Household profile ---\n{profile_block}\n\n"
                 f"Respect the household profile strictly: never include allergens, "
-                f"avoid dislikes, lean into likes/cuisines.\n\n"
+                f"avoid dislikes, lean into likes/cuisines. Allergies/dislikes may "
+                f"be written in another language (often Swedish) — match them to "
+                f"ingredients by meaning, and check candidate recipes with "
+                f"get_recipe before reusing them.\n\n"
                 f"Some saved recipes (also use the search tools to find more, and "
                 f"prefer reusing these over generating):\n{existing_recipes_listing}"
             )
@@ -1034,7 +1120,11 @@ async def generate_meal_plan(
                 })
                 log.warning("[plan-gen] generating recipe: %r", prompt[:80])
                 try:
-                    gen = await generate_recipe(prompt)
+                    gen = await generate_recipe(
+                        prompt + _recipe_lang_suffix(body.locale),
+                        allergies=planner_profile.allergies,
+                        dislikes=planner_profile.dislikes,
+                    )
                     duration = round(time.monotonic() - t0, 1)
                     log.warning("[plan-gen]   → '%s' in %.1fs", gen.name, duration)
                     await event_queue.put({
@@ -1198,7 +1288,7 @@ async def generate_meal_plan(
                         household_id, plan_id, recipe_id, plan_date, meal.slot, portions, source,
                     )
 
-                out = await _build_plan_out(conn, plan_id)
+                out = await _build_plan_out(conn, plan_id, body.locale)
             if dropped:
                 log.warning("[plan-gen] %d planned day(s) could not be filled "
                             "(empty library + failed generation)", dropped)
@@ -1234,6 +1324,7 @@ class RegenerateRequest(BaseModel):
     flagged_entry_ids: list[str]
     prompt: str = ""
     servings: int = 4
+    locale: str = "en"
 
 
 @router.post("/{plan_id}/regenerate", response_model=MealPlanOut)
@@ -1310,7 +1401,7 @@ async def regenerate_meal_plan(
             system_prompt=_planner_system_prompt(slot_rules, lunchbox_mode),
             tools=build_planner_search_tools(ctx),
         )
-        cells_lines = "\n".join(f"  - day_offset={d}, slot={s}" for d, s in fillable_cells)
+        cells_lines = _label_cells(fillable_cells, body.start_date)
         kept_lines = "\n".join(
             f"  - day_offset={_doff(date.fromisoformat(c['plan_date']))}, "
             f"slot={c['slot']}: {c['recipe_name']}"
@@ -1322,7 +1413,8 @@ async def regenerate_meal_plan(
         )
         async with user_tx(user) as conn:
             existing_recipes_listing = await _list_existing_recipes_for_planner(conn)
-        profile_block = render_profile_context(await load_profile(household_id))
+        regen_profile = await load_profile(household_id)
+        profile_block = render_profile_context(regen_profile)
         user_brief = (
             f"Brief: {body.prompt or 'replace the flagged days with different dishes the household will like'}\n\n"
             f"Base servings per generated recipe: {body.servings}\n\n"
@@ -1330,7 +1422,9 @@ async def regenerate_meal_plan(
             f"with a DIFFERENT dish (different family). Fill EXACTLY these cells:\n"
             f"{cells_lines}{kept_block}\n\n"
             f"--- Household profile ---\n{profile_block}\n\n"
-            f"Respect the household profile strictly.\n\n"
+            f"Respect the household profile strictly — allergies/dislikes may be in "
+            f"another language (often Swedish); match them to ingredients by meaning "
+            f"and check candidates with get_recipe before reusing.\n\n"
             f"Some saved recipes (prefer reusing these):\n{existing_recipes_listing}"
         )
         planned = (await planner.run(user_brief)).output
@@ -1367,7 +1461,11 @@ async def regenerate_meal_plan(
 
         async def _gen(p: str):
             try:
-                return p, await generate_recipe(p)
+                return p, await generate_recipe(
+                    p + _recipe_lang_suffix(body.locale),
+                    allergies=regen_profile.allergies,
+                    dislikes=regen_profile.dislikes,
+                )
             except Exception:
                 log.exception("[regen] recipe generation failed for %r", p[:60])
                 return p, None
@@ -1448,7 +1546,7 @@ async def regenerate_meal_plan(
                     """,
                     household_id, plan_id, recipe_id, plan_date, slot_, max(0.25, portions),
                 )
-            out = await _build_plan_out(conn, plan_id)
+            out = await _build_plan_out(conn, plan_id, body.locale)
     except HTTPException:
         try: await release_hold(hold_id)
         except Exception: pass
