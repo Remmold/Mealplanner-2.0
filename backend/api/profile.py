@@ -184,6 +184,127 @@ async def _save_profile(household_id: str, profile: HouseholdProfile) -> Househo
     return await load_profile(household_id)
 
 
+# ------------------------------------------------------------------
+# Plain-language descriptions of a profile change.
+#
+# The human-in-the-loop cards (and their post-accept confirmation) used to show
+# the raw shape — "Add ['lök'] to profile.dislikes" — which reads like a
+# database dump. These helpers turn a (field, value, mode) into a sentence an
+# everyday user understands. Used by the proposal summary (agent_core.tools) and
+# the executor result (pending_actions) so both stay in sync.
+# ------------------------------------------------------------------
+
+FIELD_LABELS: dict[str, str] = {
+    "family_size": "household size",
+    "dietary": "dietary needs",
+    "allergies": "allergies",
+    "dislikes": "disliked ingredients",
+    "likes": "favourites",
+    "cuisines": "favourite cuisines",
+    "kitchen_equipment": "kitchen equipment",
+    "visible_slots": "planned meals",
+    "typical_cook_time_min": "usual cooking time",
+    "batch_cook_preference": "batch-cooking preference",
+    "budget_level": "budget level",
+    "max_ingredients_to_buy": "shopping-list comfort level",
+}
+
+FIELD_LABELS_SV: dict[str, str] = {
+    "family_size": "hushållsstorlek",
+    "dietary": "kostbehov",
+    "allergies": "allergier",
+    "dislikes": "ogillade ingredienser",
+    "likes": "favoriter",
+    "cuisines": "favoritkök",
+    "kitchen_equipment": "köksutrustning",
+    "visible_slots": "planerade måltider",
+    "typical_cook_time_min": "vanliga tillagningstid",
+    "batch_cook_preference": "inställning för satskokning",
+    "budget_level": "budgetnivå",
+    "max_ingredients_to_buy": "komfortnivå för inköpslista",
+}
+
+# Slot enum values are stored in English; translate for display only.
+_SLOT_SV: dict[str, str] = {"breakfast": "frukost", "lunch": "lunch", "dinner": "middag"}
+
+
+def _is_sv(locale: str | None) -> bool:
+    return (locale or "").lower().startswith("sv")
+
+
+def _field_label(field: str, locale: str = "en") -> str:
+    table = FIELD_LABELS_SV if _is_sv(locale) else FIELD_LABELS
+    return table.get(field, field.replace("_", " "))
+
+
+def human_list(items: Any, locale: str = "en") -> str:
+    """Join a list into prose: [] -> '', [a] -> 'a', [a,b] -> 'a and b',
+    [a,b,c] -> 'a, b and c' (Swedish uses 'och')."""
+    vals = [str(x).strip() for x in items if str(x).strip()] if isinstance(items, list) else (
+        [str(items).strip()] if str(items).strip() else []
+    )
+    if not vals:
+        return ""
+    if len(vals) == 1:
+        return vals[0]
+    conj = "och" if _is_sv(locale) else "and"
+    return ", ".join(vals[:-1]) + f" {conj} " + vals[-1]
+
+
+def describe_profile_value(field: str, value: Any, locale: str = "en") -> str:
+    """Readable rendering of a coerced field value, with units where it helps."""
+    sv = _is_sv(locale)
+    if field == "visible_slots":
+        slots = value if isinstance(value, list) else [value]
+        if sv:
+            slots = [_SLOT_SV.get(str(s), str(s)) for s in slots]
+        return human_list(slots, locale) or ("alla måltider" if sv else "all meals")
+    if field in LIST_FIELDS:
+        return human_list(value, locale)
+    if field == "typical_cook_time_min":
+        return f"{value} minuter" if sv else f"{value} minutes"
+    if field == "family_size":
+        plural = "personer" if sv else "people"
+        return f"{value} person" if str(value) == "1" else f"{value} {plural}"
+    return str(value)
+
+
+def describe_profile_change(field: str, value: Any, mode: str, locale: str = "en") -> str:
+    """One sentence describing a PROPOSED change, for the Accept/Reject card."""
+    sv = _is_sv(locale)
+    label = _field_label(field, locale)
+    rendered = describe_profile_value(field, value, locale)
+    if field in ADDITIVE_LIST_FIELDS:
+        if mode == "remove":
+            return (f"Ta bort {rendered} från listan över {label}." if sv
+                    else f"Remove {rendered} from your {label}.")
+        if mode == "set":
+            return (f"Ersätt listan över {label} med {rendered}." if sv
+                    else f"Replace your {label} with {rendered}.")
+        return (f"Lägg till {rendered} i listan över {label} (dina befintliga finns kvar)." if sv
+                else f"Add {rendered} to your {label} (your existing ones stay).")
+    if field == "visible_slots":
+        return (f"Planera bara dessa måltider i kalendern: {rendered}." if sv
+                else f"Plan only these meals on your calendar: {rendered}.")
+    return (f"Ändra din {label} till {rendered}." if sv
+            else f"Set your {label} to {rendered}.")
+
+
+def describe_profile_result(field: str, new_value: Any, locale: str = "en") -> str:
+    """One sentence confirming the APPLIED state, shown after Accept."""
+    sv = _is_sv(locale)
+    label = _field_label(field, locale)
+    rendered = describe_profile_value(field, new_value, locale)
+    if field == "visible_slots":
+        return (f"Du ser nu {rendered} i kalendern." if sv
+                else f"You'll now see {rendered} on your calendar.")
+    if field in LIST_FIELDS:
+        if sv:
+            return f"Listan över {label} är nu: {rendered}." if rendered else f"Listan över {label} är nu tom."
+        return f"Your {label} are now: {rendered}." if rendered else f"Your {label} are now empty."
+    return (f"Din {label} är nu {rendered}." if sv else f"Your {label} is now {rendered}.")
+
+
 def render_profile_context(profile: HouseholdProfile, max_notes: int = 20) -> str:
     """Format the profile as a human-readable block for LLM system/user prompts."""
     lines: list[str] = []

@@ -1,4 +1,4 @@
-"""Pure, transport-agnostic tool implementations for the Hearth agent.
+"""Pure, transport-agnostic tool implementations for the Mealplanner agent.
 
 Each function takes a `ToolContext` and returns either a plain string (read
 results / human-readable error) or, for writes, a `Proposal` descriptor. They
@@ -18,7 +18,7 @@ from datetime import date
 from api.agent_core.context import Proposal, ToolContext
 from api.db import user_tx
 from api.ingredients import load_all_curated_meta
-from api.profile import ADDITIVE_LIST_FIELDS, coerce_profile_value
+from api.profile import ADDITIVE_LIST_FIELDS, coerce_profile_value, describe_profile_change
 
 
 def _is_uuid(value) -> bool:
@@ -30,6 +30,17 @@ def _is_uuid(value) -> bool:
         return True
     except (ValueError, AttributeError, TypeError):
         return False
+
+
+# Proposal summaries are rendered in the user's UI language (carried on
+# ToolContext.locale) so the Accept/Reject cards match the Swedish/English chat
+# prose and buttons. This is display-only — identifiers, params, SQL and the
+# propose/accept contract are unaffected.
+_SLOT_SV = {"breakfast": "frukost", "lunch": "lunch", "dinner": "middag"}
+
+
+def _msg(ctx: ToolContext, en: str, sv: str) -> str:
+    return sv if (getattr(ctx, "locale", "en") or "en").lower().startswith("sv") else en
 
 # Both list_recipes and search_recipes rank by signals the agent should prefer
 # when picking a meal: how many times the household has previously planned this
@@ -333,7 +344,9 @@ async def propose_rename_recipe(ctx: ToolContext, recipe_id: str, new_name: str)
         return f"Recipe {recipe_id} not found."
     return Proposal(
         kind="recipe.rename",
-        summary=f"Rename '{row['name']}' -> '{new_name}'",
+        summary=_msg(ctx,
+            f'Rename "{row["name"]}" to "{new_name}".',
+            f'Byt namn på "{row["name"]}" till "{new_name}".'),
         params={"recipe_id": recipe_id, "new_name": new_name},
     )
 
@@ -351,7 +364,9 @@ async def propose_update_recipe_servings(ctx: ToolContext, recipe_id: str, servi
         return f"Recipe {recipe_id} not found."
     return Proposal(
         kind="recipe.servings",
-        summary=f"Set '{row['name']}' to {servings} servings",
+        summary=_msg(ctx,
+            f'Set "{row["name"]}" to make {int(servings)} servings.',
+            f'Ändra "{row["name"]}" till {int(servings)} portioner.'),
         params={"recipe_id": recipe_id, "servings": int(servings)},
     )
 
@@ -369,7 +384,9 @@ async def propose_delete_recipe(ctx: ToolContext, recipe_id: str) -> Proposal | 
         return f"Recipe {recipe_id} not found."
     return Proposal(
         kind="recipe.delete",
-        summary=f"Delete recipe '{row['name']}'",
+        summary=_msg(ctx,
+            f'Delete the recipe "{row["name"]}".',
+            f'Ta bort receptet "{row["name"]}".'),
         params={"recipe_id": recipe_id},
     )
 
@@ -382,7 +399,9 @@ async def propose_generate_recipe(ctx: ToolContext, prompt: str, servings: int =
     and takes ~30s; importing a pool recipe is instant and free."""
     return Proposal(
         kind="recipe.create",
-        summary=f"Generate and save recipe: '{prompt}' (base servings {servings})",
+        summary=_msg(ctx,
+            f'Create a new recipe: "{prompt}" (for {int(servings)} servings).',
+            f'Skapa ett nytt recept: "{prompt}" (för {int(servings)} portioner).'),
         params={"prompt": prompt, "servings": int(servings)},
     )
 
@@ -402,7 +421,9 @@ async def propose_import_pool_recipe(ctx: ToolContext, public_recipe_id: str) ->
         return f"Pool recipe {public_recipe_id} not found."
     return Proposal(
         kind="recipe.import_from_pool",
-        summary=f"Import '{row['name']}' from the recipe library",
+        summary=_msg(ctx,
+            f'Save "{row["name"]}" to your recipes from the library.',
+            f'Spara "{row["name"]}" till dina recept från biblioteket.'),
         params={"public_recipe_id": public_recipe_id},
     )
 
@@ -426,8 +447,11 @@ async def propose_add_meal_to_calendar(
             return f"Recipe {recipe_id} not found."
     return Proposal(
         kind="calendar.add_meal",
-        summary=f"Add '{recipe['name']}' to the calendar on "
-                f"{plan_date} {slot} ({portions} portions)",
+        summary=_msg(ctx,
+            f'Add "{recipe["name"]}" to your calendar on '
+            f"{plan_date} ({slot}, {float(portions):g} portions).",
+            f'Lägg till "{recipe["name"]}" i kalendern den '
+            f"{plan_date} ({_SLOT_SV.get(slot, slot)}, {float(portions):g} portioner)."),
         params={
             "recipe_id": recipe_id, "plan_date": plan_date,
             "slot": slot, "portions": float(portions),
@@ -451,10 +475,12 @@ async def propose_remove_meal_from_calendar(ctx: ToolContext, entry_id: str) -> 
         )
     if row is None:
         return f"Meal {entry_id} not found."
+    _d = row["plan_date"].isoformat() if row["plan_date"] else ""
     return Proposal(
         kind="calendar.remove_meal",
-        summary=f"Remove '{row['recipe_name']}' from "
-                f"{row['plan_date'].isoformat() if row['plan_date'] else ''} {row['slot']}",
+        summary=_msg(ctx,
+            f'Remove "{row["recipe_name"]}" from your calendar on {_d} ({row["slot"]}).',
+            f'Ta bort "{row["recipe_name"]}" från kalendern den {_d} ({_SLOT_SV.get(row["slot"], row["slot"])}).'),
         params={"entry_id": entry_id},
     )
 
@@ -476,7 +502,9 @@ async def propose_update_meal_portions(ctx: ToolContext, entry_id: str, portions
         return f"Meal {entry_id} not found."
     return Proposal(
         kind="calendar.update_portions",
-        summary=f"Set portions for '{row['recipe_name']}' to {portions}",
+        summary=_msg(ctx,
+            f'Change "{row["recipe_name"]}" to {float(portions):g} portions.',
+            f'Ändra "{row["recipe_name"]}" till {float(portions):g} portioner.'),
         params={"entry_id": entry_id, "portions": float(portions)},
     )
 
@@ -498,7 +526,9 @@ async def propose_pantry_add(ctx: ToolContext, fdc_id: int) -> Proposal | str:
         return f"fdc_id={fdc_id} not in USDA catalogue."
     return Proposal(
         kind="pantry.add",
-        summary=f"Add '{row['description']}' to the pantry",
+        summary=_msg(ctx,
+            f'Add "{row["description"]}" to your pantry.',
+            f'Lägg till "{row["description"]}" i skafferiet.'),
         params={"fdc_id": int(fdc_id)},
     )
 
@@ -516,7 +546,9 @@ async def propose_pantry_remove(ctx: ToolContext, fdc_id: int) -> Proposal | str
         return f"fdc_id={fdc_id} not in USDA catalogue."
     return Proposal(
         kind="pantry.remove",
-        summary=f"Remove '{row['description']}' from the pantry",
+        summary=_msg(ctx,
+            f'Remove "{row["description"]}" from your pantry.',
+            f'Ta bort "{row["description"]}" från skafferiet.'),
         params={"fdc_id": int(fdc_id)},
     )
 
@@ -560,19 +592,11 @@ async def propose_profile_field(
         coerced = coerce_profile_value(field, value)
     except ValueError as e:
         return str(e)
-    if field in ADDITIVE_LIST_FIELDS:
-        if mode == "remove":
-            summary = f"Remove {coerced!r} from profile.{field}"
-        elif mode == "set":
-            summary = f"Replace profile.{field} with {coerced!r}"
-        else:
-            summary = f"Add {coerced!r} to profile.{field} (keeps existing)"
-    else:
+    if field not in ADDITIVE_LIST_FIELDS:
         mode = "set"
-        summary = f"Set profile.{field} to {coerced!r}"
     return Proposal(
         kind="profile.field",
-        summary=summary,
+        summary=describe_profile_change(field, coerced, mode, locale=getattr(ctx, "locale", "en")),
         params={"field": field, "value": coerced, "mode": mode},
     )
 
@@ -584,6 +608,8 @@ async def propose_profile_note(ctx: ToolContext, note: str) -> Proposal | str:
         return "Empty note — nothing to propose."
     return Proposal(
         kind="profile.note",
-        summary=f"Add note: {note}",
+        summary=_msg(ctx,
+            f'Make a note: "{note}".',
+            f'Spara en anteckning: "{note}".'),
         params={"note": note},
     )

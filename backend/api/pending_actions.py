@@ -16,10 +16,11 @@ Read-only tools (list/get/search) run inline; they don't need approval.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from api.auth import CurrentUser, get_current_user
@@ -163,12 +164,18 @@ async def _exec_recipe_delete(user: CurrentUser, p: dict) -> ExecResult:
 async def _exec_recipe_create(user: CurrentUser, p: dict) -> ExecResult:
     """Generate + save a recipe on accept. Defers token spend until the user agrees."""
     from api.image_gen import schedule_image
+    from api.profile import load_profile
     from api.recipe_gen import generate_recipe
 
     prompt = p["prompt"]
     servings = int(p.get("servings", 4))
+    # Feed the household's allergies/dislikes into generation so a fresh recipe
+    # never contains them (the model also handles non-English terms by meaning).
+    profile = await load_profile(await _resolve_household_id(user))
     try:
-        gen = await generate_recipe(prompt)
+        gen = await generate_recipe(
+            prompt, allergies=profile.allergies, dislikes=profile.dislikes
+        )
     except Exception as e:
         return f"Generation failed: {e}", {}
 
@@ -356,13 +363,14 @@ async def _exec_plan_update_portions(user: CurrentUser, p: dict) -> ExecResult:
     )
 
 
-async def _exec_profile_field(user: CurrentUser, p: dict) -> ExecResult:
+async def _exec_profile_field(user: CurrentUser, p: dict, locale: str = "en") -> ExecResult:
     from api.profile import (
         ADDITIVE_LIST_FIELDS,
         HouseholdProfile,
         _save_profile,
         apply_field_mode,
         coerce_profile_value,
+        describe_profile_result,
         load_profile,
     )
     # household_id from the user (via the JWT-derived membership table)
@@ -383,7 +391,7 @@ async def _exec_profile_field(user: CurrentUser, p: dict) -> ExecResult:
     else:
         data[field] = coerced
     await _save_profile(household_id, HouseholdProfile(**data))
-    return f"profile.{field} is now {data[field]}.", {}
+    return describe_profile_result(field, data[field], locale), {}
 
 
 async def _exec_profile_note(user: CurrentUser, p: dict) -> ExecResult:
@@ -543,10 +551,14 @@ _EXECUTORS = {
 }
 
 
-async def execute(kind: str, user: CurrentUser, params: dict) -> ExecResult:
+async def execute(kind: str, user: CurrentUser, params: dict, locale: str = "en") -> ExecResult:
     fn = _EXECUTORS.get(kind)
     if not fn:
         return f"Unknown action kind '{kind}'.", {}
+    # Only executors that render a user-facing result (profile.*) take a locale;
+    # the rest keep their (user, params) signature.
+    if "locale" in inspect.signature(fn).parameters:
+        return await fn(user, params, locale=locale)
     return await fn(user, params)
 
 
@@ -572,6 +584,7 @@ async def _load_pending(user: CurrentUser, pid: str) -> dict | None:
 @router.post("/{pid}/accept", response_model=ResolveResponse)
 async def accept_pending(
     pid: str,
+    locale: str = Query("en"),
     user: CurrentUser = Depends(get_current_user),
     household_id: str = Depends(get_current_household_id),
 ):
@@ -587,7 +600,7 @@ async def accept_pending(
 
     created: dict[str, str] = {}
     try:
-        result, created = await execute(p["kind"], user, params)
+        result, created = await execute(p["kind"], user, params, locale)
         status = "accepted"
     except Exception as e:
         log.exception("[pending] execute(%s) failed for pid=%s", p["kind"], pid)

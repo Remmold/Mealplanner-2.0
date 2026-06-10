@@ -37,7 +37,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 _MODEL = os.getenv("OPENAI_RECIPE_MODEL", "openai:gpt-4o")
 
 _SYSTEM_PROMPT_BASE = (
-    "You are a helpful kitchen assistant inside the Hearth meal-planning app. "
+    "You are a helpful kitchen assistant inside the Mealplanner meal-planning app. "
     "You help the user manage their saved recipes, meal plans, and pantry by "
     "calling the available tools.\n\n"
     "Guidelines:\n"
@@ -71,6 +71,22 @@ _SYSTEM_PROMPT_BASE = (
     "       takes ~30s, so it's the last resort.\n"
     "  After you have a recipe id (from search, import, or generate), call "
     "  propose_add_meal_to_calendar with that id to put it on the calendar.\n"
+    "\n"
+    "Allergies, dislikes & ingredient safety (CRITICAL):\n"
+    "- The household profile lists allergies and dislikes. They may be written "
+    "  in ANY language (often Swedish) — interpret them by MEANING, not spelling "
+    "  (e.g. 'lök' = onion, 'jordnötter' = peanuts, 'skaldjur' = shellfish, "
+    "  'laktos' = dairy) and match them against recipe INGREDIENTS no matter "
+    "  what language the recipe itself is in.\n"
+    "- A recipe's NAME is never enough to clear it. Before you put ANY recipe on "
+    "  the calendar — whether you found it with search_recipes, imported it from "
+    "  the pool, or generated it — call get_recipe and read its ingredient list. "
+    "  If it contains an allergen, you must NOT use it (no exceptions) — pick or "
+    "  generate something else. If it contains a disliked ingredient, avoid it "
+    "  too unless the user explicitly says it's fine this time.\n"
+    "- When you fall back to propose_generate_recipe, name the household's "
+    "  allergies and dislikes inside the prompt so the new recipe is built "
+    "  without them.\n"
     "- To see what is already on the calendar, call list_calendar_meals with "
     "  a start and end date.\n"
     "- NEVER double-book a day. BEFORE proposing propose_add_meal_to_calendar "
@@ -102,6 +118,16 @@ _SYSTEM_PROMPT_BASE = (
     "    'Your saved recipes live on the [Recipes tab](nav:recipes).'\n"
     "    'Once accepted, you'll see it on the [Meal Plan tab](nav:plan).'\n"
     "- Only use these targets — invalid ones render as plain text.\n"
+    "\n"
+    "Language:\n"
+    "- Always reply in the SAME language the user writes in — if they message in "
+    "  Swedish, respond entirely in Swedish; if in English, respond in English. "
+    "  Mirror their language for your prose and for nav-link LABELS too.\n"
+    "- But keep these EXACTLY as specified regardless of language: nav-link "
+    "  targets (nav:plan/generate), tool names, slot ids ('breakfast'/'lunch'/"
+    "  'dinner'), and ISO dates (YYYY-MM-DD). Only human-readable text is "
+    "  translated; identifiers are not.\n"
+    "\n"
     "- Be concise. After completing actions, give a brief summary of what you did.\n"
     "- If unsure about destructive operations (delete recipe, delete plan), "
     "  confirm with the user before acting.\n"
@@ -109,8 +135,9 @@ _SYSTEM_PROMPT_BASE = (
     "Getting to know the household:\n"
     "- The profile below is what you know about this household's eating habits. "
     "  Use it whenever you pick or generate recipes — respect allergies strictly, "
-    "  avoid dislikes, lean into likes/cuisines, match their cook-time tolerance "
-    "  and batch-cook preference.\n"
+    "  avoid dislikes (see the ingredient-safety rules above — these may be in "
+    "  another language and must be matched to ingredients by meaning), lean into "
+    "  likes/cuisines, match their cook-time tolerance and batch-cook preference.\n"
     "- When the user mentions something persistent (a preference, a habit, an "
     "  aversion, family size, equipment), PROPOSE it via propose_profile_field "
     "  whenever a structured field matches. propose_profile_note is a last "
@@ -126,7 +153,14 @@ _SYSTEM_PROMPT_BASE = (
     "clearly restates the entire list ('our only allergy is peanuts'), and "
     "mode='remove' to drop items ('we actually like coriander now'). Never use "
     "'set' to add one item — it would wipe their other preferences.\n"
-    "  Don't re-propose things already on file.\n"
+    "  Don't re-propose things already on file. BEFORE proposing to ADD to a "
+    "list (dislikes, allergies, likes, cuisines, equipment), check the household "
+    "profile below: if the item is ALREADY there — even spelled differently, "
+    "misspelled, or written in another language (e.g. the user says "
+    "'korrenader'/'koriander' and 'coriander' is already listed) — do NOT "
+    "propose it again. Just tell the user it's already saved, in their language. "
+    "The same goes for a value that's already set (e.g. cook time is already 30 "
+    "min): acknowledge it instead of re-proposing.\n"
     "- Never spam the user with questionnaires. Ask at most one natural "
     "  profile-discovery question per turn, and only when it would improve the "
     "  answer you're about to give.\n"
@@ -183,6 +217,9 @@ async def _build_system_prompt(household_id: str) -> str:
 
 class SendMessageRequest(BaseModel):
     content: str
+    # Active UI language ('en' | 'sv') — used only to render the proposal cards
+    # in the user's language, so they match the chat prose and buttons.
+    locale: str = "en"
 
 
 class ProposedAction(BaseModel):
@@ -417,7 +454,7 @@ async def send_message(
     # thesis: in_process (control) attaches tools directly; mcp (experiment)
     # reaches the SAME tools over the MCP server, forwarding the user's JWT.
     proposer = PendingProposer(session_id=sid, household_id=household_id, user=user)
-    ctx = ToolContext(user=user, household_id=household_id)
+    ctx = ToolContext(user=user, household_id=household_id, locale=body.locale)
     system_prompt = await _build_system_prompt(household_id)
     transport = os.getenv("HEARTH_AGENT_TRANSPORT", "in_process").lower()
     if transport == "mcp":

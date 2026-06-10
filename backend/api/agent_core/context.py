@@ -22,6 +22,11 @@ from api.auth import CurrentUser
 class ToolContext:
     user: CurrentUser
     household_id: str
+    # Active UI language ('en' | 'sv'). Only used to render human-readable
+    # proposal summaries in the user's language — never affects identifiers,
+    # SQL, or the propose/accept contract. Defaults to English (the MCP path,
+    # which has no UI locale, keeps the default).
+    locale: str = "en"
 
 
 class Proposal(BaseModel):
