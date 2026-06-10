@@ -234,7 +234,12 @@ def serve_recipe_image(filename: str):
     path = IMAGES_DIR / filename
     if not path.exists():
         raise HTTPException(404, "Not found")
-    return FileResponse(path, media_type="image/jpeg")
+    # Images are immutable (the frontend cache-busts with ?v= on regenerate),
+    # so let browsers cache hard — repeat views cost no bandwidth.
+    return FileResponse(
+        path, media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @router.post("/recipes/{recipe_id}/image/regenerate")
