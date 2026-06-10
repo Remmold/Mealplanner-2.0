@@ -63,7 +63,7 @@ def _get_jwks_client() -> PyJWKClient:
     return _jwks_client
 
 
-def _decode(token: str) -> dict:
+def _decode(token: str, audience: str | None = SUPABASE_JWT_AUDIENCE) -> dict:
     # Inspect the header (unverified) to choose between asymmetric and symmetric paths.
     try:
         header = jwt.get_unverified_header(token)
@@ -72,6 +72,13 @@ def _decode(token: str) -> dict:
 
     alg = str(header.get("alg", ""))
 
+    # audience=None skips the aud check (signature + expiry are still verified).
+    # The MCP resource server uses this for OAuth-server-issued tokens, whose aud
+    # may differ from the first-party "authenticated" session audience.
+    decode_kwargs: dict = (
+        {"audience": audience} if audience is not None else {"options": {"verify_aud": False}}
+    )
+
     try:
         if alg in _ASYMMETRIC_ALGS:
             signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
@@ -79,7 +86,7 @@ def _decode(token: str) -> dict:
                 token,
                 signing_key.key,
                 algorithms=list(_ASYMMETRIC_ALGS),
-                audience=SUPABASE_JWT_AUDIENCE,
+                **decode_kwargs,
             )
         elif alg.startswith("HS"):
             if not SUPABASE_JWT_SECRET:
@@ -91,7 +98,7 @@ def _decode(token: str) -> dict:
                 token,
                 SUPABASE_JWT_SECRET,
                 algorithms=["HS256"],
-                audience=SUPABASE_JWT_AUDIENCE,
+                **decode_kwargs,
             )
         else:
             raise HTTPException(status_code=401, detail=f"Unsupported JWT algorithm: {alg}")

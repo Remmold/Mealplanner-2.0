@@ -19,8 +19,8 @@ from api.accounts import router as accounts_router
 from api.starter_seed import router as starter_seed_router
 from api.explore import router as explore_router
 from api.meals import router as meals_router
-from api.staples import router as staples_router
-from api.mcp_server import build_mcp_asgi, mcp_app
+from api.ingredient_images import router as ingredient_images_router
+from api.mcp_server import build_mcp_asgi, mcp_app, protected_resource_metadata
 from api.models import (
     AggregatedNutrition,
     Ingredient,
@@ -58,6 +58,16 @@ app = FastAPI(title="Mealplanner API", version="0.1.0", lifespan=lifespan)
 # the default + control group.
 app.mount("/mcp", build_mcp_asgi())
 
+
+# RFC 9728 Protected Resource Metadata for the MCP server. Served at the ROOT
+# well-known path (not under the /mcp mount) because that's what the MCP server's
+# WWW-Authenticate challenge advertises; clients fetch it to discover the Supabase
+# authorization server and run the OAuth "connector" login.
+@app.get("/.well-known/oauth-protected-resource/mcp")
+@app.get("/.well-known/oauth-protected-resource")
+def oauth_protected_resource_metadata() -> dict:
+    return protected_resource_metadata()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -82,7 +92,7 @@ app.include_router(image_router)
 app.include_router(starter_seed_router)
 app.include_router(explore_router)
 app.include_router(meals_router)
-app.include_router(staples_router)
+app.include_router(ingredient_images_router)
 
 
 @app.get("/health")

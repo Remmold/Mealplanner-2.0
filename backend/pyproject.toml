@@ -16,6 +16,8 @@ dependencies = [
     "pyjwt[crypto]>=2.8.0",
     "supabase>=2.5.0",
     "datasets>=4.8.5",
+    # Downscales generated images to thumbnail size (keeps bandwidth/disk small).
+    "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]

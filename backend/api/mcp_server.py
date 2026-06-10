@@ -7,20 +7,30 @@ must present the user's Supabase access token (Authorization: Bearer <jwt>);
 the server validates it, derives the household, and opens an RLS-scoped
 connection, exactly like the REST API does.
 
+It is an OAuth 2.1 Resource Server: it advertises the Supabase project as its
+Authorization Server (RFC 9728 protected-resource metadata) and validates the
+bearer tokens Supabase issues. That lets any MCP client connect as a "connector"
+— browser login + automatic token refresh — instead of pasting a raw JWT.
+
 Tool surface mirrors the in-process adapter (api.agent_tools) 1:1 — same names,
 same descriptions (sourced from the core docstrings) — so the only variable
 between the two transports is the integration mechanism.
 
-Writes never mutate: they return a `{"status": "proposed", ...}` descriptor.
-The host (api.chat) harvests those descriptors, queues them as pending actions,
-and applies them only when the user accepts. Applying is NOT an MCP tool.
+Writes never mutate directly: they return a `{"status": "proposed", ...}` descriptor.
+For our own chat host, api.chat harvests those and queues them as pending actions the
+web app applies on accept. For a generic MCP host (Claude Code), `apply_proposals` applies the changes the user
+approved. (We tried a server-side elicitation gate to enforce confirmation, but this
+client auto-declines elicitation without rendering it, so confirmation is driven by the
+agent's own question UI per the server instructions — see _AGENT_INSTRUCTIONS.)
 """
 
 from __future__ import annotations
 
-import contextvars
 import os
 
+from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -28,13 +38,7 @@ from api.agent_core import tools as core
 from api.agent_core.context import Proposal, ToolContext
 from api.auth import CurrentUser, _decode
 from api.db import service_tx
-
-# Set by the ASGI middleware from the inbound Authorization header, read by the
-# tools when they build their ToolContext. A contextvar (not a closure) is how
-# per-request identity crosses into an otherwise identity-less server.
-_request_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "mcp_request_token", default=None
-)
+from api.pending_actions import _EXECUTORS as _PENDING_EXECUTORS, execute as _execute_pending
 
 # FastMCP enforces DNS-rebinding protection (Host/Origin allowlist). Empty lists
 # block everything, so allow the hosts the agent actually calls. Override via
@@ -55,29 +59,91 @@ _transport_security = TransportSecuritySettings(
     + [f"https://{h}" for h in _allowed_hosts],
 )
 
-# stateless_http: each request stands alone (no server-side session), which
-# suits a per-request-JWT model. streamable_http_path="/" so mounting the app
-# at "/mcp" on the main API yields a clean "/mcp" endpoint.
+# OAuth 2.1 Resource Server config. The issuer is the Supabase project's auth
+# server (which actually logs the user in + issues/refreshes tokens); the
+# resource URL identifies THIS server and anchors its RFC 9728 metadata.
+_ISSUER_URL = os.getenv("HEARTH_MCP_ISSUER_URL") or (
+    f"{os.getenv('SUPABASE_URL', '').rstrip('/')}/auth/v1"
+)
+_RESOURCE_URL = os.getenv("HEARTH_MCP_RESOURCE_URL", "http://127.0.0.1:8000/mcp")
+
+
+class SupabaseTokenVerifier:
+    """Verifies a bearer token as a Supabase-issued JWT (JWKS / HS256) and exposes
+    its claims to the tools. This is the whole of being a Resource Server: trust
+    tokens minted by the Supabase Authorization Server; never mint or store any."""
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        try:
+            # audience=None: OAuth-server tokens may not carry aud="authenticated";
+            # signature + expiry are still verified via the project JWKS.
+            claims = _decode(token, audience=None)
+        except Exception:
+            return None
+        sub = claims.get("sub")
+        if not sub:
+            return None
+        scope = claims.get("scope") or ""
+        return AccessToken(
+            token=token,
+            client_id=str(claims.get("azp") or claims.get("aud") or sub),
+            scopes=scope.split() if scope else ["mcp"],
+            expires_at=claims.get("exp"),
+            subject=sub,
+            claims=claims,
+        )
+
+
+# Surfaced to the MCP client (Claude Code etc.) as server instructions. Tells a
+# generic host how to drive the propose→apply loop, since the propose tools alone
+# imply "the app accepts" — which is only true for our own chat host.
+_AGENT_INSTRUCTIONS = (
+    "Write tools here only PROPOSE changes: they return "
+    '{"summary", "status": "proposed", "kind", "params"} and do NOT mutate anything. '
+    "Before applying ANYTHING, you MUST get the user's approval: present the proposed "
+    "change(s) using your interactive multiple-choice question UI — list each change as a "
+    "selectable option and allow multiple selections — and let the user pick which to apply. "
+    "Then call apply_proposals(proposals=[...]) with ONLY the approved changes (each item is "
+    "the {kind, params, summary} from a proposal). The apply tools mutate immediately, so the "
+    "human-in-the-loop is YOUR approval question — never apply a change the user didn't pick, "
+    "and never tell them to 'accept it in the app'. When you describe a proposed or applied "
+    "change, use the human-readable summary/message text — never surface raw kind/params/JSON."
+)
+
+# stateless_http: each request stands alone (per-request-JWT model). We briefly went
+# stateful to enable server→client elicitation as an enforced confirmation gate, but
+# this MCP client (VSCode extension) auto-declines elicitation without rendering it — so
+# confirmation is handled agent-side (see _AGENT_INSTRUCTIONS) and we keep the simpler
+# stateless transport. streamable_http_path="/" → clean "/mcp"; token_verifier + auth
+# make the SDK emit the 401 + RFC 9728 challenge and validate every bearer.
 mcp_app = FastMCP(
-    "hearth",
+    "Mealplanner",
+    instructions=_AGENT_INSTRUCTIONS,
     stateless_http=True,
     streamable_http_path="/",
     transport_security=_transport_security,
+    token_verifier=SupabaseTokenVerifier(),
+    auth=AuthSettings(
+        issuer_url=_ISSUER_URL,
+        resource_server_url=_RESOURCE_URL,
+        required_scopes=None,
+    ),
 )
 
 
 async def _ctx_from_token() -> ToolContext:
-    """Validate the per-request JWT and build the ToolContext (user + household).
-    Raises if the token is missing/invalid or the user has no household."""
-    token = _request_token.get()
-    if not token:
-        raise ValueError("Missing bearer token — the MCP client must forward the user's JWT.")
-    claims = _decode(token)  # verifies signature, expiry, audience (Supabase JWKS / HS)
-    user_id = claims.get("sub")
+    """Build the ToolContext (user + household) from the request's verified token.
+    The SDK auth middleware has already validated the bearer (SupabaseTokenVerifier)
+    and stashed it on the request context. Raises if unauthenticated or no household."""
+    at = get_access_token()
+    if at is None:
+        raise ValueError("Unauthenticated MCP request — no verified access token.")
+    claims = at.claims or {}
+    user_id = at.subject or claims.get("sub")
     if not user_id:
         raise ValueError("Token missing sub claim.")
     user = CurrentUser(
-        user_id=user_id, email=claims.get("email"), raw_token=token, claims=claims
+        user_id=user_id, email=claims.get("email"), raw_token=at.token, claims=claims
     )
     async with service_tx() as conn:
         hid = await conn.fetchval(
@@ -94,7 +160,15 @@ def _proposal_payload(res: Proposal | str) -> dict:
     """Shape a core write result for the wire: a proposed-action descriptor the
     host can queue, or an error the agent can read."""
     if isinstance(res, Proposal):
-        return {"status": "proposed", "kind": res.kind, "summary": res.summary, "params": res.params}
+        # summary first + human-readable: the host shows this to the user. kind/params
+        # are the machine bits apply_proposal needs. Apply guidance lives in the server
+        # instructions (not echoed here) so this stays clean and legible.
+        return {
+            "summary": res.summary,
+            "status": "proposed",
+            "kind": res.kind,
+            "params": res.params,
+        }
     return {"status": "error", "message": res}
 
 
@@ -199,6 +273,60 @@ async def propose_profile_note(note: str) -> dict:
     return _proposal_payload(await core.propose_profile_note(await _ctx_from_token(), note))
 
 
+async def apply_proposal(kind: str, params: dict, summary: str = "") -> dict:
+    """Apply a single proposed write (status="proposed") the user has APPROVED. Pass the
+    EXACT `kind` and `params` from the proposal. This MUTATES data immediately, so only
+    call it after the user approved this change in your confirmation question. Prefer
+    apply_proposals for one-or-more changes. Returns {"status":"applied","message":...}
+    (plus "created" ids when relevant) or {"status":"error","message":...}. Show the user
+    the `message`, never the raw fields."""
+    ctx = await _ctx_from_token()
+    if kind not in _PENDING_EXECUTORS:
+        return {"status": "error", "message": f"Unknown action kind '{kind}'."}
+    try:
+        result, created = await _execute_pending(kind, ctx.user, params, ctx.locale)
+    except Exception as e:
+        return {"status": "error", "message": f"Apply failed: {e}"}
+    payload: dict = {"status": "applied", "message": result}
+    if created:
+        payload["created"] = created
+    return payload
+
+
+async def apply_proposals(proposals: list[dict]) -> dict:
+    """Apply one or more proposed writes the user has APPROVED. `proposals` is a list where
+    each item is the {"kind","params","summary"} a propose_* tool returned — include ONLY
+    the changes the user approved in your confirmation question. This MUTATES data
+    immediately. Returns {"status":"done","applied":N,"results":[...]} where each result
+    carries the change's summary + applied/error. Show the user the per-change messages,
+    never the raw fields."""
+    ctx = await _ctx_from_token()
+    items: list[dict] = []
+    for i, p in enumerate(proposals or []):
+        p = p or {}
+        kind = p.get("kind")
+        if kind not in _PENDING_EXECUTORS:
+            return {"status": "error", "message": f"Unknown action kind '{kind}' in change #{i + 1}."}
+        items.append({"kind": kind, "params": p.get("params") or {}, "summary": p.get("summary") or kind})
+    if not items:
+        return {"status": "error", "message": "No changes to apply."}
+
+    results: list[dict] = []
+    applied = 0
+    for it in items:
+        try:
+            msg, created = await _execute_pending(it["kind"], ctx.user, it["params"], ctx.locale)
+        except Exception as e:
+            results.append({"summary": it["summary"], "status": "error", "message": f"Apply failed: {e}"})
+            continue
+        r: dict = {"summary": it["summary"], "status": "applied", "message": msg}
+        if created:
+            r["created"] = created
+        results.append(r)
+        applied += 1
+    return {"status": "done", "applied": applied, "results": results}
+
+
 # (wrapper, core fn whose docstring is the canonical description)
 _TOOLS = [
     (list_recipes, core.list_recipes),
@@ -228,35 +356,30 @@ _TOOLS = [
 for _wrapper, _core_fn in _TOOLS:
     mcp_app.tool(name=_core_fn.__name__, description=(_core_fn.__doc__ or "").strip())(_wrapper)
 
+# apply_proposal is MCP-only (no shared-core twin). The in-process adapter applies
+# writes via the web app's accept UI; a generic MCP host like Claude Code has no such
+# UI, so the accept step becomes an explicit tool (gated by the host's tool-approval
+# prompt). Registering it only here leaves the in-process control-group toolset unchanged.
+mcp_app.tool(name="apply_proposal", description=(apply_proposal.__doc__ or "").strip())(apply_proposal)
+mcp_app.tool(name="apply_proposals", description=(apply_proposals.__doc__ or "").strip())(apply_proposals)
 
-class _TokenCaptureMiddleware:
-    """Pure-ASGI middleware: lift the bearer token off the inbound request into
-    the request-scoped contextvar so tools (running in the same async context)
-    can derive identity. This is the per-request boundary the thesis hinges on."""
 
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        token: str | None = None
-        for k, v in scope.get("headers", []):
-            if k == b"authorization":
-                val = v.decode("latin-1")
-                if val.lower().startswith("bearer "):
-                    token = val[7:].strip()
-                break
-        reset = _request_token.set(token)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            _request_token.reset(reset)
+def protected_resource_metadata() -> dict:
+    """RFC 9728 Protected Resource Metadata. The SDK builds this too, but registers
+    it INSIDE the FastMCP app — which, once mounted at /mcp, hides it under the
+    mount while the WWW-Authenticate header advertises the root path. So the main
+    app serves this dict at the advertised root path instead (see api.main)."""
+    return {
+        "resource": _RESOURCE_URL,
+        "authorization_servers": [_ISSUER_URL],
+        "scopes_supported": [],
+        "bearer_methods_supported": ["header"],
+    }
 
 
 def build_mcp_asgi():
-    """ASGI app for the MCP server, wrapped to capture the per-request token.
-    Mount this on the main FastAPI app (and run `mcp_app.session_manager` in the
-    app lifespan)."""
-    return _TokenCaptureMiddleware(mcp_app.streamable_http_app())
+    """ASGI app for the MCP server. The SDK's own auth middleware extracts and
+    validates the per-request bearer (SupabaseTokenVerifier) and serves the RFC
+    9728 challenge on 401, so no extra wrapper is needed. Mount this on the main
+    FastAPI app (and run `mcp_app.session_manager` in the app lifespan)."""
+    return mcp_app.streamable_http_app()
