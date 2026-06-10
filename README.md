@@ -1,6 +1,6 @@
-# Hearth — Mealplanner 2.0
+# Mealplanner
 
-Hearth is a household meal-planning web app. A household plans dinners on a shared
+Mealplanner is a household meal-planning web app. A household plans dinners on a shared
 calendar, keeps a recipe library, a pantry and a profile, and gets help from an AI
 kitchen assistant that can read and — with the user's approval — modify all of it.
 
@@ -144,8 +144,29 @@ over the MCP server instead:
 HEARTH_AGENT_TRANSPORT=mcp uv run uvicorn api.main:app --port 8000
 ```
 
-Any MCP client can also connect directly to `http://127.0.0.1:8000/mcp/` with an
-`Authorization: Bearer <supabase-jwt>` header.
+### Connecting an MCP client (OAuth "connector")
+
+The MCP server is an OAuth 2.1 **Resource Server**; the Supabase project is its
+**Authorization Server**. So an MCP client (Claude Code, Claude.ai, ChatGPT)
+connects with a browser login — no hand-pasted token:
+
+1. **Supabase dashboard → Authentication → OAuth Server:** enable the OAuth server
+   and **Allow Dynamic OAuth Apps**. Set the **Authorization Path** to `/oauth/consent`,
+   and the **Site URL** (Auth URL Configuration) to your frontend origin
+   (`http://localhost:5173` in dev) — that's where the consent screen lives
+   (`frontend/src/auth/OAuthConsent.tsx`).
+2. Run the backend + frontend.
+3. Register the server with **no auth header**, e.g. for Claude Code:
+   ```bash
+   claude mcp add --transport http mealplanner http://127.0.0.1:8000/mcp/
+   ```
+   Then `/mcp` → `mealplanner` → **Authenticate**: a browser opens, the user logs in /
+   consents with their Mealplanner account, and the client stores + auto-refreshes the token.
+
+The relevant env vars (`backend/.env`): `HEARTH_MCP_ISSUER_URL` (defaults to
+`<SUPABASE_URL>/auth/v1`) and `HEARTH_MCP_RESOURCE_URL` (defaults to the local
+`http://127.0.0.1:8000/mcp`). A pre-issued `Authorization: Bearer <supabase-jwt>`
+header still works too (e.g. for scripts).
 
 ---
 

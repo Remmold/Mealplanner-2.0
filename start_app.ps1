@@ -13,14 +13,14 @@ Write-Host "Starting Mealplanner..." -ForegroundColor Cyan
 # tab so the two windows are distinguishable on the taskbar.
 $backend = Start-Process -PassThru -FilePath "cmd" -ArgumentList @(
     "/k",
-    "title Hearth Backend && cd /d `"$root\backend`" && uv run uvicorn api.main:app --reload --port 8000"
+    "title Mealplanner Backend && cd /d `"$root\backend`" && uv run uvicorn api.main:app --reload --port 8000"
 )
 Write-Host "Backend window opened — http://localhost:8000" -ForegroundColor Green
 
 # Frontend in its own window.
 $frontend = Start-Process -PassThru -FilePath "cmd" -ArgumentList @(
     "/k",
-    "title Hearth Frontend && cd /d `"$root\frontend`" && npm run dev"
+    "title Mealplanner Frontend && cd /d `"$root\frontend`" && npm run dev"
 )
 Write-Host "Frontend window opened — http://localhost:5173" -ForegroundColor Green
 

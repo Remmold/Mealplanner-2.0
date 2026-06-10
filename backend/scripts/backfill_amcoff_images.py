@@ -36,7 +36,7 @@ SEED_PATH = BACKEND / "seeds" / "amcoff_pool_seed.json"
 CONCURRENCY = 3
 PER_REQUEST_TIMEOUT = 15
 
-USER_AGENT = "HearthMealPlanner/0.1 (dev pilot; contact via project repo)"
+USER_AGENT = "Mealplanner/0.1 (dev pilot; contact via project repo)"
 
 # amcoff stores ICA URLs as relative paths like '/recept/foo-12345/'.
 ICA_BASE = "https://www.ica.se"

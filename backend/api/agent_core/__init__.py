@@ -1,4 +1,4 @@
-"""Transport-agnostic core for the Hearth agent.
+"""Transport-agnostic core for the Mealplanner agent.
 
 `tools` holds pure tool implementations shared by two adapters:
   * `api.agent_tools` — in-process PydanticAI tools (thesis control group)

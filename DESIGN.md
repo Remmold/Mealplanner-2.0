@@ -67,7 +67,7 @@ conflict (so users can override naming/categorisation).
 
 ### 2.3 Frontend (TypeScript)
 
-- **React 19** + **Vite**, branded as **Hearth**.
+- **React 19** + **Vite**, branded as **Mealplanner**.
 - **Warm-kitchen design system** — custom CSS in `src/styles.css` with design
   tokens (cream `#faf6f1`, sage `#4a6b46`, terracotta `#c8633e`, warm taupe
   ink). Fraunces serif headlines + Inter body, soft shadows, rounded cards.
@@ -448,8 +448,8 @@ panel renders them as honey-tinted action cards and dispatches a global
 terracotta launcher in the bottom-right opens the slide-out drawer with
 typing indicator, suggestion chips, session list.
 
-### 2026-04 — Frontend rebrand: "Hearth" warm-kitchen design system
-Full visual overhaul. App rebranded "Hearth — your kitchen, planned". New
+### 2026-04 — Frontend rebrand: "Mealplanner" warm-kitchen design system
+Full visual overhaul. App rebranded "Mealplanner — your kitchen, planned". New
 `styles.css` design system with cream/sage/terracotta palette, Fraunces serif
 headlines + Inter body, semantic component classes (cards, pills, chips,
 buttons, week-grid, shop-row, modal). Sticky header with brand mark + pill
@@ -537,7 +537,7 @@ flags, quality scores.
 ## 9. Real-product roadmap (post-demo direction)
 
 > Decided 2026-05-25, expanded 2026-05-26. The school demo is a checkpoint,
-> not the destination: Hearth becomes a **real, public, monetized product**.
+> not the destination: Mealplanner becomes a **real, public, monetized product**.
 > This section supersedes §6 (Roadmap) as the concrete plan. Implementation
 > started 2026-05-26 with the first Supabase migrations.
 
@@ -703,7 +703,7 @@ AI magic at a bounded cost.
       `household_invites`, `SECURITY DEFINER` helpers
       (`is_member_of`, `is_household_owner`, `user_household_ids`).
       ✅ migration 0001 committed.
-   2. `hearth` schema + Hearth tenant tables (recipes, meal_plans,
+   2. `hearth` schema + Mealplanner tenant tables (recipes, meal_plans,
       household_profiles, chat_*, pending_actions, store_layout,
       shopping_list_template, plus catalog: usda_ingredients,
       pantry_ingredients, ingredient_aliases, ingredient_units).
@@ -777,9 +777,9 @@ AI magic at a bounded cost.
 
 ### 9.13 Multi-app forward compatibility
 
-Hearth lives alone in this Supabase project today, but the schema is laid
+Mealplanner lives alone in this Supabase project today, but the schema is laid
 out so a future second app's adoption is a non-event. (A habit-tracker
-side-project that may eventually merge with Hearth is the canonical
+side-project that may eventually merge with Mealplanner is the canonical
 example — design decisions were taken with that in mind.)
 
 **Schema layout:**
@@ -788,7 +788,7 @@ example — design decisions were taken with that in mind.)
   helpers (`is_member_of`, `is_household_owner`, `user_household_ids`).
   Convention: minimal surface area, no app-specific columns, both
   current and future apps can rely on the shape.
-- `hearth.*` — Hearth-specific everything (recipes, meal plans,
+- `hearth.*` — Mealplanner-specific everything (recipes, meal plans,
   household_profiles meal-prefs blob, chat_*, pending_actions,
   store_layout, shopping_list_template, credit_ledger, USDA + pantry
   catalog).
@@ -810,7 +810,7 @@ example — design decisions were taken with that in mind.)
 2. Add RLS policies using `public.is_member_of(household_id)`.
 3. Reuse the existing tokenized invite flow (or add its own with
    different lifetimes — same `household_invites` table works).
-4. No changes to Hearth required.
+4. No changes to Mealplanner required.
 
 **App-specific user state**: per-user app-specific fields (e.g. a
 gamification XP counter for a habit app) go in
