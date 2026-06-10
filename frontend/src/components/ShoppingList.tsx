@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Star, X } from "lucide-react";
 import {
   fetchRecipes,
@@ -10,23 +11,49 @@ import {
 } from "../api";
 import ShoppingTemplate from "./ShoppingTemplate";
 import { Button, Card, Empty, ErrorBanner, Field, Input, Pill } from "./ui";
+import { useEnumLabels } from "../i18n/enums";
 
 interface Selection { recipe: Recipe; portions: number; }
 
 type View = "list" | "template";
 
+// Persist the generated list + which items are ticked / skipped / qty-edited to
+// localStorage, so checking items off survives reloads and leaving the Shopping tab
+// (this component unmounts on tab switch, which is why state otherwise resets).
+// Per-device only — not synced across household members.
+const STORAGE_KEY = "mealplanner.shoppingList.v1";
+
+interface PersistedShopping {
+  list: ShoppingListType | null;
+  checked: number[];
+  hidden: number[];
+  qtyOverride: Record<number, number>;
+}
+
+function loadPersistedShopping(): PersistedShopping | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as PersistedShopping) : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function ShoppingList() {
+  const { t } = useTranslation();
+  const el = useEnumLabels();
   const [view, setView] = useState<View>("list");
 
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [selections, setSelections] = useState<Record<string, Selection>>({});
-  const [list, setList] = useState<ShoppingListType | null>(null);
-  const [checked, setChecked] = useState<Set<number>>(new Set());
-  // Items the user has removed *just for this week* (ephemeral — not saved).
-  const [hidden, setHidden] = useState<Set<number>>(new Set());
-  // Ephemeral per-week display-quantity overrides. Keyed on fdc_id, value is the
-  // user-edited display_quantity (unit stays the same). Cleared on regenerate.
-  const [qtyOverride, setQtyOverride] = useState<Record<number, number>>({});
+  const [persisted] = useState(loadPersistedShopping);
+  const [list, setList] = useState<ShoppingListType | null>(persisted?.list ?? null);
+  const [checked, setChecked] = useState<Set<number>>(new Set(persisted?.checked ?? []));
+  // Items the user removed *just for this week*. Persisted per-device with the list.
+  const [hidden, setHidden] = useState<Set<number>>(new Set(persisted?.hidden ?? []));
+  // Per-week display-quantity overrides (fdc_id -> edited display_quantity, unit
+  // unchanged). Persisted per-device with the list; cleared on regenerate.
+  const [qtyOverride, setQtyOverride] = useState<Record<number, number>>(persisted?.qtyOverride ?? {});
   const [editingQty, setEditingQty] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<string>("");
   const [includeTemplate, setIncludeTemplate] = useState(true);
@@ -41,6 +68,22 @@ export default function ShoppingList() {
     fetchRecipes().then(setRecipes).catch((e) => setError(String(e)));
     fetchStoreLayout().then(setLayout).catch(() => {});
   }, []);
+
+  // Persist the list + ticks / skips / qty-edits so they survive reloads and
+  // leaving the Shopping tab (this component unmounts on tab switch).
+  useEffect(() => {
+    try {
+      if (!list) {
+        localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        list, checked: [...checked], hidden: [...hidden], qtyOverride,
+      }));
+    } catch {
+      /* ignore quota / serialization errors */
+    }
+  }, [list, checked, hidden, qtyOverride]);
 
   function toggleRecipe(recipe: Recipe) {
     setSelections((prev) => {
@@ -125,13 +168,13 @@ export default function ShoppingList() {
       <div className="col gap-3">
         <div className="row between items-baseline">
           <div>
-            <h2 className="m-0">Shopping template</h2>
+            <h2 className="m-0">{t("shopping.templateHeading")}</h2>
             <span className="small muted">
-              Baseline items — preprinted into every weekly list. Edits here are permanent.
+              {t("shopping.templateSubtitle")}
             </span>
           </div>
           <Button onClick={() => setView("list")} variant="ghost" size="sm">
-            <ArrowLeft size={14} /> Back to list
+            <ArrowLeft size={14} /> {t("shopping.backToList")}
           </Button>
         </div>
         <ShoppingTemplate />
@@ -142,13 +185,13 @@ export default function ShoppingList() {
   return (
     <div className="col gap-5">
       <div className="hero">
-        <h1>Shopping list</h1>
-        <p>Pick recipes and portions. We'll consolidate ingredients, convert to friendly units, and order everything in your store's aisle layout.</p>
+        <h1>{t("shopping.heading")}</h1>
+        <p>{t("shopping.intro")}</p>
       </div>
 
       <div className="row gap-2">
         <Button onClick={() => setView("template")} variant="ghost" size="sm">
-          Manage shopping template <ArrowRight size={14} />
+          {t("shopping.manageTemplate")} <ArrowRight size={14} />
         </Button>
       </div>
 
@@ -159,18 +202,18 @@ export default function ShoppingList() {
         <div className="flex-1 min-w-320">
           <Card>
             <div className="row between mb-2 items-baseline">
-              <h4 className="m-0">Pick recipes</h4>
+              <h4 className="m-0">{t("shopping.pickRecipes")}</h4>
               <span className="tiny muted">
-                {Object.keys(selections).length} selected · {recipes.length} total
+                {t("shopping.selectedTotal", { selected: Object.keys(selections).length, total: recipes.length })}
               </span>
             </div>
             {recipes.length === 0 ? (
-              <Empty>No recipes saved yet.</Empty>
+              <Empty>{t("shopping.noRecipes")}</Empty>
             ) : (
               <>
                 <Input
                   className="mb-2"
-                  placeholder="Filter recipes…"
+                  placeholder={t("shopping.filterPlaceholder")}
                   value={recipeFilter}
                   onChange={(e) => setRecipeFilter(e.target.value)}
                 />
@@ -203,10 +246,10 @@ export default function ShoppingList() {
                                 value={sel.portions}
                                 onChange={(e) => updatePortions(r.id, Number(e.target.value) || 1)}
                               />
-                              <span className="tiny">pt</span>
+                              <span className="tiny">{t("shopping.portionsAbbrev")}</span>
                             </Field>
                           ) : (
-                            <span className="tiny muted">{r.servings}s</span>
+                            <span className="tiny muted">{t("shopping.servingsAbbrev", { count: r.servings })}</span>
                           )}
                         </div>
                       );
@@ -220,7 +263,7 @@ export default function ShoppingList() {
                 checked={includeTemplate}
                 onChange={(e) => setIncludeTemplate(e.target.checked)}
               />
-              <span className="small">Include household template (baseline items)</span>
+              <span className="small">{t("shopping.includeTemplate")}</span>
             </label>
             <Button
               onClick={handleGenerate}
@@ -229,33 +272,33 @@ export default function ShoppingList() {
               block
               className="mt-3"
             >
-              {loading ? "Generating..." : "Generate shopping list"}
+              {loading ? t("common.generating") : t("shopping.generate")}
             </Button>
           </Card>
 
           <div className="mt-3">
             <Button onClick={() => setEditLayout(!editLayout)} variant="ghost" size="sm">
-              {editLayout ? "Close store layout" : <>Edit store layout <ArrowRight size={14} /></>}
+              {editLayout ? t("shopping.closeStoreLayout") : <>{t("shopping.editStoreLayout")} <ArrowRight size={14} /></>}
             </Button>
             {editLayout && (
               <Card variant="soft" className="mt-2">
                 <p className="tiny muted mb-2">
-                  Order items match on your list. Arrange to match your store's aisles.
+                  {t("shopping.layoutHint")}
                 </p>
                 <div className="col-2">
                   {layout.map((cat, i) => (
                     <div key={cat} className="row gap-2">
                       <span className="muted tiny w-24">{i + 1}.</span>
-                      <span className="flex-1 small">{cat}</span>
-                      <Button onClick={() => moveCategory(i, -1)} disabled={i === 0} size="xs" aria-label="Move up">
+                      <span className="flex-1 small">{el.category(cat)}</span>
+                      <Button onClick={() => moveCategory(i, -1)} disabled={i === 0} size="xs" aria-label={t("shopping.moveUp")}>
                         <ArrowUp size={14} />
                       </Button>
-                      <Button onClick={() => moveCategory(i, 1)} disabled={i === layout.length - 1} size="xs" aria-label="Move down">
+                      <Button onClick={() => moveCategory(i, 1)} disabled={i === layout.length - 1} size="xs" aria-label={t("shopping.moveDown")}>
                         <ArrowDown size={14} />
                       </Button>
                     </div>
                   ))}
-                  <Button onClick={saveLayout} variant="primary" size="sm" className="mt-2">Save layout</Button>
+                  <Button onClick={saveLayout} variant="primary" size="sm" className="mt-2">{t("shopping.saveLayout")}</Button>
                 </div>
               </Card>
             )}
@@ -264,18 +307,18 @@ export default function ShoppingList() {
 
         {/* Right: generated list */}
         <div className="flex-1 min-w-320">
-          {!list && <Card className="empty">No list yet — pick some recipes.</Card>}
+          {!list && <Card className="empty">{t("shopping.noListYet")}</Card>}
           {list && (
             <Card>
               <div className="row between mb-3">
-                <h3 className="m-0">Your list</h3>
-                <Pill>{checkedCount} / {totalItems} done</Pill>
+                <h3 className="m-0">{t("shopping.yourList")}</h3>
+                <Pill>{t("shopping.doneCount", { checked: checkedCount, total: totalItems })}</Pill>
               </div>
-              {visibleCategories.length === 0 && <Empty>No items.</Empty>}
+              {visibleCategories.length === 0 && <Empty>{t("shopping.noItems")}</Empty>}
               {visibleCategories.map((cat) => (
                 <div key={cat.category} className="mb-4">
                   <div className="shop-cat-header">
-                    <span>{cat.category}</span>
+                    <span>{el.category(cat.category)}</span>
                     <span className="shop-cat-count">{cat.items.length}</span>
                   </div>
                   {cat.items.map((item) => {
@@ -292,11 +335,11 @@ export default function ShoppingList() {
                           onChange={() => toggleChecked(item.fdc_id)}
                         />
                         <span className="flex-1">
-                          {item.name}
+                          {el.ingredient(item.fdc_id, item.name)}
                           {fromTemplate && (
                             <span
                               className="ml-1"
-                              title={item.source === "both" ? "From template + recipes" : "From household template"}
+                              title={item.source === "both" ? t("shopping.fromTemplateAndRecipes") : t("shopping.fromHouseholdTemplate")}
                             >
                               <Star size={12} className="muted" />
                             </span>
@@ -327,7 +370,7 @@ export default function ShoppingList() {
                                 if (e.key === "Escape") { setEditingQty(null); }
                               }}
                             />
-                            <span className="tiny">{item.display_unit}</span>
+                            <span className="tiny">{el.unit(item.display_unit)}</span>
                           </Field>
                         ) : (
                           <span
@@ -338,23 +381,23 @@ export default function ShoppingList() {
                               setEditDraft(String(current));
                               setEditingQty(item.fdc_id);
                             }}
-                            title="Click to alter quantity for this week"
+                            title={t("shopping.clickToAlterQty")}
                           >
-                            {qtyOverride[item.fdc_id] ?? item.display_quantity} {item.display_unit}
+                            {qtyOverride[item.fdc_id] ?? item.display_quantity} {el.unit(item.display_unit)}
                             {qtyOverride[item.fdc_id] !== undefined && (
-                              <span className="tiny muted ml-1">·edited</span>
+                              <span className="tiny muted ml-1">{t("shopping.editedTag")}</span>
                             )}
                           </span>
                         )}
                         {item.display_unit !== "g" && qtyOverride[item.fdc_id] === undefined && (
-                          <span className="tiny muted">({Math.round(item.quantity_g)} g)</span>
+                          <span className="tiny muted">{t("shopping.approxGrams", { grams: Math.round(item.quantity_g) })}</span>
                         )}
                         <Button
                           type="button"
                           onClick={(e) => { e.preventDefault(); hideForWeek(item.fdc_id); }}
                           variant="ghost"
                           size="xs"
-                          title="Skip this week (won't change the template)"
+                          title={t("shopping.skipThisWeekTitle")}
                         >
                           <X size={14} />
                         </Button>
@@ -366,17 +409,17 @@ export default function ShoppingList() {
               {hiddenItems.length > 0 && (
                 <Card variant="soft" className="mt-3">
                   <div className="row between mb-2">
-                    <strong className="small">Skipped this week ({hiddenItems.length})</strong>
-                    <span className="tiny muted">won't affect the template</span>
+                    <strong className="small">{t("shopping.skippedThisWeek", { count: hiddenItems.length })}</strong>
+                    <span className="tiny muted">{t("shopping.wontAffectTemplate")}</span>
                   </div>
                   <div className="col-2">
                     {hiddenItems.map((it) => (
                       <div key={it.fdc_id} className="row gap-2">
                         <span className="flex-1 tiny muted line-through">
-                          {it.name} — {it.display_quantity} {it.display_unit}
+                          {el.ingredient(it.fdc_id, it.name)} — {it.display_quantity} {el.unit(it.display_unit)}
                         </span>
                         <Button onClick={() => restoreItem(it.fdc_id)} variant="ghost" size="xs">
-                          Restore
+                          {t("shopping.restore")}
                         </Button>
                       </div>
                     ))}
@@ -385,7 +428,7 @@ export default function ShoppingList() {
               )}
               {list.missing_recipes.length > 0 && (
                 <p className="small text-warm">
-                  Some recipes not found: {list.missing_recipes.join(", ")}
+                  {t("shopping.recipesNotFound", { list: list.missing_recipes.join(", ") })}
                 </p>
               )}
             </Card>
