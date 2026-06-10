@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import type { ReactNode } from "react";
 import { ArrowRight, Check, Hand, Menu, Sparkles, TriangleAlert, X } from "lucide-react";
 import {
@@ -43,6 +44,20 @@ interface DisplayMessage {
 }
 
 export default function Chat({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useTranslation();
+
+  // Friendly category tag for a proposal card, from the kind's domain prefix
+  // (e.g. "profile.field" -> "Preference"). Literal keys keep t() type-safe.
+  const kindLabel = (kind: string): string => {
+    switch (kind.split(".")[0]) {
+      case "recipe": return t("chat.pending.kinds.recipe");
+      case "calendar": return t("chat.pending.kinds.calendar");
+      case "profile": return t("chat.pending.kinds.profile");
+      case "pantry": return t("chat.pending.kinds.pantry");
+      case "plan": return t("chat.pending.kinds.plan");
+      default: return kind.split(".")[0];
+    }
+  };
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -168,7 +183,7 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
       updateProgress(card.id, {
         status: res.status === "accepted" ? "done" : "failed",
         icon: res.status === "accepted" ? <Check size={14} /> : <TriangleAlert size={14} />,
-        text: res.result || (res.status === "accepted" ? card.summary : "Failed"),
+        text: res.result || (res.status === "accepted" ? card.summary : t("chat.failed")),
       });
       if (res.status === "accepted") dataChanged("*");
 
@@ -223,26 +238,36 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
     }
   }
 
+  // Dismiss on Escape (pairs with the click-outside backdrop below).
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
-    <div className="chat-drawer">
+    <>
+      <div className="chat-backdrop" onClick={onClose} aria-hidden />
+      <div className="chat-drawer">
       <div className="chat-header">
         <div className="row gap-2 flex-1">
-          <IconButton onClick={() => setShowSessions(!showSessions)} title="Sessions">
+          <IconButton onClick={() => setShowSessions(!showSessions)} title={t("chat.header.sessions")}>
             <Menu size={16} />
           </IconButton>
-          <strong className="chat-title">Hearth assistant</strong>
+          <strong className="chat-title">{t("chat.header.title")}</strong>
         </div>
-        <Button onClick={startNewSession} variant="ghost" size="sm">New</Button>
-        <IconButton onClick={onClose} title="Close">
+        <Button onClick={startNewSession} variant="ghost" size="sm">{t("chat.header.newChat")}</Button>
+        <IconButton onClick={onClose} title={t("common.close")}>
           <X size={16} />
         </IconButton>
       </div>
 
       {showSessions && (
         <div className="chat-sessions">
-          {sessions.length === 0 && <Empty className="small">No previous chats.</Empty>}
+          {sessions.length === 0 && <Empty className="small">{t("chat.sessions.empty")}</Empty>}
           {sessions.map((s) => (
             <div
               key={s.id}
@@ -251,12 +276,12 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
             >
               <div className="flex-1">
                 <div className="chat-session-title">{s.title}</div>
-                <div className="tiny muted">{s.message_count} messages</div>
+                <div className="tiny muted">{t("chat.sessions.messageCount", { count: s.message_count })}</div>
               </div>
               <IconButton
                 onClick={(e) => { e.stopPropagation(); removeSession(s.id); }}
                 className="icon-btn-sm"
-                aria-label="Delete chat"
+                aria-label={t("chat.sessions.deleteChat")}
               >
                 <X size={12} />
               </IconButton>
@@ -268,22 +293,22 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
       <div className="chat-body" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="chat-welcome">
-            <p className="chat-greeting">Hi there <Hand size={18} /></p>
+            <p className="chat-greeting"><Trans i18nKey="chat.welcome.greeting" /> <Hand size={18} /></p>
             <p className="muted small">
-              I can manage your recipes, plans and pantry. Try:
+              {t("chat.welcome.intro")}
             </p>
             <ul className="chat-suggestions">
-              <li onClick={() => setInput("Create a vegetarian week starting next Monday for 4 people")}>
-                "Create a vegetarian week starting next Monday for 4 people"
+              <li onClick={() => setInput(t("chat.welcome.suggestions.vegetarianWeekPrompt"))}>
+                {t("chat.welcome.suggestions.vegetarianWeekLabel")}
               </li>
-              <li onClick={() => setInput("Add Thai red curry to Wednesday dinner in my current plan")}>
-                "Add Thai red curry to Wednesday dinner"
+              <li onClick={() => setInput(t("chat.welcome.suggestions.addCurryPrompt"))}>
+                {t("chat.welcome.suggestions.addCurryLabel")}
               </li>
-              <li onClick={() => setInput("Generate a quick weeknight pasta and save it")}>
-                "Generate a quick weeknight pasta and save it"
+              <li onClick={() => setInput(t("chat.welcome.suggestions.quickPastaPrompt"))}>
+                {t("chat.welcome.suggestions.quickPastaLabel")}
               </li>
-              <li onClick={() => setInput("Show me my saved recipes")}>
-                "Show me my saved recipes"
+              <li onClick={() => setInput(t("chat.welcome.suggestions.savedRecipesPrompt"))}>
+                {t("chat.welcome.suggestions.savedRecipesLabel")}
               </li>
             </ul>
           </div>
@@ -303,29 +328,29 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
               {m.pending && m.pending.length > 0 && (
                 <div className="chat-pending">
                   <div className="chat-pending-header">
-                    <span>{m.pending.length} proposed action{m.pending.length === 1 ? "" : "s"}</span>
+                    <span>{t("chat.pending.header", { count: m.pending.length })}</span>
                     {stillPending.length > 1 && (
                       <Button onClick={() => acceptAll(stillPending)} size="xs" variant="primary">
-                        Accept all
+                        {t("chat.pending.acceptAll")}
                       </Button>
                     )}
                   </div>
                   {m.pending.map((c) => (
                     <div key={c.id} className={`pending-card pending-${c.status}`}>
                       <div className="pending-card-summary">
-                        <span className="pending-kind">{c.kind}</span>
+                        <span className="pending-kind">{kindLabel(c.kind)}</span>
                         <span className="pending-text">{c.summary}</span>
                       </div>
                       {c.status === "pending" && (
                         <div className="pending-actions">
-                          <Button onClick={() => handleReject(c)} size="xs">Reject</Button>
-                          <Button onClick={() => handleAccept(c)} size="xs" variant="primary">Accept</Button>
+                          <Button onClick={() => handleReject(c)} size="xs">{t("chat.pending.reject")}</Button>
+                          <Button onClick={() => handleAccept(c)} size="xs" variant="primary">{t("chat.pending.accept")}</Button>
                         </div>
                       )}
-                      {c.status === "accepting" && <span className="pending-status muted">Applying…</span>}
-                      {c.status === "rejecting" && <span className="pending-status muted">Rejecting…</span>}
+                      {c.status === "accepting" && <span className="pending-status muted">{t("chat.pending.applying")}</span>}
+                      {c.status === "rejecting" && <span className="pending-status muted">{t("chat.pending.rejecting")}</span>}
                       {c.status === "accepted" && !c.preview && (
-                        <span className="pending-status accepted"><Check size={14} /> {c.result || "Done"}</span>
+                        <span className="pending-status accepted"><Check size={14} /> {c.result || t("common.done")}</span>
                       )}
                       {c.status === "accepted" && c.preview && (
                         <div className="pending-preview">
@@ -336,12 +361,17 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
                               className="pending-preview-img"
                             />
                           ) : (
-                            <div className="pending-preview-img placeholder" title="Image is generating…" />
+                            <div className="pending-preview-img placeholder" title={t("chat.pending.imageGenerating")} />
                           )}
                           <div className="pending-preview-body">
                             <div className="pending-preview-name">{c.preview.name}</div>
                             <div className="tiny muted">
-                              {c.preview.servings} servings · {c.preview.ingredients.filter((i) => !i.from_pantry).length} to buy · {c.preview.instructions.length} steps
+                              {t("chat.pending.previewMeta", {
+                                servings: c.preview.servings,
+                                toBuy: c.preview.ingredients.length,
+                                steps: c.preview.instructions.length,
+                                count: c.preview.instructions.length,
+                              })}
                             </div>
                           </div>
                           <Button
@@ -349,15 +379,15 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
                             size="xs"
                             variant="primary"
                           >
-                            View <ArrowRight size={12} />
+                            {t("chat.pending.view")} <ArrowRight size={12} />
                           </Button>
                         </div>
                       )}
                       {c.status === "rejected" && (
-                        <span className="pending-status rejected"><X size={14} /> Rejected</span>
+                        <span className="pending-status rejected"><X size={14} /> {t("chat.pending.rejected")}</span>
                       )}
                       {c.status === "failed" && (
-                        <span className="pending-status failed"><TriangleAlert size={14} /> {c.result || "Failed"}</span>
+                        <span className="pending-status failed"><TriangleAlert size={14} /> {c.result || t("chat.failed")}</span>
                       )}
                     </div>
                   ))}
@@ -382,11 +412,11 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
         open={progressOpen}
         onClose={() => { if (progressDone) setProgressItems([]); }}
       >
-        <h3 className="m-0">Applying actions</h3>
+        <h3 className="m-0">{t("chat.progress.heading")}</h3>
         <p className="muted small mt-1">
           {progressDone
-            ? "All done."
-            : "The assistant is working — leave this open until it finishes."}
+            ? t("chat.progress.allDone")
+            : t("chat.progress.working")}
         </p>
         <ul className="gen-feed-list mt-3">
           {progressItems.map((item) => (
@@ -398,14 +428,14 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
         </ul>
         {progressDone && (
           <Button onClick={() => setProgressItems([])} variant="primary" className="mt-3">
-            Done
+            {t("common.done")}
           </Button>
         )}
       </Modal>
 
       <div className="chat-input-row">
         <Textarea
-          placeholder="Ask the assistant…"
+          placeholder={t("chat.input.placeholder")}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -415,9 +445,10 @@ export default function Chat({ open, onClose }: { open: boolean; onClose: () => 
           disabled={sending}
         />
         <Button onClick={send} disabled={sending || !input.trim()} variant="primary">
-          Send
+          {t("chat.input.send")}
         </Button>
       </div>
-    </div>
+      </div>
+    </>
   );
 }

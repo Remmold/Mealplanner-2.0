@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ChefHat, Clock, Eye, Heart, Rewind, Sparkles, Utensils, X } from "lucide-react";
 import {
   fetchExploreDeck,
@@ -15,6 +16,7 @@ import {
   type SlotFilter,
 } from "../api";
 import { Button, Card, Empty, ErrorBanner, Modal, Pill } from "./ui";
+import { useEnumLabels } from "../i18n/enums";
 
 // How far the user has to drag (px) for a swipe to fire on release.
 const SWIPE_THRESHOLD_PX = 110;
@@ -36,6 +38,8 @@ interface BannerState {
 }
 
 export default function Explore() {
+  const { t } = useTranslation();
+  const el = useEnumLabels();
   const [slot, setSlot] = useState<SlotFilter>("dinner");
   const [deck, setDeck] = useState<ExploreCard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -193,18 +197,14 @@ export default function Explore() {
   return (
     <div className="col gap-4">
       <div className="hero">
-        <h1>Explore</h1>
-        <p>
-          Swipe through recipes from the starter library, fresh AI generations, and
-          other households. Right to save, left to skip. Three likes in a cuisine
-          and we&apos;ll quietly add it to your profile.
-        </p>
+        <h1>{t("explore.heroTitle")}</h1>
+        <p>{t("explore.heroIntro")}</p>
       </div>
 
       <ErrorBanner>{error}</ErrorBanner>
 
       <div className="row gap-2 wrap items-center">
-        <span className="overline muted">Filter</span>
+        <span className="overline muted">{t("explore.filterLabel")}</span>
         {SLOT_OPTIONS.map((s) => (
           <button
             key={s.id}
@@ -212,12 +212,12 @@ export default function Explore() {
             onClick={() => setSlot(s.id)}
             className={"chip" + (slot === s.id ? " chip-active" : "")}
           >
-            {s.label}
+            {s.id === "any" ? t("explore.filterAll") : el.slot(s.id)}
           </button>
         ))}
         {stats && (
           <span className="ml-auto small muted">
-            ♥ {stats.likes} · ✕ {stats.skips} · pool: {stats.pool_size}
+            {t("explore.stats", { likes: stats.likes, skips: stats.skips, pool: stats.pool_size })}
           </span>
         )}
       </div>
@@ -227,10 +227,10 @@ export default function Explore() {
           <div className="row gap-3 items-center">
             <Check size={18} className="explore-banner-icon" />
             <div className="flex-1">
-              <div className="fw-600">Saved &lsquo;{banner.recipeName}&rsquo;</div>
+              <div className="fw-600">{t("explore.banner.saved", { name: banner.recipeName })}</div>
               {banner.addedCuisines.length > 0 && (
                 <div className="tiny muted">
-                  Added {banner.addedCuisines.join(", ")} to your cuisine preferences.
+                  {t("explore.banner.addedCuisines", { cuisines: banner.addedCuisines.join(", ") })}
                 </div>
               )}
             </div>
@@ -238,22 +238,19 @@ export default function Explore() {
               navigateTo({ tab: "plan" });
               setBanner(null);
             }}>
-              Add to plan
+              {t("explore.banner.addToPlan")}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setBanner(null)}>
-              Dismiss
+              {t("explore.banner.dismiss")}
             </Button>
           </div>
         </Card>
       )}
 
-      {loading && deck.length === 0 && <div className="muted">Loading deck…</div>}
+      {loading && deck.length === 0 && <div className="muted">{t("explore.loadingDeck")}</div>}
 
       {!loading && !top && (
-        <Empty>
-          The deck is empty for this filter. Try a different slot, or come back
-          after a meal-plan generation fills the pool with fresh recipes.
-        </Empty>
+        <Empty>{t("explore.emptyDeck")}</Empty>
       )}
 
       {(top || exiting) && (
@@ -291,14 +288,14 @@ export default function Explore() {
                       style={{ opacity: Math.max(0, Math.min(1, drag.dx / SWIPE_THRESHOLD_PX)) }}
                       aria-hidden
                     >
-                      SAVE
+                      {t("explore.decisionSave")}
                     </div>
                     <div
                       className="explore-decision explore-decision-skip"
                       style={{ opacity: Math.max(0, Math.min(1, -drag.dx / SWIPE_THRESHOLD_PX)) }}
                       aria-hidden
                     >
-                      SKIP
+                      {t("explore.decisionSkip")}
                     </div>
                   </>
                 )}
@@ -325,14 +322,14 @@ export default function Explore() {
                 style={{ opacity: exiting.direction === "right" ? 1 : 0 }}
                 aria-hidden
               >
-                SAVE
+                {t("explore.decisionSave")}
               </div>
               <div
                 className="explore-decision explore-decision-skip"
                 style={{ opacity: exiting.direction === "left" ? 1 : 0 }}
                 aria-hidden
               >
-                SKIP
+                {t("explore.decisionSkip")}
               </div>
             </div>
           )}
@@ -342,7 +339,7 @@ export default function Explore() {
       {inspectLoading && (
         <div className="modal-backdrop" aria-hidden>
           <div className="modal">
-            <div className="muted">Loading recipe…</div>
+            <div className="muted">{t("explore.loadingRecipe")}</div>
           </div>
         </div>
       )}
@@ -355,17 +352,17 @@ export default function Explore() {
         {inspecting && (
           <div className="col gap-3">
             <div className="row gap-2 wrap">
-              {inspecting.meal_type && <Pill className="pill-match">{inspecting.meal_type}</Pill>}
-              {inspecting.cuisine.map((c) => <Pill key={c}>{c}</Pill>)}
+              {inspecting.meal_type && <Pill className="pill-match">{el.slot(inspecting.meal_type)}</Pill>}
+              {inspecting.cuisine.map((c) => <Pill key={c}>{el.cuisine(c)}</Pill>)}
               {inspecting.time_min != null && (
-                <span className="explore-card-meta"><Clock size={12} /> {inspecting.time_min} min</span>
+                <span className="explore-card-meta"><Clock size={12} /> {t("explore.minutes", { count: inspecting.time_min })}</span>
               )}
               <span className="explore-card-meta">
-                <Utensils size={12} /> {inspecting.ingredients.length} ingredients
+                <Utensils size={12} /> {t("explore.inspect.ingredientsCount", { count: inspecting.ingredients.length })}
               </span>
             </div>
             <div>
-              <h4 className="mt-2">Ingredients</h4>
+              <h4 className="mt-2">{t("explore.inspect.ingredientsHeading")}</h4>
               <ul className="explore-inspect-ingredients">
                 {inspecting.ingredients.map((ing, i) => {
                   const useDisplay =
@@ -378,14 +375,14 @@ export default function Explore() {
                   return (
                     <li key={`${ing.fdc_id}-${i}`}>
                       <span className="small muted">{qtyText}</span>{" "}
-                      {ing.name ?? `fdc ${ing.fdc_id}`}
+                      {ing.name ?? t("explore.fdcFallback", { id: ing.fdc_id })}
                     </li>
                   );
                 })}
               </ul>
             </div>
             <div>
-              <h4 className="mt-2">Instructions</h4>
+              <h4 className="mt-2">{t("explore.inspect.instructionsHeading")}</h4>
               <ol className="explore-inspect-instructions">
                 {inspecting.instructions.map((step, i) => (
                   <li key={i}>{step}</li>
@@ -394,10 +391,10 @@ export default function Explore() {
             </div>
             <div className="row gap-2 justify-end mt-3">
               <Button variant="ghost" onClick={() => { setInspecting(null); applySwipe("skip"); }}>
-                Skip
+                {t("common.skip")}
               </Button>
               <Button variant="primary" onClick={() => { setInspecting(null); applySwipe("like"); }}>
-                <Heart size={14} /> Save
+                <Heart size={14} /> {t("common.save")}
               </Button>
             </div>
           </div>
@@ -410,8 +407,8 @@ export default function Explore() {
             type="button"
             onClick={() => applySwipe("skip")}
             className="explore-action explore-action-skip"
-            title="Skip (←)"
-            aria-label="Skip"
+            title={t("explore.actions.skipTitle")}
+            aria-label={t("explore.actions.skipLabel")}
           >
             <X size={22} />
           </button>
@@ -419,8 +416,8 @@ export default function Explore() {
             type="button"
             onClick={applyUndo}
             className="explore-action explore-action-undo"
-            title="Undo last (↓)"
-            aria-label="Undo last swipe"
+            title={t("explore.actions.undoTitle")}
+            aria-label={t("explore.actions.undoLabel")}
           >
             <Rewind size={18} />
           </button>
@@ -428,8 +425,8 @@ export default function Explore() {
             type="button"
             onClick={() => applySwipe("like")}
             className="explore-action explore-action-like"
-            title="Save (→)"
-            aria-label="Save"
+            title={t("explore.actions.saveTitle")}
+            aria-label={t("explore.actions.saveLabel")}
           >
             <Heart size={22} />
           </button>
@@ -441,10 +438,12 @@ export default function Explore() {
 
 
 function CardBody({ card, muted = false, onInspect }: { card: ExploreCard; muted?: boolean; onInspect?: () => void }) {
+  const { t } = useTranslation();
+  const el = useEnumLabels();
   const slot = card.meal_type;
   const sourceLabel =
-    card.source === "starter_corpus" ? "starter" :
-    card.source === "llm" ? "community AI" : "shared";
+    card.source === "starter_corpus" ? t("explore.source.starter") :
+    card.source === "llm" ? t("explore.source.communityAi") : t("explore.source.shared");
 
   return (
     <div className={"explore-card-body" + (muted ? " explore-card-body-muted" : "")}>
@@ -470,8 +469,8 @@ function CardBody({ card, muted = false, onInspect }: { card: ExploreCard; muted
             className="explore-card-inspect"
             onClick={(e) => { e.stopPropagation(); onInspect(); }}
             onPointerDown={(e) => e.stopPropagation()}
-            aria-label="Inspect recipe"
-            title="View full recipe"
+            aria-label={t("explore.inspectCardLabel")}
+            title={t("explore.inspectCardTitle")}
           >
             <Eye size={16} />
           </button>
@@ -480,27 +479,27 @@ function CardBody({ card, muted = false, onInspect }: { card: ExploreCard; muted
       <div className="explore-card-content">
         <h2 className="explore-card-name">{card.name}</h2>
         <div className="row gap-2 wrap">
-          {slot && <Pill className="pill-match">{slot}</Pill>}
+          {slot && <Pill className="pill-match">{el.slot(slot)}</Pill>}
           {card.cuisine.slice(0, 2).map((c) => (
-            <Pill key={c}>{c}</Pill>
+            <Pill key={c}>{el.cuisine(c)}</Pill>
           ))}
           {card.time_min != null && (
-            <span className="explore-card-meta"><Clock size={12} /> {card.time_min} min</span>
+            <span className="explore-card-meta"><Clock size={12} /> {t("explore.minutes", { count: card.time_min })}</span>
           )}
           <span className="explore-card-meta">
-            <Utensils size={12} /> {card.ingredient_count} ingredients · {card.step_count} steps
+            <Utensils size={12} /> {t("explore.cardStats", { ingredients: card.ingredient_count, count: card.step_count })}
           </span>
         </div>
         {card.ingredients_preview.length > 0 && (
           <p className="explore-card-ingredients">
             {card.ingredients_preview.join(" · ")}
             {card.ingredient_count > card.ingredients_preview.length &&
-              ` …+${card.ingredient_count - card.ingredients_preview.length}`}
+              t("explore.ingredientsMore", { count: card.ingredient_count - card.ingredients_preview.length })}
           </p>
         )}
         {card.match_reasons.length > 0 && (
           <p className="explore-card-reasons">
-            <span className="overline muted">Why this</span>{" "}
+            <span className="overline muted">{t("explore.whyThis")}</span>{" "}
             {card.match_reasons.join(" · ")}
           </p>
         )}

@@ -12,6 +12,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { IconButton } from "./ui";
 
@@ -21,12 +22,6 @@ interface Props {
   onChange: (start: string, end: string) => void;
   maxDays?: number;       // inclusive; default 14
 }
-
-const DOW_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
-const MONTH_LABELS = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
 
 function parse(iso: string): Date {
   return new Date(iso + "T00:00:00");
@@ -50,10 +45,17 @@ function diffDays(a: string, b: string): number {
 }
 
 export default function DateRangePicker({ start, end, onChange, maxDays = 14 }: Props) {
+  const { t, i18n } = useTranslation();
   const startD = parse(start);
   const [viewYear, setViewYear] = useState(startD.getFullYear());
   const [viewMonth, setViewMonth] = useState(startD.getMonth());
   const [pickingEnd, setPickingEnd] = useState(false);
+
+  // Month-first localized weekday short labels (2024-01-01 was a Monday).
+  const dowLabels = useMemo(() => {
+    const fmt = new Intl.DateTimeFormat(i18n.language, { weekday: "short" });
+    return Array.from({ length: 7 }, (_, i) => fmt.format(new Date(2024, 0, 1 + i)));
+  }, [i18n.language]);
 
   const todayIso = useMemo(() => toIso(new Date()), []);
 
@@ -125,19 +127,19 @@ export default function DateRangePicker({ start, end, onChange, maxDays = 14 }: 
   return (
     <div className="drp">
       <div className="drp-header">
-        <IconButton onClick={prevMonth} aria-label="Previous month" title="Previous month">
+        <IconButton onClick={prevMonth} aria-label={t("dateRange.prevMonth")} title={t("dateRange.prevMonth")}>
           <ChevronLeft size={16} />
         </IconButton>
         <span className="drp-month-label">
-          {MONTH_LABELS[viewMonth]} {viewYear}
+          {new Date(viewYear, viewMonth, 1).toLocaleDateString(i18n.language, { month: "long", year: "numeric" })}
         </span>
-        <IconButton onClick={nextMonth} aria-label="Next month" title="Next month">
+        <IconButton onClick={nextMonth} aria-label={t("dateRange.nextMonth")} title={t("dateRange.nextMonth")}>
           <ChevronRight size={16} />
         </IconButton>
       </div>
 
       <div className="drp-grid" role="grid">
-        {DOW_LABELS.map((dl) => (
+        {dowLabels.map((dl) => (
           <div key={dl} className="drp-dow">{dl}</div>
         ))}
         {cells.map((d) => (
@@ -154,8 +156,8 @@ export default function DateRangePicker({ start, end, onChange, maxDays = 14 }: 
 
       <div className="drp-hint">
         {pickingEnd
-          ? "Pick the end date — click before the start to extend backwards."
-          : "Click a date to start. Click again to set the end."}
+          ? t("dateRange.hintEnd")
+          : t("dateRange.hintStart")}
       </div>
     </div>
   );

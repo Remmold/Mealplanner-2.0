@@ -1,6 +1,13 @@
 import { supabase } from "./lib/supabase";
+import i18n from "./i18n";
 
 const BASE = "/api";
+
+// Active UI language as a backend locale ('en' | 'sv'), for endpoints that
+// return locale-aware recipe text (recipes, calendar meals, plans).
+function activeLocale(): string {
+  return i18n.language?.startsWith("sv") ? "sv" : "en";
+}
 
 // ------------------------------------------------------------------
 // Auth-injecting fetch wrapper. Every request to the backend carries the
@@ -118,13 +125,29 @@ export async function aggregateRecipe(
   return res.json();
 }
 
+// Per-ingredient icon images are generated lazily on first use and cached by
+// fdc_id; this asks the backend to generate any that are missing (best-effort,
+// fire-and-forget). Served at /api/ingredient-images/<fdc_id>.png.
+export async function ensureIngredientImages(fdcIds: number[]): Promise<void> {
+  const ids = Array.from(new Set(fdcIds)).filter((n) => Number.isFinite(n));
+  if (ids.length === 0) return;
+  try {
+    await authFetch(`/ingredient-images/ensure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fdc_ids: ids }),
+    });
+  } catch {
+    /* best-effort — images simply fall back to the category icon */
+  }
+}
+
 // --- Recipe CRUD ---
 
 export interface RecipeIngredient {
   fdc_id: number;
   quantity_g: number;
   ingredient_name: string | null;
-  from_pantry?: boolean;
 }
 
 export interface Recipe {
@@ -146,13 +169,13 @@ export async function regenerateRecipeImage(recipeId: string): Promise<void> {
 }
 
 export async function fetchRecipes(): Promise<Recipe[]> {
-  const res = await authFetch(`/recipes`);
+  const res = await authFetch(`/recipes?locale=${activeLocale()}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchRecipe(id: string): Promise<Recipe> {
-  const res = await authFetch(`/recipes/${id}`);
+  const res = await authFetch(`/recipes/${id}?locale=${activeLocale()}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -341,41 +364,7 @@ export interface ShoppingListCategory {
 
 export interface ShoppingList {
   categories: ShoppingListCategory[];
-  pantry_check: ShoppingListItem[];
   missing_recipes: string[];
-}
-
-// --- Household staples (pantry) ---
-
-export interface StapleEntry {
-  fdc_id: number;
-  name: string;
-  category: string;
-}
-
-export interface StaplesPayload {
-  items: StapleEntry[];
-  seeded_now: boolean;
-}
-
-export async function fetchStaples(): Promise<StaplesPayload> {
-  const res = await authFetch(`/staples`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
-}
-
-export async function addStaple(fdc_id: number): Promise<void> {
-  const res = await authFetch(`/staples`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fdc_id }),
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-}
-
-export async function removeStaple(fdc_id: number): Promise<void> {
-  const res = await authFetch(`/staples/${fdc_id}`, { method: "DELETE" });
-  if (!res.ok && res.status !== 204) throw new Error(`${res.status} ${res.statusText}`);
 }
 
 export async function generateShoppingList(
@@ -525,7 +514,7 @@ export interface MealEntry {
 }
 
 export async function fetchMeals(start: string, end: string): Promise<MealEntry[]> {
-  const qs = new URLSearchParams({ start, end }).toString();
+  const qs = new URLSearchParams({ start, end, locale: activeLocale() }).toString();
   const res = await authFetch(`/meals?${qs}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
@@ -537,7 +526,7 @@ export async function createMeal(input: {
   slot?: string | null;
   portions: number;
 }): Promise<MealEntry> {
-  const res = await authFetch(`/meals`, {
+  const res = await authFetch(`/meals?locale=${activeLocale()}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -550,7 +539,7 @@ export async function updateMeal(
   id: string,
   patch: { plan_date?: string; slot?: string | null; portions?: number },
 ): Promise<MealEntry> {
-  const res = await authFetch(`/meals/${id}`, {
+  const res = await authFetch(`/meals/${id}?locale=${activeLocale()}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -573,7 +562,13 @@ export async function mealsShoppingList(
     start, end, include_template: String(includeTemplate),
   }).toString();
   const res = await authFetch(`/meals/shopping-list?${qs}`, { method: "POST" });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // Surface the FastAPI `detail` (e.g. "No meals on the calendar in that
+    // range") instead of a bare status line, so the user knows what to fix.
+    let msg = `${res.status} ${res.statusText}`;
+    try { const body = await res.json(); if (body?.detail) msg = body.detail; } catch { /* keep status */ }
+    throw new Error(msg);
+  }
   return res.json();
 }
 
@@ -650,6 +645,8 @@ export interface GenerateMealPlanInput {
   // Day offsets (0 = start_date) flagged as "just one of us eating": sized for
   // one portion and filled leftover-first.
   solo_day_offsets?: number[];
+  // Active UI language ('en' | 'sv') so generated recipes come out in it.
+  locale?: string;
 }
 
 export interface CalendarConflict {
@@ -753,11 +750,12 @@ export async function regenerateMealPlan(
   flaggedEntryIds: string[],
   prompt: string,
   servings: number,
+  locale?: string,
 ): Promise<MealPlan> {
   const res = await authFetch(`/meal-plans/${planId}/regenerate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ flagged_entry_ids: flaggedEntryIds, prompt, servings }),
+    body: JSON.stringify({ flagged_entry_ids: flaggedEntryIds, prompt, servings, locale }),
   });
   if (!res.ok) {
     let detail: string = res.statusText;
@@ -820,7 +818,7 @@ export interface ResolveResponse {
 }
 
 export async function acceptPending(id: string): Promise<ResolveResponse> {
-  const res = await authFetch(`/chat/pending/${id}/accept`, { method: "POST" });
+  const res = await authFetch(`/chat/pending/${id}/accept?locale=${activeLocale()}`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
@@ -915,7 +913,7 @@ export async function sendChatMessage(id: string, content: string): Promise<Send
   const res = await authFetch(`/chat/sessions/${id}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, locale: activeLocale() }),
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { Home, Users } from "lucide-react";
 import { Button, Card, ErrorBanner, Field, Input, Select } from "../components/ui";
 import { createHousehold, joinHouseholdByToken } from "../lib/auth-api";
@@ -17,6 +18,7 @@ export default function CreateOrJoinHousehold({
   pendingInviteToken,
   onPendingTokenConsumed,
 }: Props) {
+  const { t } = useTranslation();
   const { refreshMe } = useAuth();
   const [mode, setMode] = useState<Mode>(pendingInviteToken ? "join" : "choose");
   const [name, setName] = useState("");
@@ -64,8 +66,8 @@ export default function CreateOrJoinHousehold({
   return (
     <div className="auth-shell">
       <div className="brand auth-brand">
-        <span className="brand-mark">Hearth</span>
-        <span className="brand-tag">your kitchen, planned</span>
+        <span className="brand-mark">Mealplanner</span>
+        <span className="brand-tag">{t("nav.brandTag")}</span>
       </div>
 
       <Card className="auth-card">
@@ -73,45 +75,50 @@ export default function CreateOrJoinHousehold({
 
         {mode === "choose" && (
           <>
-            <h2 className="text-center">Set up your household</h2>
-            <p className="muted text-center">Cook, plan, and shop together.</p>
+            <h2 className="text-center">{t("household.setupTitle")}</h2>
+            <p className="muted text-center">{t("household.setupSubtitle")}</p>
 
             <Button variant="primary" block onClick={() => setMode("create")}>
               <Home size={16} />
-              <span className="ml-2">Create a new household</span>
+              <span className="ml-2">{t("household.createOption")}</span>
             </Button>
             <Button variant="default" block onClick={() => setMode("join")}>
               <Users size={16} />
-              <span className="ml-2">Join with an invite link</span>
+              <span className="ml-2">{t("household.joinOption")}</span>
             </Button>
           </>
         )}
 
         {mode === "create" && (
           <form onSubmit={handleCreate}>
-            <h2>Create a household</h2>
+            <h2>{t("household.createTitle")}</h2>
             <Field className="mt-3">
-              <span>Household name</span>
+              <span>{t("household.nameLabel")}</span>
               <Input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="The Johansson kitchen"
+                placeholder={t("household.namePlaceholder")}
                 required
                 autoFocus
                 maxLength={120}
               />
             </Field>
             <Field className="mt-3">
-              <span>Language</span>
-              <Select value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
-                <option value="en">English</option>
-                <option value="sv">Svenska</option>
-              </Select>
+              <span>{t("nav.language")}</span>
+              <Select
+                value={locale}
+                onChange={(v) => setLocale(v as Locale)}
+                options={[
+                  { value: "en", label: "English" },
+                  { value: "sv", label: "Svenska" },
+                ]}
+                aria-label={t("nav.language")}
+              />
             </Field>
             <div className="mt-4 auth-actions">
               <Button variant="ghost" onClick={() => setMode("choose")} disabled={busy}>
-                Back
+                {t("common.back")}
               </Button>
               <Button
                 type="submit"
@@ -119,7 +126,7 @@ export default function CreateOrJoinHousehold({
                 disabled={busy || !name.trim()}
                 className="flex-1"
               >
-                {busy ? "Creating..." : "Create household"}
+                {busy ? t("household.creating") : t("household.createSubmit")}
               </Button>
             </div>
           </form>
@@ -127,28 +134,33 @@ export default function CreateOrJoinHousehold({
 
         {mode === "join" && (
           <form onSubmit={handleJoin}>
-            <h2>Join a household</h2>
+            <h2>{t("household.joinTitle")}</h2>
             <Field className="mt-3">
-              <span>Invite token</span>
+              <span>{t("household.tokenLabel")}</span>
               <Input
                 type="text"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
-                placeholder="From the invite link"
+                placeholder={t("household.tokenPlaceholder")}
                 required
                 autoFocus
               />
             </Field>
             <Field className="mt-3">
-              <span>Language</span>
-              <Select value={locale} onChange={(e) => setLocale(e.target.value as Locale)}>
-                <option value="en">English</option>
-                <option value="sv">Svenska</option>
-              </Select>
+              <span>{t("nav.language")}</span>
+              <Select
+                value={locale}
+                onChange={(v) => setLocale(v as Locale)}
+                options={[
+                  { value: "en", label: "English" },
+                  { value: "sv", label: "Svenska" },
+                ]}
+                aria-label={t("nav.language")}
+              />
             </Field>
             <div className="mt-4 auth-actions">
               <Button variant="ghost" onClick={() => setMode("choose")} disabled={busy}>
-                Back
+                {t("common.back")}
               </Button>
               <Button
                 type="submit"
@@ -156,7 +168,7 @@ export default function CreateOrJoinHousehold({
                 disabled={busy || !token.trim()}
                 className="flex-1"
               >
-                {busy ? "Joining..." : "Join household"}
+                {busy ? t("household.joining") : t("household.joinSubmit")}
               </Button>
             </div>
           </form>

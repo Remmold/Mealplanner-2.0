@@ -1,5 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
-import { ArrowLeft, ChefHat, Check, Plus, RefreshCw, Sparkles, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { useEnumLabels } from "../i18n/enums";
+import {
+  Apple, ArrowLeft, Beef, Carrot, Check, ChefHat, Droplet, Drumstick, Fish,
+  Milk, Minus, Nut, Pencil, Plus, RefreshCw, Soup, Sparkles, UtensilsCrossed, Wheat, X,
+} from "lucide-react";
 import CookMode from "./CookMode";
 import {
   fetchIngredientCategories,
@@ -15,7 +20,7 @@ import {
   onDataChanged,
   regenerateRecipeImage,
   seedStarterRecipes,
-  fetchStaples,
+  ensureIngredientImages,
   type Ingredient,
   type Recipe,
   type RecipeNutrition,
@@ -23,12 +28,39 @@ import {
 } from "../api";
 import {
   Button, Card, Divider, Empty, ErrorBanner, Field, IconButton,
-  Input, List, ListRow, Select, Textarea,
+  Input, List, ListRow, Pill, Select, Textarea,
 } from "./ui";
 
 interface RecipeItem {
   ingredient: Ingredient;
   quantity_g: number;
+}
+
+// Resolve a recipe ingredient to a full Ingredient. Curated-catalogue match wins;
+// otherwise keep it as a minimal entry built from the name the API already sent.
+// Without this, USDA-only ingredients (e.g. chicken breast) silently vanished from
+// the recipe — and a later save would have persisted the truncated list.
+function resolveIngredient(
+  catalog: Ingredient[],
+  fdc_id: number,
+  fallbackName: string | null | undefined,
+): Ingredient {
+  const hit = catalog.find((i) => i.fdc_id === fdc_id);
+  if (hit) return hit;
+  return {
+    fdc_id,
+    name: fallbackName || `#${fdc_id}`,
+    food_group: "",
+    subcategory: null,
+    energy_kcal_100g: null,
+    proteins_100g: null,
+    carbohydrates_100g: null,
+    sugars_100g: null,
+    fat_100g: null,
+    saturated_fat_100g: null,
+    fiber_100g: null,
+    salt_100g: null,
+  };
 }
 
 interface RecipeBuilderProps {
@@ -37,17 +69,21 @@ interface RecipeBuilderProps {
 }
 
 export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: RecipeBuilderProps = {}) {
+  const { t } = useTranslation();
+  const el = useEnumLabels();
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [activeRecipeId, setActiveRecipeId] = useState<string | null>(null);
 
-  const [recipeName, setRecipeName] = useState("Untitled Recipe");
+  const [recipeName, setRecipeName] = useState(t("recipe.untitledRecipe"));
   const [servings, setServings] = useState(4);
+  // Recipe-view-only "scale to N people" — display amounts ×(viewServings/servings).
+  // Not saved; the stored recipe stays at its base servings.
+  const [viewServings, setViewServings] = useState(4);
   const [mealType, setMealType] = useState<"breakfast" | "lunch" | "dinner" | "">("");
   const [imagePath, setImagePath] = useState<string | null>(null);
   const [imageBust, setImageBust] = useState(0);    // force <img> reload after regenerate
   const [regenerating, setRegenerating] = useState(false);
   const [items, setItems] = useState<RecipeItem[]>([]);
-  const [stapleIds, setStapleIds] = useState<Set<number>>(new Set());
   const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -70,10 +106,10 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
 
   const [cookOpen, setCookOpen] = useState(false);
 
-  // The editor is hidden until the user explicitly opens it (via + New recipe,
-  // clicking a saved-recipe chip, or AI generate). Default empty state shows
-  // only the list + the AI prompt — no phantom "Untitled Recipe" sitting there.
-  const [editorOpen, setEditorOpen] = useState(false);
+  // Three surfaces: the cookbook "list", a read-only "view" of one recipe
+  // (opened by clicking a card), and the "edit" form (opened by + Create, the
+  // view's Edit button, or a successful AI generate). Default is the list.
+  const [mode, setMode] = useState<"list" | "view" | "edit">("list");
   // Cookbook tab filter — "all" shows every recipe; otherwise a chapter key.
   const [activeChapter, setActiveChapter] = useState<string>("all");
   const [seeding, setSeeding] = useState(false);
@@ -85,9 +121,9 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     try {
       const created = await seedStarterRecipes(12);
       if (created.length === 0) {
-        setSeedMessage("No new starters added (you may already have them, or the corpus isn't built yet).");
+        setSeedMessage(t("recipe.seedNone"));
       } else {
-        setSeedMessage(`Added ${created.length} starter recipes.`);
+        setSeedMessage(t("recipe.seedAdded", { count: created.length }));
         const next = await fetchRecipes();
         setRecipes(next);
       }
@@ -121,9 +157,6 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     fetchIngredientCategories().then(setCategories).catch(() => {});
     fetchIngredients().then(setAllIngredients).catch((e) => setError(String(e)));
     loadRecipes();
-    fetchStaples()
-      .then((s) => setStapleIds(new Set(s.items.map((i) => i.fdc_id))))
-      .catch(() => {});
   }, []);
 
   // Auto-select a recipe when the parent passes initialRecipeId (navigation from chat).
@@ -131,7 +164,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     if (!initialRecipeId) return;
     const hit = recipes.find((r) => r.id === initialRecipeId);
     if (hit) {
-      loadRecipeIntoEditor(hit);
+      openRecipe(hit);
       onInitialConsumed?.();
     } else {
       // Not in our list yet (fresh from chat). Refresh once.
@@ -185,45 +218,46 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     setCategories(await fetchIngredientCategories());
   }
 
-  const loadRecipeIntoEditor = useCallback((recipe: Recipe) => {
+  // Open a saved recipe in the read-only view (clicking a card / chat deep link).
+  const openRecipe = useCallback((recipe: Recipe) => {
     setActiveRecipeId(recipe.id);
     setRecipeName(recipe.name);
-    const loaded: RecipeItem[] = [];
-    for (const ri of recipe.ingredients) {
-      const ing = allIngredients.find((i) => i.fdc_id === ri.fdc_id);
-      if (ing) loaded.push({ ingredient: ing, quantity_g: ri.quantity_g });
-    }
+    const loaded: RecipeItem[] = recipe.ingredients.map((ri) => ({
+      ingredient: resolveIngredient(allIngredients, ri.fdc_id, ri.ingredient_name),
+      quantity_g: ri.quantity_g,
+    }));
     setItems(loaded);
     setInstructions(recipe.instructions ?? []);
     setServings(recipe.servings ?? 4);
+    setViewServings(recipe.servings ?? 4);
     setMealType(recipe.meal_type ?? "");
     setImagePath(recipe.image_path ?? null);
     setImageBust(Date.now());
     setDirty(false);
-    // Snap to top so the user sees the recipe immediately — no scrolling
-    // down past the cookbook to find the just-opened editor.
+    // Lazily generate any missing ingredient icons for this recipe.
+    void ensureIngredientImages(recipe.ingredients.map((ri) => ri.fdc_id));
     if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
-    setEditorOpen(true);
+    setMode("view");
   }, [allIngredients]);
 
   function newRecipe() {
     setActiveRecipeId(null);
-    setRecipeName("Untitled Recipe");
+    setRecipeName(t("recipe.untitledRecipe"));
     setItems([]);
     setInstructions([]);
     setServings(4);
     setMealType("");
     setImagePath(null);
     setDirty(false);
-    setEditorOpen(true);
+    setMode("edit");
     if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function closeEditor() {
-    if (dirty && !confirm("You have unsaved changes. Discard them?")) return;
-    setEditorOpen(false);
+  function backToList() {
+    if (mode === "edit" && dirty && !confirm(t("recipe.discardConfirm"))) return;
+    setMode("list");
     setActiveRecipeId(null);
-    setRecipeName("Untitled Recipe");
+    setRecipeName(t("recipe.untitledRecipe"));
     setItems([]);
     setInstructions([]);
     setServings(4);
@@ -253,14 +287,13 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
       setActiveRecipeId(null);
       setRecipeName(gen.name);
       setInstructions(gen.instructions);
-      const loaded: RecipeItem[] = [];
-      for (const gi of gen.ingredients) {
-        const ing = allIngredients.find((i) => i.fdc_id === gi.fdc_id);
-        if (ing) loaded.push({ ingredient: ing, quantity_g: gi.quantity_g });
-      }
+      const loaded: RecipeItem[] = gen.ingredients.map((gi) => ({
+        ingredient: resolveIngredient(allIngredients, gi.fdc_id, gi.name),
+        quantity_g: gi.quantity_g,
+      }));
       setItems(loaded);
       setDirty(true);
-      setEditorOpen(true);
+      setMode("edit");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -280,6 +313,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
         setActiveRecipeId(created.id);
       }
       setDirty(false);
+      void ensureIngredientImages(items.map((i) => i.ingredient.fdc_id));
       await loadRecipes();
     } catch (e) {
       setError(String(e));
@@ -347,15 +381,15 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
   // -----------------------------------------------------------------
 
   const CHAPTERS: { key: string; label: string; re: RegExp }[] = useMemo(() => [
-    { key: "chicken",    label: "Chicken",     re: /\b(chicken|poultry)\b/ },
-    { key: "beef",       label: "Beef",        re: /\b(beef|steak|brisket|chuck)\b/ },
-    { key: "pork",       label: "Pork",        re: /\b(pork|bacon|ham|sausage|chorizo|pancetta|lardon|prosciutto|frikadel)\b/ },
-    { key: "lamb",       label: "Lamb",        re: /\b(lamb|mutton)\b/ },
-    { key: "fish",       label: "Fish",        re: /\b(salmon|cod|tuna|halibut|trout|tilapia|sea bass|gravlax|mackerel|fish)\b/ },
-    { key: "seafood",    label: "Seafood",     re: /\b(shrimp|prawn|scallop|crab|lobster|squid|calamari|mussel|clam|oyster)\b/ },
-    { key: "pasta",      label: "Pasta",       re: /\b(pasta|spaghetti|linguine|fettuccine|penne|risotto|gnocchi|orzo|ravioli|lasagna|noodle)\b/ },
-    { key: "vegetarian", label: "Vegetarian",  re: /(.*)/ },  // catch-all
-  ], []);
+    { key: "chicken",    label: t("recipe.chapters.chicken"),    re: /\b(chicken|poultry)\b/ },
+    { key: "beef",       label: t("recipe.chapters.beef"),       re: /\b(beef|steak|brisket|chuck)\b/ },
+    { key: "pork",       label: t("recipe.chapters.pork"),       re: /\b(pork|bacon|ham|sausage|chorizo|pancetta|lardon|prosciutto|frikadel)\b/ },
+    { key: "lamb",       label: t("recipe.chapters.lamb"),       re: /\b(lamb|mutton)\b/ },
+    { key: "fish",       label: t("recipe.chapters.fish"),       re: /\b(salmon|cod|tuna|halibut|trout|tilapia|sea bass|gravlax|mackerel|fish)\b/ },
+    { key: "seafood",    label: t("recipe.chapters.seafood"),    re: /\b(shrimp|prawn|scallop|crab|lobster|squid|calamari|mussel|clam|oyster)\b/ },
+    { key: "pasta",      label: t("recipe.chapters.pasta"),      re: /\b(pasta|spaghetti|linguine|fettuccine|penne|risotto|gnocchi|orzo|ravioli|lasagna|noodle)\b/ },
+    { key: "vegetarian", label: t("recipe.chapters.vegetarian"), re: /(.*)/ },  // catch-all
+  ], [t]);
 
   function chapterFor(r: Recipe): string {
     const haystack = (
@@ -384,30 +418,30 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     <div className="col gap-5">
       <ErrorBanner>{error}</ErrorBanner>
 
-      {!editorOpen && (
+      {mode === "list" && (
         <div className="hero">
-          <h1>Build a recipe</h1>
-          <p>Pick ingredients from your pantry, or describe a dish and let the kitchen think it up for you.</p>
+          <h1>{t("recipe.heroTitle")}</h1>
+          <p>{t("recipe.heroIntro")}</p>
         </div>
       )}
 
-      {/* Saved recipes — hidden when the editor takes over */}
-      {!editorOpen && (
+      {/* Saved recipes — the browse list */}
+      {mode === "list" && (
       <div className="col gap-2">
         <div className="row gap-2 items-baseline">
           <h3 className="muted small overline m-0 flex-1">
-            Your cookbook {recipes.length > 0 && <span className="ml-1">· {recipes.length}</span>}
+            {t("recipe.cookbookTitle")} {recipes.length > 0 && <span className="ml-1">· {recipes.length}</span>}
           </h3>
           <Button onClick={newRecipe} variant="primary" size="sm">
-            <Plus size={14} /> New recipe
+            <Plus size={14} /> {t("recipe.create")}
           </Button>
         </div>
 
         {recipes.length === 0 ? (
           <Card variant="soft" className="text-center">
-            <p className="muted">No saved recipes yet.</p>
+            <p className="muted">{t("recipe.noSavedRecipes")}</p>
             <Button variant="primary" onClick={handleSeedStarters} disabled={seeding}>
-              <Sparkles size={14} /> {seeding ? "Importing…" : "Import 12 starter recipes"}
+              <Sparkles size={14} /> {seeding ? t("recipe.importing") : t("recipe.importStarters")}
             </Button>
             {seedMessage && <p className="small muted mt-2">{seedMessage}</p>}
           </Card>
@@ -426,7 +460,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                   onClick={() => setActiveChapter("all")}
                   className={"cookbook-tab" + (activeChapter === "all" ? " cookbook-tab-active" : "")}
                 >
-                  <span className="cookbook-tab-label">All</span>
+                  <span className="cookbook-tab-label">{t("recipe.chapterAll")}</span>
                   <span className="cookbook-tab-count">{recipes.length}</span>
                 </button>
                 {CHAPTERS.map((c) => {
@@ -451,12 +485,12 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
               {/* Cards */}
               <div className="cookbook-grid">
                 {visibleList.map((r) => {
-                  const toBuy = r.ingredients.filter((i) => !i.from_pantry).length;
+                  const toBuy = r.ingredients.length;
                   return (
                     <button
                       key={r.id}
                       type="button"
-                      onClick={() => loadRecipeIntoEditor(r)}
+                      onClick={() => openRecipe(r)}
                       className={"cookbook-card" + (r.id === activeRecipeId ? " cookbook-card-active" : "")}
                     >
                       <div className="cookbook-card-img">
@@ -470,7 +504,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                         <IconButton
                           className="cookbook-card-remove"
                           onClick={(e) => { e.stopPropagation(); handleDelete(r.id); }}
-                          aria-label="Delete recipe"
+                          aria-label={t("recipe.deleteRecipe")}
                         >
                           <X size={12} />
                         </IconButton>
@@ -479,11 +513,11 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                         <h4 className="cookbook-card-title">{r.name}</h4>
                         <div className="cookbook-card-meta">
                           {r.meal_type && (
-                            <span className="cookbook-card-pill pill-match">{r.meal_type}</span>
+                            <span className="cookbook-card-pill pill-match">{el.slot(r.meal_type)}</span>
                           )}
-                          <span>{toBuy} to buy</span>
+                          <span>{t("recipe.toBuyCount", { count: toBuy })}</span>
                           <span>·</span>
-                          <span>{r.instructions.length} steps</span>
+                          <span>{t("recipe.stepCount", { count: r.instructions.length })}</span>
                         </div>
                       </div>
                     </button>
@@ -496,42 +530,124 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
       </div>
       )}
 
-      {/* AI generation — hidden when the editor is taking over */}
-      {!editorOpen && (
+      {/* Read-only recipe view — opens when a card is clicked. Editing is one
+          tap away via the Edit button; nothing is mutable here. */}
+      {mode === "view" && (
+      <>
+      <div className="row items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={backToList}>
+          <ArrowLeft size={14} />
+          <span className="ml-1">{t("recipe.backToRecipes")}</span>
+        </Button>
+      </div>
+      <Card>
+        {imagePath && (
+          <div className="recipe-hero">
+            <img
+              src={`/api/recipe-images/${imagePath}?v=${imageBust}`}
+              alt={recipeName}
+              className="recipe-hero-img"
+            />
+          </div>
+        )}
+        <div className="row gap-3 wrap items-center">
+          <h2 className="m-0 flex-1">{recipeName}</h2>
+          {mealType && <Pill>{el.slot(mealType)}</Pill>}
+          <div className="row gap-2 items-center">
+            <IconButton
+              onClick={() => setViewServings((v) => Math.max(1, v - 1))}
+              title={t("cook.fewerServings")}
+              aria-label={t("cook.fewerServings")}
+            >
+              <Minus size={14} />
+            </IconButton>
+            <span className="small fw-600">{t("recipe.servingsCount", { count: viewServings })}</span>
+            <IconButton
+              onClick={() => setViewServings((v) => Math.min(99, v + 1))}
+              title={t("cook.moreServings")}
+              aria-label={t("cook.moreServings")}
+            >
+              <Plus size={14} />
+            </IconButton>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => setMode("edit")}>
+            <Pencil size={14} /><span className="ml-1">{t("common.edit")}</span>
+          </Button>
+          <Button
+            variant="accent"
+            onClick={() => setCookOpen(true)}
+            disabled={items.length === 0 && instructions.length === 0}
+            title={t("recipe.startCookingTitle")}
+          >
+            <ChefHat size={14} /><span className="ml-1">{t("recipe.startCooking")}</span>
+          </Button>
+        </div>
+
+        <Divider />
+
+        <div className="row gap-5 wrap items-start">
+          <div className="flex-1 min-w-320">
+            <h3>{t("recipe.ingredients")} <span className="muted small">({items.length})</span></h3>
+            {items.length === 0 && <Empty>{t("recipe.pickIngredients")}</Empty>}
+            <div className="col-2">
+              {items.map((item) => (
+                <div key={item.ingredient.fdc_id} className="row gap-2 items-center inset">
+                  <IngredientThumb fdcId={item.ingredient.fdc_id} group={item.ingredient.food_group} />
+                  <span className="flex-1 fw-500">{el.ingredient(item.ingredient.fdc_id, item.ingredient.name)}</span>
+                  <span className="small muted">
+                    {Math.max(1, Math.round(item.quantity_g * viewServings / Math.max(1, servings)))} {t("recipe.grams")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex-1 min-w-320">
+            <h3>{t("recipe.instructions")}</h3>
+            {instructions.length === 0 && <Empty>{t("recipe.noStepsYet")}</Empty>}
+            <ol className="recipe-steps">
+              {instructions.map((step, i) => <li key={i}>{step}</li>)}
+            </ol>
+          </div>
+        </div>
+      </Card>
+      </>
+      )}
+
+      {/* Editor / create view: name, ingredients, instructions, save. Opens on
+          "+ Create", a recipe-card click, or a successful AI generate. The AI
+          prompt lives here (only while creating a new recipe), so the browse
+          view stays a clean list. backToList() returns to the list. */}
+      {mode === "edit" && (
+      <>
+      <div className="row items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={backToList}>
+          <ArrowLeft size={14} />
+          <span className="ml-1">{t("recipe.backToRecipes")}</span>
+        </Button>
+      </div>
+      {!activeRecipeId && (
         <Card variant="warm">
           <div className="row gap-3">
             <Sparkles size={22} />
             <div className="flex-1 col-2">
-              <h4 className="m-0">Generate a recipe</h4>
-              <span className="small muted">Try "Thai red curry for 4" or "quick weeknight pasta with what's in season"</span>
+              <h4 className="m-0">{t("recipe.generateTitle")}</h4>
+              <span className="small muted">{t("recipe.generateHint")}</span>
             </div>
           </div>
           <div className="row gap-2 mt-3">
             <Input
-              placeholder="What are we cooking?"
+              placeholder={t("recipe.generatePlaceholder")}
               value={genPrompt}
               onChange={(e) => setGenPrompt(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !generating && handleGenerate()}
               disabled={generating}
             />
             <Button onClick={handleGenerate} disabled={generating || !genPrompt.trim()} variant="accent">
-              {generating ? "Thinking..." : "Generate"}
+              {generating ? t("recipe.thinking") : t("common.generate")}
             </Button>
           </div>
         </Card>
       )}
-
-      {/* Editor: name, ingredients, instructions, save.
-          Hidden by default — opens on "+ New recipe", chip click, or
-          successful AI generate. closeEditor() collapses it back. */}
-      {editorOpen && (
-      <>
-      <div className="row items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={closeEditor}>
-          <ArrowLeft size={14} />
-          <span className="ml-1">Back to recipes</span>
-        </Button>
-      </div>
       <Card>
         {activeRecipeId && (
           <div className="recipe-hero">
@@ -543,7 +659,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
               />
             ) : (
               <div className="recipe-hero-placeholder">
-                <span className="tiny muted">Generating image…</span>
+                <span className="tiny muted">{t("recipe.generatingImage")}</span>
               </div>
             )}
             <Button
@@ -551,9 +667,9 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
               disabled={regenerating}
               size="xs"
               className="recipe-hero-regen"
-              title="Generate a new image"
+              title={t("recipe.regenerateImageTitle")}
             >
-              {regenerating ? "…" : <><RefreshCw size={12} /> Regenerate image</>}
+              {regenerating ? "…" : <><RefreshCw size={12} /> {t("recipe.regenerateImage")}</>}
             </Button>
           </div>
         )}
@@ -565,7 +681,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
             onChange={(e) => { setRecipeName(e.target.value); markDirty(); }}
           />
           <Field>
-            Servings
+            {t("recipe.servings")}
             <Input
               type="number"
               min={1}
@@ -575,28 +691,29 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
             />
           </Field>
           <Field>
-            Meal type
+            {t("recipe.mealType")}
             <Select
               value={mealType}
-              onChange={(e) => { setMealType(e.target.value as typeof mealType); markDirty(); }}
-            >
-              <option value="">— any —</option>
-              <option value="breakfast">Breakfast</option>
-              <option value="lunch">Lunch</option>
-              <option value="dinner">Dinner</option>
-            </Select>
+              onChange={(v) => { setMealType(v as typeof mealType); markDirty(); }}
+              options={[
+                { value: "", label: t("recipe.mealTypeAny") },
+                { value: "breakfast", label: el.slot("breakfast") },
+                { value: "lunch", label: el.slot("lunch") },
+                { value: "dinner", label: el.slot("dinner") },
+              ]}
+            />
           </Field>
           <Button onClick={saveRecipe} disabled={saving || (!dirty && activeRecipeId !== null)} variant="primary">
-            {saving ? "Saving..." : activeRecipeId ? "Save" : "Create"}
+            {saving ? t("common.saving") : activeRecipeId ? t("common.save") : t("recipe.create")}
           </Button>
           <Button
             onClick={() => setCookOpen(true)}
             disabled={items.length === 0 && instructions.length === 0}
             variant="accent"
-            title="Open step-by-step cook mode"
+            title={t("recipe.startCookingTitle")}
           >
             <ChefHat size={14} />
-            <span className="ml-1">Start cooking</span>
+            <span className="ml-1">{t("recipe.startCooking")}</span>
           </Button>
         </div>
 
@@ -606,9 +723,9 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
           {/* Left: pantry picker */}
           <div className="flex-1 min-w-320">
             <div className="row between mb-2">
-              <h3 className="m-0">Pantry</h3>
+              <h3 className="m-0">{t("recipe.pantry")}</h3>
               <Button onClick={() => setUsdaOpen(!usdaOpen)} variant="ghost" size="sm">
-                {usdaOpen ? "Close USDA" : <><Plus size={14} /> Find more</>}
+                {usdaOpen ? t("recipe.closeUsda") : <><Plus size={14} /> {t("recipe.findMore")}</>}
               </Button>
             </div>
 
@@ -616,29 +733,29 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
               <Card variant="soft" className="mb-3">
                 <div className="row gap-2 mb-2">
                   <Input
-                    placeholder="Search USDA — cod, feta, tahini..."
+                    placeholder={t("recipe.usdaPlaceholder")}
                     value={usdaQuery}
                     onChange={(e) => setUsdaQuery(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleUsdaSearch()}
                   />
                   <Button onClick={handleUsdaSearch} disabled={usdaLoading} size="sm">
-                    {usdaLoading ? "..." : "Search"}
+                    {usdaLoading ? "..." : t("common.search")}
                   </Button>
                 </div>
                 <div className="scroll-y maxh-360">
                   {usdaResults.map((r) => (
                     <ListRow key={r.fdc_id}>
                       <div className="flex-1">
-                        <div>{r.name}</div>
+                        <div>{el.ingredient(r.fdc_id, r.name)}</div>
                         <div className="tiny muted">→ {r.mapped_category}{r.food_group ? ` · ${r.food_group}` : ""}</div>
                       </div>
                       <Button onClick={() => promoteToPantry(r)} disabled={r.in_pantry} size="xs">
-                        {r.in_pantry ? <><Check size={12} /> In pantry</> : <><Plus size={12} /> Add</>}
+                        {r.in_pantry ? <><Check size={12} /> {t("recipe.inPantry")}</> : <><Plus size={12} /> {t("common.add")}</>}
                       </Button>
                     </ListRow>
                   ))}
                   {usdaResults.length === 0 && usdaQuery && !usdaLoading && (
-                    <p className="muted small mt-2">No results — press Search.</p>
+                    <p className="muted small mt-2">{t("recipe.usdaNoResults")}</p>
                   )}
                 </div>
               </Card>
@@ -648,14 +765,15 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
               <Select
                 className="w-auto"
                 value={selectedCat}
-                onChange={(e) => setSelectedCat(e.target.value)}
-              >
-                <option value="">All categories</option>
-                {categories.map((c) => <option key={c} value={c}>{c}</option>)}
-              </Select>
+                onChange={setSelectedCat}
+                options={[
+                  { value: "", label: t("recipe.allCategories") },
+                  ...categories.map((c) => ({ value: c, label: c })),
+                ]}
+              />
               <Input
                 className="flex-1"
-                placeholder="Filter by name..."
+                placeholder={t("recipe.filterByName")}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -667,88 +785,58 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                 return (
                   <ListRow key={ing.fdc_id} disabled={added}>
                     <div className="flex-1">
-                      <div className="fw-500">{ing.name}</div>
-                      <div className="tiny muted">{ing.energy_kcal_100g ?? "?"} kcal · {ing.proteins_100g ?? "?"}g protein /100g</div>
+                      <div className="fw-500">{el.ingredient(ing.fdc_id, ing.name)}</div>
+                      <div className="tiny muted">{t("recipe.perHundredGram", { kcal: ing.energy_kcal_100g ?? "?", protein: ing.proteins_100g ?? "?" })}</div>
                     </div>
                     <Button onClick={() => addItem(ing)} disabled={added} size="xs">
-                      {added ? "Added" : <Plus size={14} />}
+                      {added ? t("recipe.added") : <Plus size={14} />}
                     </Button>
                   </ListRow>
                 );
               })}
-              {filtered.length === 0 && <Empty>No ingredients match.</Empty>}
+              {filtered.length === 0 && <Empty>{t("recipe.noIngredientsMatch")}</Empty>}
             </List>
           </div>
 
-          {/* Right: current recipe — split into "to buy" vs "from pantry" */}
+          {/* Right: current recipe — the full ingredient list */}
           <div className="flex-1 min-w-320">
-            {(() => {
-              const toBuy = items.filter((it) => !stapleIds.has(it.ingredient.fdc_id));
-              const fromPantry = items.filter((it) => stapleIds.has(it.ingredient.fdc_id));
-              return (
-                <>
-                  <h3>Ingredients <span className="muted small">({items.length})</span></h3>
-                  {items.length === 0 && (
-                    <Empty>Pick ingredients from your pantry.</Empty>
-                  )}
-                  <div className="col-2">
-                    {toBuy.map((item) => (
-                      <div key={item.ingredient.fdc_id} className="row gap-2 inset">
-                        <div className="flex-1 fw-500">{item.ingredient.name}</div>
-                        <Input
-                          type="number" numeric
-                          value={item.quantity_g}
-                          onChange={(e) => updateQuantity(item.ingredient.fdc_id, Number(e.target.value) || 0)}
-                          min={0}
-                        />
-                        <span className="small muted">g</span>
-                        <IconButton onClick={() => removeItem(item.ingredient.fdc_id)} aria-label="Remove">
-                          <X size={14} />
-                        </IconButton>
-                      </div>
-                    ))}
-                  </div>
-
-                  {fromPantry.length > 0 && (
-                    <details className="mt-4 pantry-glance">
-                      <summary>
-                        <span className="overline muted">Already in your pantry</span>{" "}
-                        <span className="small muted">· {fromPantry.length}</span>
-                      </summary>
-                      <div className="row wrap gap-2 mt-2">
-                        {fromPantry.map((item) => (
-                          <span
-                            key={item.ingredient.fdc_id}
-                            className="pantry-glance-pill"
-                            title={`${item.quantity_g} g · click to remove`}
-                            onClick={() => removeItem(item.ingredient.fdc_id)}
-                          >
-                            {item.ingredient.name}
-                            <span className="tiny muted ml-1">{item.quantity_g}g</span>
-                          </span>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-                </>
-              );
-            })()}
+            <h3>{t("recipe.ingredients")} <span className="muted small">({items.length})</span></h3>
+            {items.length === 0 && (
+              <Empty>{t("recipe.pickIngredients")}</Empty>
+            )}
+            <div className="col-2">
+              {items.map((item) => (
+                <div key={item.ingredient.fdc_id} className="row gap-2 inset">
+                  <div className="flex-1 fw-500">{el.ingredient(item.ingredient.fdc_id, item.ingredient.name)}</div>
+                  <Input
+                    type="number" numeric
+                    value={item.quantity_g}
+                    onChange={(e) => updateQuantity(item.ingredient.fdc_id, Number(e.target.value) || 0)}
+                    min={0}
+                  />
+                  <span className="small muted">{t("recipe.grams")}</span>
+                  <IconButton onClick={() => removeItem(item.ingredient.fdc_id)} aria-label={t("common.remove")}>
+                    <X size={14} />
+                  </IconButton>
+                </div>
+              ))}
+            </div>
 
             {nutrition && (
               <Card variant="accent" className="mt-4">
-                <h4>Nutrition</h4>
+                <h4>{t("recipe.nutrition")}</h4>
                 <table className="table">
                   <tbody>
                     {[
-                      ["Weight", nutrition.total_weight_g, "g"],
-                      ["Energy", nutrition.total_energy_kcal, "kcal"],
-                      ["Protein", nutrition.total_proteins_g, "g"],
-                      ["Carbs", nutrition.total_carbohydrates_g, "g"],
-                      ["Sugars", nutrition.total_sugars_g, "g"],
-                      ["Fat", nutrition.total_fat_g, "g"],
-                      ["Saturated Fat", nutrition.total_saturated_fat_g, "g"],
-                      ["Fiber", nutrition.total_fiber_g, "g"],
-                      ["Salt", nutrition.total_salt_g, "g"],
+                      [t("recipe.nutritionWeight"), nutrition.total_weight_g, "g"],
+                      [t("recipe.nutritionEnergy"), nutrition.total_energy_kcal, "kcal"],
+                      [t("recipe.nutritionProtein"), nutrition.total_proteins_g, "g"],
+                      [t("recipe.nutritionCarbs"), nutrition.total_carbohydrates_g, "g"],
+                      [t("recipe.nutritionSugars"), nutrition.total_sugars_g, "g"],
+                      [t("recipe.nutritionFat"), nutrition.total_fat_g, "g"],
+                      [t("recipe.nutritionSaturatedFat"), nutrition.total_saturated_fat_g, "g"],
+                      [t("recipe.nutritionFiber"), nutrition.total_fiber_g, "g"],
+                      [t("recipe.nutritionSalt"), nutrition.total_salt_g, "g"],
                     ].map(([label, val, unit]) => (
                       <tr key={String(label)}>
                         <td>{label}</td>
@@ -759,7 +847,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                 </table>
                 {nutrition.items_missing.length > 0 && (
                   <p className="small mt-2 text-warm">
-                    Missing data for some items.
+                    {t("recipe.nutritionMissing")}
                   </p>
                 )}
               </Card>
@@ -771,16 +859,16 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
         <Divider />
         <div className="col-2">
           <div className="row between">
-            <h3 className="m-0">Instructions</h3>
+            <h3 className="m-0">{t("recipe.instructions")}</h3>
             <Button
               onClick={() => { setInstructions((prev) => [...prev, ""]); markDirty(); }}
               size="sm"
             >
-              <Plus size={14} /> Step
+              <Plus size={14} /> {t("recipe.step")}
             </Button>
           </div>
           {instructions.length === 0 && (
-            <Empty>No steps yet — add one or generate a recipe.</Empty>
+            <Empty>{t("recipe.noStepsYet")}</Empty>
           )}
           <ol className="col-2 m-0 pl-24">
             {instructions.map((step, i) => (
@@ -795,7 +883,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                 />
                 <IconButton
                   onClick={() => { setInstructions((prev) => prev.filter((_, j) => j !== i)); markDirty(); }}
-                  aria-label="Remove step"
+                  aria-label={t("recipe.removeStep")}
                 >
                   <X size={14} />
                 </IconButton>
@@ -838,6 +926,44 @@ function AutoGrowTextarea({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       rows={1}
+    />
+  );
+}
+
+/** Small category icon shown beside each ingredient in the read-only view.
+    USDA gives no per-ingredient photos, so we map the food group to a lucide
+    food icon (raw value falls through to a generic utensils icon). */
+function IngredientIcon({ group }: { group: string | null }) {
+  const g = (group ?? "").toLowerCase();
+  const has = (...keys: string[]) => keys.some((k) => g.includes(k));
+  let Icon = UtensilsCrossed;
+  if (has("dairy", "egg", "milk", "cheese", "yogurt", "cream")) Icon = Milk;
+  else if (has("poultry", "chicken", "turkey")) Icon = Drumstick;
+  else if (has("beef", "pork", "lamb", "veal", "sausage", "meat")) Icon = Beef;
+  else if (has("fish", "shellfish", "seafood", "finfish")) Icon = Fish;
+  else if (has("veget")) Icon = Carrot;
+  else if (has("fruit")) Icon = Apple;
+  else if (has("cereal", "grain", "pasta", "bread", "baked", "rice", "flour")) Icon = Wheat;
+  else if (has("legume", "nut", "bean", "seed")) Icon = Nut;
+  else if (has("fat", "oil")) Icon = Droplet;
+  else if (has("soup", "sauce", "gravy")) Icon = Soup;
+  return <Icon size={18} className="ing-icon" />;
+}
+
+/** Generated ingredient thumbnail (cached by fdc_id); falls back to the
+    category icon until/unless an image exists. */
+function IngredientThumb({ fdcId, group }: { fdcId: number; group: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return <span className="ing-thumb ing-thumb-fallback"><IngredientIcon group={group} /></span>;
+  }
+  return (
+    <img
+      src={`/api/ingredient-images/${fdcId}.png`}
+      alt=""
+      className="ing-thumb"
+      loading="lazy"
+      onError={() => setFailed(true)}
     />
   );
 }

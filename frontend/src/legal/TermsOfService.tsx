@@ -13,13 +13,13 @@ const EN = (
       <em>Last updated: 26 May 2026</em>
     </p>
     <p>
-      These terms govern your use of the Hearth meal-planning service at
+      These terms govern your use of the Mealplanner meal-planning service at
       hearth.darkfallcompanion.se. By creating an account you agree to
       these terms.
     </p>
     <h4>The service</h4>
     <p>
-      Hearth helps households plan meals, build recipes, and generate
+      Mealplanner helps households plan meals, build recipes, and generate
       shopping lists. Some features use AI (OpenAI's language models) to
       generate recipes and chat responses. AI features are subject to a
       monthly per-household credit allowance during the beta.
@@ -27,7 +27,7 @@ const EN = (
     <h4>Your account</h4>
     <ul>
       <li>
-        You must be at least 16 years old to use Hearth (the minimum age
+        You must be at least 16 years old to use Mealplanner (the minimum age
         for unsupervised data processing under GDPR in Sweden).
       </li>
       <li>
@@ -51,7 +51,7 @@ const EN = (
         rate limits.
       </li>
       <li>
-        Use Hearth to send unsolicited messages or otherwise abuse other
+        Use Mealplanner to send unsolicited messages or otherwise abuse other
         users.
       </li>
       <li>Reverse engineer, copy, or resell the service.</li>
@@ -62,13 +62,13 @@ const EN = (
       third-party language model and may contain inaccuracies. They are
       <strong> not nutritional, medical, or dietary advice</strong>. Always
       check ingredients against your own allergies and health needs,
-      especially if you have a medical condition. Do not rely on Hearth to
+      especially if you have a medical condition. Do not rely on Mealplanner to
       ensure safety of food, allergens, or dietary restrictions in
       real-world cooking.
     </p>
     <h4>Service availability</h4>
     <p>
-      Hearth is offered as a beta. We may change, suspend, or discontinue
+      Mealplanner is offered as a beta. We may change, suspend, or discontinue
       features at any time. We aim to provide reasonable uptime but make
       no SLA guarantees. AI features may be temporarily unavailable when
       the monthly platform-wide budget is exhausted.
@@ -80,7 +80,7 @@ const EN = (
     </p>
     <h4>Liability</h4>
     <p>
-      To the extent permitted by Swedish law, Hearth is provided "as is"
+      To the extent permitted by Swedish law, Mealplanner is provided "as is"
       without warranty. We're not liable for indirect or consequential
       damages arising from use of the service. This does not limit
       liability for gross negligence, intent, or anything that cannot be
@@ -113,13 +113,13 @@ const SV = (
       <em>Senast uppdaterad: 26 maj 2026</em>
     </p>
     <p>
-      Dessa villkor styr din användning av Hearth-tjänsten på
+      Dessa villkor styr din användning av Mealplanner-tjänsten på
       hearth.darkfallcompanion.se. Genom att skapa ett konto godkänner du
       villkoren.
     </p>
     <h4>Tjänsten</h4>
     <p>
-      Hearth hjälper hushåll planera måltider, bygga recept och generera
+      Mealplanner hjälper hushåll planera måltider, bygga recept och generera
       inköpslistor. Vissa funktioner använder AI (OpenAI:s språkmodeller)
       för att generera recept och chattsvar. AI-funktionerna omfattas av
       en månadsvis kredittilldelning per hushåll under betatestperioden.
@@ -127,7 +127,7 @@ const SV = (
     <h4>Ditt konto</h4>
     <ul>
       <li>
-        Du måste vara minst 16 år för att använda Hearth (åldersgräns för
+        Du måste vara minst 16 år för att använda Mealplanner (åldersgräns för
         oövervakad uppgiftsbehandling enligt GDPR i Sverige).
       </li>
       <li>
@@ -152,7 +152,7 @@ const SV = (
         hastighetsbegränsningarna.
       </li>
       <li>
-        Använda Hearth för att skicka oönskade meddelanden eller på annat
+        Använda Mealplanner för att skicka oönskade meddelanden eller på annat
         sätt missbruka andra användare.
       </li>
       <li>Omkonstruera, kopiera eller sälja tjänsten.</li>
@@ -163,13 +163,13 @@ const SV = (
       språkmodell från tredje part och kan innehålla felaktigheter. De är
       <strong> inte närings-, medicinska eller dietråd</strong>. Kontrollera
       alltid ingredienser mot dina egna allergier och hälsobehov, särskilt
-      om du har ett medicinskt tillstånd. Förlita dig inte på Hearth för
+      om du har ett medicinskt tillstånd. Förlita dig inte på Mealplanner för
       att säkerställa matsäkerhet, allergener eller kostrestriktioner i
       verklig matlagning.
     </p>
     <h4>Tjänstens tillgänglighet</h4>
     <p>
-      Hearth erbjuds som en beta. Vi kan ändra, pausa eller avveckla
+      Mealplanner erbjuds som en beta. Vi kan ändra, pausa eller avveckla
       funktioner när som helst. Vi strävar efter rimlig drifttid men ger
       inga SLA-garantier. AI-funktioner kan tillfälligt vara otillgängliga
       när månadens plattformsbudget har förbrukats.
@@ -182,7 +182,7 @@ const SV = (
     <h4>Ansvar</h4>
     <p>
       I den utsträckning som tillåts enligt svensk lag tillhandahålls
-      Hearth "i befintligt skick" utan garanti. Vi ansvarar inte för
+      Mealplanner "i befintligt skick" utan garanti. Vi ansvarar inte för
       indirekta eller följdskador som uppstår vid användning av tjänsten.
       Detta begränsar inte ansvar för grov vårdslöshet, uppsåt eller annat
       som inte kan undantas enligt tvingande svensk konsumenträtt.

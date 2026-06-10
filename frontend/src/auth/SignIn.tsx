@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { Mail } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { Button, Card, ErrorBanner, Field, Input } from "../components/ui";
@@ -11,6 +12,7 @@ interface Props {
 }
 
 export default function SignIn({ redirectTo }: Props) {
+  const { t } = useTranslation();
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
@@ -49,8 +51,8 @@ export default function SignIn({ redirectTo }: Props) {
   return (
     <div className="auth-shell">
       <div className="brand auth-brand">
-        <span className="brand-mark">Hearth</span>
-        <span className="brand-tag">your kitchen, planned</span>
+        <span className="brand-mark">Mealplanner</span>
+        <span className="brand-tag">{t("nav.brandTag")}</span>
       </div>
 
       <Card className="auth-card">
@@ -59,27 +61,29 @@ export default function SignIn({ redirectTo }: Props) {
         {sent ? (
           <div className="text-center">
             <Mail size={28} className="auth-icon" />
-            <h2 className="mt-3">Check your inbox</h2>
+            <h2 className="mt-3">{t("signin.checkInbox")}</h2>
             <p className="muted mt-2">
-              We sent a magic link to <strong>{email}</strong>. Click it to sign in.
+              <Trans i18nKey="signin.magicLinkSent" values={{ email }}>
+                We sent a magic link to <strong>{email}</strong>. Click it to sign in.
+              </Trans>
             </p>
           </div>
         ) : (
           <>
             <Button variant="primary" block onClick={signInWithGoogle}>
-              Continue with Google
+              {t("signin.continueWithGoogle")}
             </Button>
 
-            <div className="auth-divider">or</div>
+            <div className="auth-divider">{t("signin.divider")}</div>
 
             <form onSubmit={signInWithEmail}>
               <Field>
-                <span>Email</span>
+                <span>{t("signin.emailLabel")}</span>
                 <Input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
+                  placeholder={t("signin.emailPlaceholder")}
                   required
                   autoFocus
                 />
@@ -91,7 +95,7 @@ export default function SignIn({ redirectTo }: Props) {
                 disabled={sending || !email.trim()}
                 className="mt-3"
               >
-                {sending ? "Sending..." : "Email me a magic link"}
+                {sending ? t("signin.sending") : t("signin.sendMagicLink")}
               </Button>
             </form>
           </>
@@ -99,10 +103,13 @@ export default function SignIn({ redirectTo }: Props) {
       </Card>
 
       <p className="muted text-center auth-legal-foot">
-        By signing in you accept our{" "}
-        <button type="button" className="link-button" onClick={() => setLegalOpen("terms")}>Terms</button>
-        {" "}and{" "}
-        <button type="button" className="link-button" onClick={() => setLegalOpen("privacy")}>Privacy Policy</button>.
+        <Trans
+          i18nKey="signin.legalFooter"
+          components={{
+            terms: <button type="button" className="link-button" onClick={() => setLegalOpen("terms")} />,
+            privacy: <button type="button" className="link-button" onClick={() => setLegalOpen("privacy")} />,
+          }}
+        />
       </p>
 
       <PrivacyPolicy open={legalOpen === "privacy"} onClose={() => setLegalOpen(null)} />

@@ -13,9 +13,9 @@ const EN = (
       <em>Last updated: 26 May 2026</em>
     </p>
     <p>
-      This policy explains how Hearth (operated by Andreas Johansson — the
+      This policy explains how Mealplanner (operated by Andreas Johansson — the
       "Service" or "we"/"us") collects and uses your personal data when you
-      use the Hearth meal-planning app at hearth.darkfallcompanion.se.
+      use the Mealplanner meal-planning app at hearth.darkfallcompanion.se.
     </p>
     <h4>Data we collect</h4>
     <ul>
@@ -129,9 +129,9 @@ const SV = (
       <em>Senast uppdaterad: 26 maj 2026</em>
     </p>
     <p>
-      Den här policyn förklarar hur Hearth (drivs av Andreas Johansson —
+      Den här policyn förklarar hur Mealplanner (drivs av Andreas Johansson —
       "Tjänsten" eller "vi"/"oss") samlar in och använder dina
-      personuppgifter när du använder Hearth-appen på
+      personuppgifter när du använder Mealplanner-appen på
       hearth.darkfallcompanion.se.
     </p>
     <h4>Uppgifter vi samlar in</h4>

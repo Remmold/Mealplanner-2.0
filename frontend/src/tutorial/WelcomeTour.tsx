@@ -1,5 +1,5 @@
 /**
- * First-run welcome tour — explains Hearth's loop in three short screens.
+ * First-run welcome tour — explains Mealplanner's loop in three short screens.
  *
  * Shown once per browser (gated by localStorage). Skippable at any step.
  * Re-triggerable via the "Replay tour" button on the Household tab.
@@ -8,6 +8,7 @@
  */
 
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { CalendarRange, ChefHat, ShoppingCart } from "lucide-react";
 import { Button, Card } from "../components/ui";
 
@@ -18,40 +19,26 @@ interface Props {
 
 const STORAGE_KEY = "hearth.welcome_seen";
 
-interface Step {
-  icon: typeof CalendarRange;
-  title: string;
-  body: string;
-}
-
-const STEPS: Step[] = [
+const STEPS = [
   {
     icon: CalendarRange,
-    title: "Plan your week",
-    body:
-      "Hearth turns a sentence (\"easy vegetarian week, batch-cook two dinners\") "
-      + "into a full meal plan — generated, scaled, and respectful of your "
-      + "household's dietary preferences.",
+    titleKey: "tour.steps.plan.title",
+    bodyKey: "tour.steps.plan.body",
   },
   {
     icon: ChefHat,
-    title: "Cook from real recipes",
-    body:
-      "Each meal lands as a real recipe — ingredients with quantities, "
-      + "step-by-step instructions, USDA-backed nutrition. Tap a step to start "
-      + "a timer; scale servings on the fly.",
+    titleKey: "tour.steps.cook.title",
+    bodyKey: "tour.steps.cook.body",
   },
   {
     icon: ShoppingCart,
-    title: "One trip, one list",
-    body:
-      "Your plan becomes a single shopping list: ingredients summed across "
-      + "the week, converted to shopping units (eggs, dl, cloves), and ordered "
-      + "by your store's aisle layout. No mental math.",
+    titleKey: "tour.steps.shop.title",
+    bodyKey: "tour.steps.shop.body",
   },
-];
+] as const;
 
 export default function WelcomeTour({ open, onClose }: Props) {
+  const { t } = useTranslation();
   const [step, setStep] = useState(0);
 
   if (!open) return null;
@@ -79,14 +66,14 @@ export default function WelcomeTour({ open, onClose }: Props) {
   return (
     <div className="auth-shell tour-shell" role="dialog" aria-modal>
       <div className="brand auth-brand">
-        <span className="brand-mark">Hearth</span>
-        <span className="brand-tag">your kitchen, planned</span>
+        <span className="brand-mark">Mealplanner</span>
+        <span className="brand-tag">{t("tour.brandTag")}</span>
       </div>
 
       <Card className="auth-card tour-card">
         <div className="tour-icon"><Icon size={36} /></div>
-        <h2 className="text-center">{current.title}</h2>
-        <p className="muted text-center">{current.body}</p>
+        <h2 className="text-center">{t(current.titleKey)}</h2>
+        <p className="muted text-center">{t(current.bodyKey)}</p>
 
         <div className="tour-dots" aria-hidden>
           {STEPS.map((_, i) => (
@@ -99,15 +86,15 @@ export default function WelcomeTour({ open, onClose }: Props) {
 
         <div className="auth-actions mt-3">
           {!isFirst && (
-            <Button variant="ghost" onClick={back}>Back</Button>
+            <Button variant="ghost" onClick={back}>{t("common.back")}</Button>
           )}
           <Button variant="primary" block onClick={next}>
-            {isLast ? "Got it — let's start" : "Next"}
+            {isLast ? t("tour.getStarted") : t("common.next")}
           </Button>
         </div>
 
         <button type="button" className="link-button mt-3" onClick={dismiss}>
-          Skip tour
+          {t("tour.skipTour")}
         </button>
       </Card>
     </div>

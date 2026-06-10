@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import {
   fetchShoppingTemplate,
@@ -11,8 +12,11 @@ import {
   type IngredientUnit,
 } from "../api";
 import { Button, Card, Empty, ErrorBanner, Field, Input } from "./ui";
+import { useEnumLabels } from "../i18n/enums";
 
 export default function ShoppingTemplate() {
+  const { t } = useTranslation();
+  const el = useEnumLabels();
   const [items, setItems] = useState<ShoppingTemplateItem[]>([]);
   const [units, setUnits] = useState<Record<number, IngredientUnit>>({});
   const [error, setError] = useState("");
@@ -64,7 +68,7 @@ export default function ShoppingTemplate() {
   async function handleAdd() {
     if (!picked) return;
     const qty = Number(qtyDisplay);
-    if (!qty || qty <= 0) { setError("Enter a positive quantity"); return; }
+    if (!qty || qty <= 0) { setError(t("shoppingTemplate.errPositiveQty")); return; }
     const grams = gramsFromDisplay(qty, pickedUnit());
     try {
       await upsertShoppingTemplateItem(picked.fdc_id, grams, note.trim() || null);
@@ -85,7 +89,7 @@ export default function ShoppingTemplate() {
 
   async function saveEdit(item: ShoppingTemplateItem) {
     const qty = Number(editQty);
-    if (!qty || qty <= 0) { setError("Enter a positive quantity"); return; }
+    if (!qty || qty <= 0) { setError(t("shoppingTemplate.errPositiveQty")); return; }
     const unit = units[item.fdc_id] ?? null;
     const grams = gramsFromDisplay(qty, unit);
     try {
@@ -123,24 +127,24 @@ export default function ShoppingTemplate() {
         {/* Left: add item */}
         <div className="flex-1 min-w-300 max-w-420">
           <Card>
-            <h4 className="mb-2">Add item</h4>
+            <h4 className="mb-2">{t("shoppingTemplate.addItem")}</h4>
             <div className="row gap-2">
               <Input
                 className="flex-1"
-                placeholder="Search (e.g. milk, eggs)…"
+                placeholder={t("shoppingTemplate.searchPlaceholder")}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") void runSearch(); }}
               />
               <Button onClick={runSearch} disabled={searching || query.trim().length < 2} variant="primary" size="sm">
-                {searching ? "…" : "Search"}
+                {searching ? t("shoppingTemplate.searchingShort") : t("common.search")}
               </Button>
             </div>
             {results.length > 0 && !picked && (
               <div className="col-2 mt-2 scroll-y maxh-200">
                 {results.map((r) => (
                   <button key={r.fdc_id} onClick={() => setPicked(r)} className="option-row">
-                    <span className="flex-1 small">{r.name}</span>
+                    <span className="flex-1 small">{el.ingredient(r.fdc_id, r.name)}</span>
                     <span className="tiny muted">{r.mapped_category}</span>
                   </button>
                 ))}
@@ -149,8 +153,8 @@ export default function ShoppingTemplate() {
             {picked && (
               <div className="col-2 mt-2 inset-accent">
                 <div className="row gap-2">
-                  <strong className="flex-1 small">{picked.name}</strong>
-                  <Button onClick={() => setPicked(null)} variant="ghost" size="xs">Change</Button>
+                  <strong className="flex-1 small">{el.ingredient(picked.fdc_id, picked.name)}</strong>
+                  <Button onClick={() => setPicked(null)} variant="ghost" size="xs">{t("shoppingTemplate.change")}</Button>
                 </div>
                 <div className="row gap-2">
                   <Field>
@@ -162,15 +166,15 @@ export default function ShoppingTemplate() {
                       value={qtyDisplay}
                       onChange={(e) => setQtyDisplay(e.target.value)}
                     />
-                    <span className="tiny">{pickedUnitLabel}</span>
+                    <span className="tiny">{el.unit(pickedUnitLabel)}</span>
                   </Field>
                   {pickedUnit() && (
-                    <span className="tiny muted">≈ {Math.round(pickedGrams)} g</span>
+                    <span className="tiny muted">{t("shoppingTemplate.approxGrams", { grams: Math.round(pickedGrams) })}</span>
                   )}
-                  <Button onClick={handleAdd} variant="primary" size="sm" className="ml-auto">Add</Button>
+                  <Button onClick={handleAdd} variant="primary" size="sm" className="ml-auto">{t("common.add")}</Button>
                 </div>
                 <Input
-                  placeholder="Note (optional)"
+                  placeholder={t("shoppingTemplate.notePlaceholder")}
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
                 />
@@ -183,10 +187,10 @@ export default function ShoppingTemplate() {
         <div className="flex-1 min-w-320">
           <Card>
             <div className="row between mb-2">
-              <h4 className="m-0">Your baseline ({items.length})</h4>
-              {loading && <span className="tiny muted">Loading…</span>}
+              <h4 className="m-0">{t("shoppingTemplate.baselineHeading", { count: items.length })}</h4>
+              {loading && <span className="tiny muted">{t("common.loading")}</span>}
             </div>
-            {items.length === 0 && <Empty>No baseline items yet. Add what you always buy.</Empty>}
+            {items.length === 0 && <Empty>{t("shoppingTemplate.emptyBaseline")}</Empty>}
             {Object.entries(grouped).map(([category, rows]) => (
               <div key={category} className="mb-4">
                 <div className="shop-cat-header">
@@ -200,7 +204,7 @@ export default function ShoppingTemplate() {
                     return (
                       <div key={item.fdc_id} className="edit-row">
                         <div className="row gap-2">
-                          <strong className="flex-1 small">{item.name}</strong>
+                          <strong className="flex-1 small">{el.ingredient(item.fdc_id, item.name)}</strong>
                           <Field>
                             <Input
                               type="number"
@@ -215,13 +219,13 @@ export default function ShoppingTemplate() {
                                 if (e.key === "Escape") setEditingFdcId(null);
                               }}
                             />
-                            <span className="tiny">{item.display_unit}</span>
+                            <span className="tiny">{el.unit(item.display_unit)}</span>
                           </Field>
-                          <Button onClick={() => saveEdit(item)} variant="primary" size="sm">Save</Button>
-                          <Button onClick={() => setEditingFdcId(null)} variant="ghost" size="sm">Cancel</Button>
+                          <Button onClick={() => saveEdit(item)} variant="primary" size="sm">{t("common.save")}</Button>
+                          <Button onClick={() => setEditingFdcId(null)} variant="ghost" size="sm">{t("common.cancel")}</Button>
                         </div>
                         <Input
-                          placeholder="Note (optional)"
+                          placeholder={t("shoppingTemplate.notePlaceholder")}
                           value={editNote}
                           onChange={(e) => setEditNote(e.target.value)}
                           onKeyDown={(e) => {
@@ -237,22 +241,22 @@ export default function ShoppingTemplate() {
                       key={item.fdc_id}
                       onClick={() => startEdit(item)}
                       className="shop-row"
-                      title="Click to edit"
+                      title={t("shoppingTemplate.clickToEdit")}
                     >
                       <span className="flex-1 small">
-                        {item.name}
+                        {el.ingredient(item.fdc_id, item.name)}
                         {item.note && (
                           <span className="tiny muted ml-2">— {item.note}</span>
                         )}
                       </span>
                       <span className="shop-qty">
-                        {item.display_quantity} {item.display_unit}
+                        {item.display_quantity} {el.unit(item.display_unit)}
                       </span>
                       <Button
                         onClick={(e) => { e.stopPropagation(); void handleDelete(item.fdc_id); }}
                         variant="ghost"
                         size="xs"
-                        title="Remove from template"
+                        title={t("shoppingTemplate.removeFromTemplate")}
                       >
                         <X size={14} />
                       </Button>

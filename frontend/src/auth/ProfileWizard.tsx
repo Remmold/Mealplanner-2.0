@@ -1,10 +1,12 @@
 import { useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronRight } from "lucide-react";
 import { Button, Card, Chip, ErrorBanner, Field, Input } from "../components/ui";
 import { patchProfile } from "../lib/auth-api";
 import type { ProfilePatch } from "../lib/auth-api";
 import { seedStarterRecipes } from "../api";
+import { useEnumLabels } from "../i18n/enums";
 
 const DIETARY = [
   "vegetarian", "vegan", "pescatarian", "gluten-free",
@@ -41,6 +43,8 @@ interface Props {
 }
 
 export default function ProfileWizard({ onComplete }: Props) {
+  const { t } = useTranslation();
+  const el = useEnumLabels();
   const [step, setStep] = useState(0);
   const [data, setData] = useState<WizardData>(EMPTY);
   const [allergyInput, setAllergyInput] = useState("");
@@ -66,9 +70,9 @@ export default function ProfileWizard({ onComplete }: Props) {
   }
 
   function addAllergy() {
-    const t = allergyInput.trim();
-    if (!t || data.allergies.includes(t)) return;
-    setData((d) => ({ ...d, allergies: [...d.allergies, t] }));
+    const value = allergyInput.trim();
+    if (!value || data.allergies.includes(value)) return;
+    setData((d) => ({ ...d, allergies: [...d.allergies, value] }));
     setAllergyInput("");
   }
 
@@ -120,21 +124,21 @@ export default function ProfileWizard({ onComplete }: Props) {
   return (
     <div className="auth-shell">
       <div className="brand auth-brand">
-        <span className="brand-mark">Hearth</span>
-        <span className="brand-tag">tell us about your kitchen</span>
+        <span className="brand-mark">Mealplanner</span>
+        <span className="brand-tag">{t("profileWizard.brandTag")}</span>
       </div>
 
       <Card className="auth-card">
         {error && <ErrorBanner>{error}</ErrorBanner>}
 
         <div className="muted text-center">
-          Step {step + 1} of {STEPS}
+          {t("profileWizard.stepOf", { current: step + 1, total: STEPS })}
         </div>
 
         {step === 0 && (
           <Step
-            title="How many people do you cook for?"
-            sub="Plans and shopping lists scale to this number."
+            title={t("profileWizard.familySize.title")}
+            sub={t("profileWizard.familySize.sub")}
           >
             <Field>
               <Input
@@ -149,7 +153,7 @@ export default function ProfileWizard({ onComplete }: Props) {
                     family_size: e.target.value ? Number(e.target.value) : null,
                   }))
                 }
-                placeholder="e.g. 2"
+                placeholder={t("profileWizard.familySize.placeholder")}
                 autoFocus
               />
             </Field>
@@ -158,8 +162,8 @@ export default function ProfileWizard({ onComplete }: Props) {
 
         {step === 1 && (
           <Step
-            title="Any dietary preferences?"
-            sub="Pick what applies. We'll respect these in suggestions."
+            title={t("profileWizard.dietary.title")}
+            sub={t("profileWizard.dietary.sub")}
           >
             <div className="chip-grid">
               {DIETARY.map((d) => (
@@ -168,7 +172,7 @@ export default function ProfileWizard({ onComplete }: Props) {
                   active={data.dietary.includes(d)}
                   onClick={() => toggle("dietary", d)}
                 >
-                  {d}
+                  {el.diet(d)}
                 </Chip>
               ))}
             </div>
@@ -177,8 +181,8 @@ export default function ProfileWizard({ onComplete }: Props) {
 
         {step === 2 && (
           <Step
-            title="Any allergies?"
-            sub="Strict avoidances — we'll never include these in a recipe."
+            title={t("profileWizard.allergies.title")}
+            sub={t("profileWizard.allergies.sub")}
           >
             <Field>
               <Input
@@ -186,7 +190,7 @@ export default function ProfileWizard({ onComplete }: Props) {
                 value={allergyInput}
                 onChange={(e) => setAllergyInput(e.target.value)}
                 onKeyDown={onAllergyKey}
-                placeholder="Type and press Enter (e.g. peanuts)"
+                placeholder={t("profileWizard.allergies.placeholder")}
                 autoFocus
               />
             </Field>
@@ -202,8 +206,8 @@ export default function ProfileWizard({ onComplete }: Props) {
 
         {step === 3 && (
           <Step
-            title="Favourite cuisines?"
-            sub="We'll lean into these when generating ideas."
+            title={t("profileWizard.cuisines.title")}
+            sub={t("profileWizard.cuisines.sub")}
           >
             <div className="chip-grid">
               {CUISINES.map((c) => (
@@ -212,7 +216,7 @@ export default function ProfileWizard({ onComplete }: Props) {
                   active={data.cuisines.includes(c)}
                   onClick={() => toggle("cuisines", c)}
                 >
-                  {c}
+                  {el.cuisine(c)}
                 </Chip>
               ))}
             </div>
@@ -221,8 +225,8 @@ export default function ProfileWizard({ onComplete }: Props) {
 
         {step === 4 && (
           <Step
-            title="How long can you cook on a weeknight?"
-            sub="Minutes from start to plate."
+            title={t("profileWizard.cookTime.title")}
+            sub={t("profileWizard.cookTime.sub")}
           >
             <Field>
               <Input
@@ -239,7 +243,7 @@ export default function ProfileWizard({ onComplete }: Props) {
                       : null,
                   }))
                 }
-                placeholder="e.g. 30"
+                placeholder={t("profileWizard.cookTime.placeholder")}
                 autoFocus
               />
             </Field>
@@ -249,16 +253,16 @@ export default function ProfileWizard({ onComplete }: Props) {
         <div className="auth-actions mt-4">
           {step > 0 && (
             <Button variant="ghost" onClick={back} disabled={busy}>
-              Back
+              {t("common.back")}
             </Button>
           )}
           {step < STEPS - 1 ? (
             <>
               <Button variant="ghost" onClick={next} disabled={busy}>
-                Skip
+                {t("common.skip")}
               </Button>
               <Button variant="primary" onClick={next} disabled={busy} className="flex-1">
-                Continue <ChevronRight size={14} />
+                {t("profileWizard.continue")} <ChevronRight size={14} />
               </Button>
             </>
           ) : (
@@ -268,7 +272,7 @@ export default function ProfileWizard({ onComplete }: Props) {
               disabled={busy}
               className="flex-1"
             >
-              {busy ? "Saving..." : "Save & finish"}
+              {busy ? t("common.saving") : t("profileWizard.saveAndFinish")}
             </Button>
           )}
         </div>
@@ -279,7 +283,7 @@ export default function ProfileWizard({ onComplete }: Props) {
           onClick={() => finish(true)}
           disabled={busy}
         >
-          Skip all &mdash; set up later
+          {t("profileWizard.skipAll")}
         </button>
       </Card>
     </div>

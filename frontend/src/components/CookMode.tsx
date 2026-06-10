@@ -14,8 +14,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Check, ChevronLeft, ChevronRight, ListOrdered, Minus, Play, Plus, RotateCcw, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { Check, ChevronLeft, ChevronRight, ListOrdered, Play, RotateCcw, X } from "lucide-react";
 import type { Recipe } from "../api";
+import { useEnumLabels } from "../i18n/enums";
 import { Button, Card, IconButton } from "./ui";
 
 
@@ -27,12 +29,11 @@ interface Props {
 
 
 export default function CookMode({ open, recipe, onClose }: Props) {
-  const baseServings = recipe.servings ?? 4;
+  const { t } = useTranslation();
 
   const [stepIdx, setStepIdx] = useState(0);
   const [doneSteps, setDoneSteps] = useState<Set<number>>(new Set());
   const [showIngredients, setShowIngredients] = useState(false);
-  const [cookForServings, setCookForServings] = useState(baseServings);
   const [timerTotal, setTimerTotal] = useState<number | null>(null);
   const [timerRemaining, setTimerRemaining] = useState<number>(0);
   const [timerActive, setTimerActive] = useState(false);
@@ -44,13 +45,12 @@ export default function CookMode({ open, recipe, onClose }: Props) {
       setStepIdx(0);
       setDoneSteps(new Set());
       setShowIngredients(false);
-      setCookForServings(baseServings);
       setTimerTotal(null);
       setTimerRemaining(0);
       setTimerActive(false);
       beepedRef.current = false;
     }
-  }, [open, baseServings]);
+  }, [open]);
 
   // Tick the timer once per second while active
   useEffect(() => {
@@ -75,7 +75,6 @@ export default function CookMode({ open, recipe, onClose }: Props) {
   const steps = recipe.instructions ?? [];
   const totalSteps = steps.length;
   const currentStep = steps[stepIdx] ?? "";
-  const scale = cookForServings / Math.max(1, recipe.servings ?? 4);
   const stepTimerSecs = parseStepMinutes(currentStep);
   const isFirst = stepIdx === 0;
   const isLast = stepIdx === Math.max(0, totalSteps - 1);
@@ -132,31 +131,11 @@ export default function CookMode({ open, recipe, onClose }: Props) {
         <div className="cook-header-title">
           <h2>{recipe.name}</h2>
           <p className="muted">
-            Step {stepIdx + 1} of {totalSteps || 1}
+            {t("cook.stepProgress", { current: stepIdx + 1, total: totalSteps || 1 })}
           </p>
         </div>
         <div className="cook-header-controls">
-          <div className="cook-servings-adjuster" aria-label="Cooking for how many people">
-            <IconButton
-              onClick={() => setCookForServings((v) => Math.max(1, v - 1))}
-              title="Fewer servings"
-              aria-label="Fewer servings"
-            >
-              <Minus size={14} />
-            </IconButton>
-            <span className="cook-servings-value">
-              <strong>{cookForServings}</strong>
-              <span className="muted small">{cookForServings === 1 ? "person" : "people"}</span>
-            </span>
-            <IconButton
-              onClick={() => setCookForServings((v) => Math.min(99, v + 1))}
-              title="More servings"
-              aria-label="More servings"
-            >
-              <Plus size={14} />
-            </IconButton>
-          </div>
-          <IconButton onClick={onClose} title="Close cook mode" aria-label="Close cook mode">
+          <IconButton onClick={onClose} title={t("cook.closeCookMode")} aria-label={t("cook.closeCookMode")}>
             <X size={22} />
           </IconButton>
         </div>
@@ -165,13 +144,13 @@ export default function CookMode({ open, recipe, onClose }: Props) {
       <div className="cook-body">
         {totalSteps === 0 ? (
           <Card variant="soft" className="cook-step-card">
-            <p className="muted">This recipe doesn't have any written instructions yet.</p>
+            <p className="muted">{t("cook.noInstructions")}</p>
           </Card>
         ) : (
           <Card variant={isDone ? "default" : "soft"} className="cook-step-card">
             <div className="cook-step-meta">
               <span className="cook-step-num">{stepIdx + 1}</span>
-              {isDone && <span className="cook-step-done"><Check size={14} /> done</span>}
+              {isDone && <span className="cook-step-done"><Check size={14} /> {t("cook.stepDone")}</span>}
             </div>
             <p className="cook-step-text">{currentStep}</p>
 
@@ -194,14 +173,14 @@ export default function CookMode({ open, recipe, onClose }: Props) {
       <div className="cook-nav">
         <Button variant="ghost" onClick={prev} disabled={isFirst}>
           <ChevronLeft size={16} />
-          <span className="ml-1">Back</span>
+          <span className="ml-1">{t("common.back")}</span>
         </Button>
         <Button variant={isDone ? "default" : "default"} onClick={toggleDone}>
           <Check size={14} />
-          <span className="ml-1">{isDone ? "Undo done" : "Mark done"}</span>
+          <span className="ml-1">{isDone ? t("cook.undoDone") : t("cook.markDone")}</span>
         </Button>
         <Button variant="primary" onClick={next} disabled={isLast} className="flex-1">
-          <span>Next</span>
+          <span>{t("common.next")}</span>
           <ChevronRight size={16} />
         </Button>
       </div>
@@ -210,18 +189,17 @@ export default function CookMode({ open, recipe, onClose }: Props) {
         type="button"
         className="cook-ingredients-toggle"
         onClick={() => setShowIngredients(true)}
-        aria-label="Show ingredients"
+        aria-label={t("cook.showIngredients")}
       >
         <ListOrdered size={16} />
         <span className="ml-2">
-          Ingredients ({(recipe.ingredients ?? []).length})
+          {t("cook.ingredientsWithCount", { count: (recipe.ingredients ?? []).length })}
         </span>
       </button>
 
       {showIngredients && (
         <IngredientSheet
           recipe={recipe}
-          scale={scale}
           onClose={() => setShowIngredients(false)}
         />
       )}
@@ -247,12 +225,13 @@ function TimerRow({
   stepTimerSecs, timerTotal, timerRemaining, timerActive,
   onStart, onPauseResume, onReset, onClear,
 }: TimerRowProps): ReactNode {
+  const { t } = useTranslation();
   if (timerTotal === null) {
     return (
       <div className="cook-timer-row">
         <Button variant="accent" size="sm" onClick={onStart}>
           <Play size={14} />
-          <span className="ml-1">Start {Math.round(stepTimerSecs / 60)} min timer</span>
+          <span className="ml-1">{t("cook.startMinTimer", { minutes: Math.round(stepTimerSecs / 60) })}</span>
         </Button>
       </div>
     );
@@ -267,15 +246,15 @@ function TimerRow({
       </span>
       {!done && (
         <Button variant="ghost" size="sm" onClick={onPauseResume}>
-          {timerActive ? "Pause" : "Resume"}
+          {timerActive ? t("cook.pause") : t("cook.resume")}
         </Button>
       )}
       <Button variant="ghost" size="sm" onClick={onReset}>
         <RotateCcw size={14} />
-        <span className="ml-1">Reset</span>
+        <span className="ml-1">{t("cook.reset")}</span>
       </Button>
       <Button variant="ghost" size="sm" onClick={onClear}>
-        Clear
+        {t("cook.clear")}
       </Button>
     </div>
   );
@@ -286,34 +265,30 @@ function TimerRow({
 
 interface IngredientSheetProps {
   recipe: Recipe;
-  scale: number;
   onClose: () => void;
 }
 
-function IngredientSheet({ recipe, scale, onClose }: IngredientSheetProps): ReactNode {
+function IngredientSheet({ recipe, onClose }: IngredientSheetProps): ReactNode {
+  const { t } = useTranslation();
+  const el = useEnumLabels();
   const ingredients = recipe.ingredients ?? [];
   return (
     <div className="cook-ingredients-sheet">
       <header className="cook-ingredients-header">
-        <h3>Ingredients</h3>
-        <IconButton onClick={onClose} title="Close" aria-label="Close ingredients">
+        <h3>{t("cook.ingredientsHeading")}</h3>
+        <IconButton onClick={onClose} title={t("common.close")} aria-label={t("cook.closeIngredients")}>
           <X size={20} />
         </IconButton>
       </header>
-      {scale !== 1 && (
-        <p className="muted">
-          Quantities scaled ×{scale.toFixed(2)} (base recipe serves {recipe.servings ?? 4}).
-        </p>
-      )}
       <ul className="cook-ingredients-list">
-        {ingredients.length === 0 && <li className="muted">No ingredients listed.</li>}
+        {ingredients.length === 0 && <li className="muted">{t("cook.noIngredients")}</li>}
         {ingredients.map((ing, i) => (
           <li key={i}>
             <span className="cook-ing-name">
-              {ing.ingredient_name ?? `fdc_id ${ing.fdc_id}`}
+              {el.ingredient(ing.fdc_id, ing.ingredient_name ?? t("cook.fdcIdFallback", { id: ing.fdc_id }))}
             </span>
             <strong className="cook-ing-qty">
-              {Math.max(1, Math.round(ing.quantity_g * scale))} g
+              {t("cook.grams", { amount: Math.max(1, Math.round(ing.quantity_g)) })}
             </strong>
           </li>
         ))}
