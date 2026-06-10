@@ -228,8 +228,9 @@ backend/*.meta.json
 backend/usda_data/
 backend/usda_sr_legacy.zip
 
-# Generated recipe images (regenerable)
+# Generated recipe + ingredient images (regenerable)
 backend/recipe_images/
+backend/ingredient_images/
 
 # Frontend build artifacts
 frontend/dist/
