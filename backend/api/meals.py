@@ -66,6 +66,7 @@ class MealUpdate(BaseModel):
 async def list_meals(
     start: date = Query(..., description="Inclusive start date (ISO)"),
     end:   date = Query(..., description="Inclusive end date (ISO)"),
+    locale: str = Query("en"),
     user: CurrentUser = Depends(get_current_user),
 ):
     """Return every meal on the calendar between start and end inclusive."""
@@ -76,7 +77,7 @@ async def list_meals(
             """
             SELECT e.id::text              AS id,
                    e.recipe_id::text       AS recipe_id,
-                   r.name                  AS recipe_name,
+                   COALESCE(r.translations -> $3 ->> 'name', r.name) AS recipe_name,
                    e.plan_date,
                    e.slot,
                    e.portions,
@@ -89,7 +90,7 @@ async def list_meals(
             WHERE e.plan_date BETWEEN $1::date AND $2::date
             ORDER BY e.plan_date, e.slot
             """,
-            start, end,
+            start, end, locale,
         )
     return [
         MealOut(
@@ -112,12 +113,14 @@ async def create_meal(
     body: MealCreate,
     user: CurrentUser = Depends(get_current_user),
     household_id: str = Depends(get_current_household_id),
+    locale: str = Query("en"),
 ):
     async with user_tx(user) as conn:
         recipe = await conn.fetchrow(
-            "SELECT id::text AS id, name, image_path FROM hearth.recipes "
-            "WHERE id = $1::uuid",
-            body.recipe_id,
+            "SELECT id::text AS id, "
+            "COALESCE(translations -> $2 ->> 'name', name) AS name, image_path "
+            "FROM hearth.recipes WHERE id = $1::uuid",
+            body.recipe_id, locale,
         )
         if recipe is None:
             raise HTTPException(404, "Recipe not found")
@@ -147,6 +150,7 @@ async def update_meal(
     meal_id: str,
     body: MealUpdate,
     user: CurrentUser = Depends(get_current_user),
+    locale: str = Query("en"),
 ):
     async with user_tx(user) as conn:
         existing = await conn.fetchrow(
@@ -174,7 +178,7 @@ async def update_meal(
             """
             SELECT e.id::text         AS id,
                    e.recipe_id::text  AS recipe_id,
-                   r.name             AS recipe_name,
+                   COALESCE(r.translations -> $2 ->> 'name', r.name) AS recipe_name,
                    e.plan_date,
                    e.slot,
                    e.portions,
@@ -183,7 +187,7 @@ async def update_meal(
             LEFT JOIN hearth.recipes r ON r.id = e.recipe_id
             WHERE e.id = $1::uuid
             """,
-            meal_id,
+            meal_id, locale,
         )
     return MealOut(
         id=row["id"],

@@ -161,7 +161,12 @@ agent = Agent(
         "- Prefer building flavor in stages (bloom spices, brown proteins, build fond) "
         "  rather than dumping everything into a pot.\n"
         "\nName the dish evocatively, not generically ('Lemon-Herb Braised Chicken' "
-        "not 'Chicken Recipe')."
+        "not 'Chicken Recipe').\n"
+        "\nLanguage: write the recipe name, ingredient names, and all instruction "
+        "steps in the SAME language as the user's request. If the request is in "
+        "Swedish, write the whole recipe in Swedish; if in English, write it in "
+        "English. (The fdc_id values you look up are language-agnostic — only the "
+        "human-readable text follows the request's language.)"
     ),
 )
 
@@ -196,7 +201,47 @@ async def search_ingredients(query: str) -> str:
     return "\n".join(lines)
 
 
-async def generate_recipe(prompt: str) -> GeneratedRecipe:
-    """Generate a recipe from a user prompt."""
-    result = await agent.run(prompt)
+def _avoidance_directive(
+    allergies: list[str] | None, dislikes: list[str] | None
+) -> str:
+    """A hard 'do not use these ingredients' block appended to the prompt.
+
+    Allergies and dislikes come from the household profile and may be written in
+    ANY language (often Swedish) — the model is told to interpret them by meaning
+    rather than spelling, so 'lök' blocks onion even in an English recipe."""
+    allergies = [a for a in (allergies or []) if str(a).strip()]
+    dislikes = [d for d in (dislikes or []) if str(d).strip()]
+    if not allergies and not dislikes:
+        return ""
+    lines = [
+        "\n\nHOUSEHOLD FOOD RESTRICTIONS — these may be written in another language "
+        "(often Swedish); interpret each by MEANING, not spelling (e.g. 'lök' = "
+        "onion, 'jordnötter' = peanuts, 'skaldjur' = shellfish, 'laktos' = "
+        "lactose/dairy), and apply them to the ingredients you choose regardless "
+        "of the recipe's language:",
+    ]
+    if allergies:
+        lines.append(
+            "- ALLERGIES (NEVER include these, anything made from them, or close "
+            "substitutes — this is a strict safety rule): " + ", ".join(allergies) + "."
+        )
+    if dislikes:
+        lines.append(
+            "- DISLIKES (do not use these as ingredients): " + ", ".join(dislikes) + "."
+        )
+    return "\n".join(lines)
+
+
+async def generate_recipe(
+    prompt: str,
+    *,
+    allergies: list[str] | None = None,
+    dislikes: list[str] | None = None,
+) -> GeneratedRecipe:
+    """Generate a recipe from a user prompt.
+
+    `allergies`/`dislikes` (from the household profile) are injected as a hard
+    avoidance directive so the generated recipe never contains them, in any
+    language. Callers that have the profile should always pass them."""
+    result = await agent.run(prompt + _avoidance_directive(allergies, dislikes))
     return result.output

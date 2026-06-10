@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 import asyncpg
 
 from api.auth import CurrentUser, get_current_user
 from api.db import get_current_household_id, user_tx
+from api.recipe_translate import ensure_recipe_translation, localized
 from api.models import (
     GenerateRecipeRequest,
     GeneratedRecipeOut,
@@ -67,19 +68,11 @@ async def _load_ingredient_names(
     return result
 
 
-async def _household_staple_fdc_ids(conn: asyncpg.Connection, household_id: str) -> set[int]:
-    rows = await conn.fetch(
-        "SELECT fdc_id FROM hearth.household_staples WHERE household_id = $1::uuid",
-        household_id,
-    )
-    return {int(r["fdc_id"]) for r in rows}
-
-
 async def _build_recipe_out(
-    conn: asyncpg.Connection, recipe_id: str
+    conn: asyncpg.Connection, recipe_id: str, locale: str = "en"
 ) -> RecipeOut:
     row = await conn.fetchrow(
-        "SELECT id, household_id, name, instructions, servings, meal_type, "
+        "SELECT id, household_id, name, instructions, translations, servings, meal_type, "
         "image_path, created_at, updated_at "
         "FROM hearth.recipes WHERE id = $1::uuid",
         recipe_id,
@@ -95,21 +88,20 @@ async def _build_recipe_out(
 
     fdc_ids = [r["fdc_id"] for r in ing_rows]
     names = await _load_ingredient_names(conn, fdc_ids)
-    staples = await _household_staple_fdc_ids(conn, str(row["household_id"]))
 
     # instructions is jsonb; the codec returns a Python list directly.
-    instructions = row["instructions"] if isinstance(row["instructions"], list) else []
+    base_instructions = row["instructions"] if isinstance(row["instructions"], list) else []
+    name, instructions = localized(row["name"], base_instructions, row["translations"], locale)
 
     return RecipeOut(
         id=str(row["id"]),
         household_id=str(row["household_id"]),
-        name=row["name"],
+        name=name,
         ingredients=[
             RecipeIngredientOut(
                 fdc_id=r["fdc_id"],
                 quantity_g=float(r["quantity_g"]),
                 ingredient_name=names.get(r["fdc_id"]),
-                from_pantry=int(r["fdc_id"]) in staples,
             )
             for r in ing_rows
         ],
@@ -144,13 +136,14 @@ async def _ensure_recipe_visible(
 async def list_recipes(
     user: CurrentUser = Depends(get_current_user),
     household_id: str = Depends(get_current_household_id),
+    locale: str = Query("en"),
 ):
     """Batched fetch: one SELECT per table instead of the per-recipe walk
     that _build_recipe_out does for a single recipe. Cuts ~4N queries down
     to a constant ~5."""
     async with user_tx(user) as conn:
         recipe_rows = await conn.fetch(
-            "SELECT id::text AS id, household_id, name, instructions, servings, "
+            "SELECT id::text AS id, household_id, name, instructions, translations, servings, "
             "meal_type, image_path, created_at, updated_at "
             "FROM hearth.recipes ORDER BY updated_at DESC"
         )
@@ -167,7 +160,7 @@ async def list_recipes(
         )
 
         # Group ingredients per recipe and collect the global fdc_id set so
-        # we can resolve names + staple membership in one shot.
+        # we can resolve names in one shot.
         ings_by_recipe: dict[str, list] = {}
         all_fdc_ids: set[int] = set()
         for ir in ing_rows:
@@ -175,22 +168,21 @@ async def list_recipes(
             all_fdc_ids.add(int(ir["fdc_id"]))
 
         names = await _load_ingredient_names(conn, list(all_fdc_ids))
-        staples = await _household_staple_fdc_ids(conn, household_id)
 
     out: list[RecipeOut] = []
     for r in recipe_rows:
-        instructions = r["instructions"] if isinstance(r["instructions"], list) else []
+        base_instr = r["instructions"] if isinstance(r["instructions"], list) else []
+        name, instructions = localized(r["name"], base_instr, r["translations"], locale)
         ings = ings_by_recipe.get(r["id"], [])
         out.append(RecipeOut(
             id=r["id"],
             household_id=str(r["household_id"]),
-            name=r["name"],
+            name=name,
             ingredients=[
                 RecipeIngredientOut(
                     fdc_id=ing["fdc_id"],
                     quantity_g=float(ing["quantity_g"]),
                     ingredient_name=names.get(ing["fdc_id"]),
-                    from_pantry=int(ing["fdc_id"]) in staples,
                 )
                 for ing in ings
             ],
@@ -227,7 +219,11 @@ async def create_recipe(
                 "VALUES ($1::uuid, $2, $3)",
                 recipe_id, ing.fdc_id, ing.quantity_g,
             )
-        return await _build_recipe_out(conn, recipe_id)
+        out = await _build_recipe_out(conn, recipe_id)
+    # Fill both languages in the background so it reads right in either UI.
+    ensure_recipe_translation(recipe_id, "en")
+    ensure_recipe_translation(recipe_id, "sv")
+    return out
 
 
 @router.post("/generate", response_model=GeneratedRecipeOut)
@@ -236,12 +232,18 @@ async def generate_recipe_endpoint(
     household_id: str = Depends(get_current_household_id),
 ):
     from api.credits import debit, require_credits
+    from api.profile import load_profile
     from api.recipe_gen import generate_recipe
 
     await require_credits(household_id, "recipe_gen")
 
+    # Keep generated recipes free of the household's allergens/dislikes (handled
+    # by meaning, so non-English terms like "lök" still block onion).
+    profile = await load_profile(household_id)
     try:
-        result = await generate_recipe(body.prompt)
+        result = await generate_recipe(
+            body.prompt, allergies=profile.allergies, dislikes=profile.dislikes
+        )
     except Exception as e:
         raise HTTPException(500, f"Recipe generation failed: {e}")
 
@@ -261,10 +263,14 @@ async def generate_recipe_endpoint(
 async def get_recipe(
     recipe_id: str,
     user: CurrentUser = Depends(get_current_user),
+    locale: str = Query("en"),
 ):
     async with user_tx(user) as conn:
         await _ensure_recipe_visible(conn, recipe_id)
-        return await _build_recipe_out(conn, recipe_id)
+        out = await _build_recipe_out(conn, recipe_id, locale)
+    # Lazily fill this locale for next time if the recipe didn't have it.
+    ensure_recipe_translation(recipe_id, locale)
+    return out
 
 
 @router.put("/{recipe_id}", response_model=RecipeOut)
@@ -320,7 +326,20 @@ async def update_recipe(
                 recipe_id,
             )
 
-        return await _build_recipe_out(conn, recipe_id)
+        # Editing the text invalidates the stored translations — clear them so
+        # nothing stale shows; they refill from the new base below.
+        content_changed = body.name is not None or body.instructions is not None
+        if content_changed:
+            await conn.execute(
+                "UPDATE hearth.recipes SET translations = '{}'::jsonb WHERE id = $1::uuid",
+                recipe_id,
+            )
+
+        out = await _build_recipe_out(conn, recipe_id)
+    if content_changed:
+        ensure_recipe_translation(recipe_id, "en")
+        ensure_recipe_translation(recipe_id, "sv")
+    return out
 
 
 @router.delete("/{recipe_id}", status_code=204)

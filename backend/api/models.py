@@ -162,7 +162,6 @@ class RecipeIngredientOut(BaseModel):
     fdc_id: int
     quantity_g: float
     ingredient_name: str | None = None
-    from_pantry: bool = False    # in the household's staples list
 
 
 class RecipeOut(BaseModel):
@@ -205,7 +204,6 @@ class ShoppingListCategory(BaseModel):
 
 class ShoppingListOut(BaseModel):
     categories: list[ShoppingListCategory]
-    pantry_check: list[ShoppingListItem] = []   # staples this week's recipes use
     missing_recipes: list[str] = []
 
 
