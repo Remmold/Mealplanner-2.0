@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, X } from "lucide-react";
+import { Check, Copy, Plus, UserPlus, X } from "lucide-react";
 import {
   fetchProfile,
   patchProfile,
@@ -12,6 +12,8 @@ import {
 } from "../api";
 import { Button, Card, Empty, ErrorBanner, Field, IconButton, Input, Select } from "./ui";
 import { useEnumLabels } from "../i18n/enums";
+import { useAuth } from "../auth/AuthProvider";
+import { createInvite, leaveHousehold } from "../lib/auth-api";
 
 type ListField = { key: keyof HouseholdProfile; label: string; placeholder: string };
 
@@ -40,10 +42,17 @@ function splitCsv(s: string): string[] {
 export default function Profile() {
   const { t } = useTranslation();
   const el = useEnumLabels();
+  const { me, refreshMe } = useAuth();
   const [profile, setProfile] = useState<HouseholdProfile | null>(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+
+  // Household membership (invite a member / leave) lives on this tab.
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [inviting, setInviting] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [leaving, setLeaving] = useState(false);
 
   // Editable local copy
   const [draft, setDraft] = useState<HouseholdProfile | null>(null);
@@ -138,6 +147,38 @@ export default function Profile() {
     } catch (e) { setError(String(e)); }
   }
 
+  async function handleInvite() {
+    if (!me || !me.household) return;
+    setInviting(true); setError(""); setCopied(false);
+    try {
+      const res = await createInvite(me.household.id);
+      setInviteUrl(res.join_url);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setInviting(false); }
+  }
+
+  async function copyInvite() {
+    if (!inviteUrl) return;
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard blocked — the field is selectable as a fallback */ }
+  }
+
+  async function handleLeave() {
+    if (!me || !me.household) return;
+    if (!confirm(t("household.leaveConfirm"))) return;
+    setLeaving(true); setError("");
+    try {
+      await leaveHousehold(me.household.id, me.user_id);
+      await refreshMe();   // household -> null -> App routes to the create/join screen
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setLeaving(false);
+    }
+  }
+
   if (!draft) return <p className="muted">{t("profile.loading")}</p>;
 
   return (
@@ -148,6 +189,48 @@ export default function Profile() {
       </div>
 
       <ErrorBanner>{error}</ErrorBanner>
+
+      {me?.household && (
+        <Card>
+          <h3>{t("household.manageTitle")}</h3>
+          <p className="small muted">
+            {me.household.name} · {t("household.memberCount", { count: me.household.member_count })}
+          </p>
+          <p className="small mt-2">{t("household.inviteIntro")}</p>
+
+          <div className="row gap-2 mt-3 wrap items-center">
+            <Button onClick={handleInvite} disabled={inviting}>
+              <UserPlus size={14} /> {inviting ? t("household.inviting") : t("household.inviteButton")}
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={handleLeave}
+              disabled={leaving}
+              className="ml-auto"
+            >
+              {leaving ? t("household.leaving") : t("household.leaveButton")}
+            </Button>
+          </div>
+
+          {inviteUrl && (
+            <>
+              <div className="row gap-2 mt-3 items-center">
+                <Input
+                  className="flex-1"
+                  readOnly
+                  value={inviteUrl}
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+                <IconButton onClick={copyInvite} aria-label={t("household.copyLink")}>
+                  {copied ? <Check size={16} /> : <Copy size={16} />}
+                </IconButton>
+              </div>
+              <p className="tiny muted mt-1">{t("household.inviteHint")}</p>
+            </>
+          )}
+        </Card>
+      )}
 
       <div className="row gap-4 wrap items-start">
         {/* Structured fields */}

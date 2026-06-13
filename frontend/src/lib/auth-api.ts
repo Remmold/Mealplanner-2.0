@@ -100,6 +100,20 @@ export async function createInvite(householdId: string): Promise<InviteResponse>
   );
 }
 
+// Self-leave (user_id = own id) or owner-kick. After a self-leave the caller
+// has no household, so App.tsx routes them back to the create/join screen.
+export async function leaveHousehold(householdId: string, userId: string): Promise<void> {
+  const res = await authFetch(
+    `/households/${encodeURIComponent(householdId)}/members/${encodeURIComponent(userId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 204) {
+    let detail: string | undefined;
+    try { detail = ((await res.json()) as { detail?: string }).detail; } catch { /* no body */ }
+    throw new Error(detail ?? `leave household failed (${res.status})`);
+  }
+}
+
 export async function deleteAccount(): Promise<void> {
   const res = await authFetch("/accounts/me", { method: "DELETE" });
   if (!res.ok && res.status !== 204) {

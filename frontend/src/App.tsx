@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ComponentType } from "react";
 import { useTranslation } from "react-i18next";
-import { LogOut, Sparkles } from "lucide-react";
+import { BookOpen, CalendarDays, Compass, LogOut, ShoppingCart, Sparkles, Users } from "lucide-react";
 import { onNavigate, dataChanged } from "./api";
 import { LANG_STORAGE_KEY } from "./i18n";
 import { useAuth } from "./auth/AuthProvider";
@@ -32,6 +33,15 @@ const TABS = [
   { id: "shopping",   labelKey: "nav.shopping" },
   { id: "profile",    labelKey: "nav.household" },
 ] as const satisfies { id: Tab; labelKey: string }[];
+
+// Icons for the mobile bottom-nav (the desktop top-nav is text-only).
+const TAB_ICONS: Record<Tab, ComponentType<{ size?: number }>> = {
+  plan: CalendarDays,
+  recipe: BookOpen,
+  explore: Compass,
+  shopping: ShoppingCart,
+  profile: Users,
+};
 
 // URL ↔ tab mapping. Keep paths singular-noun-style to match the existing
 // `recipe_id` deep link. Anything else falls through to "plan".
@@ -75,10 +85,15 @@ function isConsentRoute(): boolean {
 // anything else. Mutates history so the token doesn't sit in the address bar.
 function consumeJoinTokenFromUrl(): string | null {
   const match = /^\/join\/([^/?#]+)/.exec(window.location.pathname);
-  if (!match) return null;
-  const token = decodeURIComponent(match[1]);
-  window.history.replaceState({}, "", "/");
-  return token;
+  if (match) {
+    const token = decodeURIComponent(match[1]);
+    window.history.replaceState({}, "", "/");
+    // Stash it so the token survives a Google-OAuth round-trip (which returns
+    // to "/" without the /join path) and the invite still applies after login.
+    try { sessionStorage.setItem("pendingInviteToken", token); } catch { /* ignore */ }
+    return token;
+  }
+  try { return sessionStorage.getItem("pendingInviteToken"); } catch { return null; }
 }
 
 function LoadingShell() {
@@ -244,7 +259,10 @@ export default function App() {
     return (
       <CreateOrJoinHousehold
         pendingInviteToken={pendingInviteToken}
-        onPendingTokenConsumed={() => setPendingInviteToken(null)}
+        onPendingTokenConsumed={() => {
+          setPendingInviteToken(null);
+          try { sessionStorage.removeItem("pendingInviteToken"); } catch { /* ignore */ }
+        }}
       />
     );
   }
@@ -348,6 +366,22 @@ export default function App() {
           {t("nav.replayTour")}
         </button>
       </footer>
+
+      <nav className="mobile-nav">
+        {TABS.map((tb) => {
+          const Icon = TAB_ICONS[tb.id];
+          return (
+            <button
+              key={tb.id}
+              onClick={() => setTab(tb.id)}
+              className={`mobile-nav-btn ${tab === tb.id ? "active" : ""}`}
+            >
+              <Icon size={20} />
+              <span>{t(tb.labelKey)}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       <PrivacyPolicy open={legalOpen === "privacy"} onClose={() => setLegalOpen(null)} />
       <TermsOfService open={legalOpen === "terms"} onClose={() => setLegalOpen(null)} />
