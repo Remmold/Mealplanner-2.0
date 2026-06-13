@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ComponentType } from "react";
 import { useTranslation } from "react-i18next";
-import { BookOpen, CalendarDays, Compass, LogOut, ShoppingCart, Sparkles, Users } from "lucide-react";
+import { BookOpen, CalendarDays, Compass, LogOut, ShoppingCart, Sparkles, Users, Wrench } from "lucide-react";
 import { onNavigate, dataChanged } from "./api";
 import { LANG_STORAGE_KEY } from "./i18n";
 import { useAuth } from "./auth/AuthProvider";
@@ -20,8 +20,9 @@ import MealPlan, { type PlanIntent } from "./components/MealPlan";
 import Chat from "./components/Chat";
 import Profile from "./components/Profile";
 import Explore from "./components/Explore";
+import Admin from "./components/Admin";
 
-type Tab = "plan" | "recipe" | "explore" | "shopping" | "profile";
+type Tab = "plan" | "recipe" | "explore" | "shopping" | "profile" | "admin";
 
 // Meal Plan is the primary surface — it's where the value-prop starts
 // (plan the week -> shopping list). Recipes is a supporting library.
@@ -41,6 +42,7 @@ const TAB_ICONS: Record<Tab, ComponentType<{ size?: number }>> = {
   explore: Compass,
   shopping: ShoppingCart,
   profile: Users,
+  admin: Wrench,
 };
 
 // URL ↔ tab mapping. Keep paths singular-noun-style to match the existing
@@ -52,6 +54,7 @@ const PATH_TO_TAB: Record<string, Tab> = {
   "explore": "explore",
   "shopping": "shopping",
   "profile": "profile",
+  "admin": "admin",
 };
 
 interface Route { tab: Tab; recipeId: string | null }
@@ -71,6 +74,7 @@ function buildRoute(tab: Tab, recipeId: string | null): string {
   if (tab === "explore") return "/explore";
   if (tab === "shopping") return "/shopping";
   if (tab === "profile") return "/profile";
+  if (tab === "admin") return "/admin";
   return "/plan";
 }
 
@@ -345,6 +349,7 @@ export default function App() {
         {tab === "explore" && <Explore />}
         {tab === "shopping" && <ShoppingList />}
         {tab === "profile" && <Profile />}
+        {tab === "admin" && me.is_admin && <Admin />}
       </main>
 
       <footer className="app-footer">
@@ -365,6 +370,14 @@ export default function App() {
         >
           {t("nav.replayTour")}
         </button>
+        {me.is_admin && (
+          <>
+            {" · "}
+            <button type="button" className="link-button" onClick={() => setTab("admin")}>
+              Admin
+            </button>
+          </>
+        )}
       </footer>
 
       <nav className="mobile-nav">

@@ -151,3 +151,28 @@ async def get_optional_user(
         raw_token=creds.credentials,
         claims=claims,
     )
+
+
+# ============================================================================
+# Admin gate
+# ============================================================================
+
+def _admin_user_ids() -> set[str]:
+    """Allowlist of Supabase user_ids (JWT 'sub') permitted to use /admin/*.
+    Comma-separated in ADMIN_USER_IDS. Empty set = the admin surface is locked
+    for everyone (safe default)."""
+    raw = os.environ.get("ADMIN_USER_IDS", "")
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def user_is_admin(user: CurrentUser) -> bool:
+    return user.user_id in _admin_user_ids()
+
+
+async def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Gate an endpoint (or a whole router) to the configured admin user_id(s).
+    403 for any authenticated non-admin; get_current_user already 401s the
+    unauthenticated. This is a real server-side boundary, not UI hiding."""
+    if not user_is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin only")
+    return user

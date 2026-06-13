@@ -26,7 +26,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from api.auth import CurrentUser, get_current_user
+from api.auth import CurrentUser, get_current_user, user_is_admin
 from api.db import service_tx, user_tx
 
 
@@ -48,6 +48,7 @@ class MeResponse(BaseModel):
     email: Optional[str]
     household: Optional[HouseholdInfo]
     credit_balance: Optional[float] = None  # null when the user has no household
+    is_admin: bool = False                  # gates the frontend Admin tab
 
 
 class CreateHouseholdRequest(BaseModel):
@@ -123,6 +124,7 @@ async def get_me(user: CurrentUser = Depends(get_current_user)) -> MeResponse:
         email=user.email,
         household=household,
         credit_balance=credit_balance,
+        is_admin=user_is_admin(user),
     )
 
 

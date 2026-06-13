@@ -51,6 +51,7 @@ export interface MeResponse {
   email: string | null;
   household: HouseholdInfo | null;
   credit_balance: number | null;
+  is_admin: boolean;
 }
 
 export interface InviteResponse {
@@ -119,6 +120,45 @@ export async function deleteAccount(): Promise<void> {
   if (!res.ok && res.status !== 204) {
     throw new Error(`delete account failed (${res.status})`);
   }
+}
+
+// ---- Admin (server-gated to ADMIN_USER_IDS; non-admins get 403) -------------
+
+export interface AdminLocaleContent {
+  name: string;
+  instructions: string[];
+}
+
+export interface AdminRecipeTranslation {
+  id: string;
+  base_name: string;
+  en: AdminLocaleContent;
+  sv: AdminLocaleContent;
+}
+
+export async function fetchAdminRecipes(): Promise<AdminRecipeTranslation[]> {
+  return ok<AdminRecipeTranslation[]>(await authFetch("/admin/recipes"), "admin recipes");
+}
+
+export async function saveAdminRecipeTranslations(
+  id: string,
+  en: AdminLocaleContent,
+  sv: AdminLocaleContent,
+): Promise<void> {
+  await ok<unknown>(
+    await authFetch(`/admin/recipes/${encodeURIComponent(id)}/translations`, {
+      method: "PUT",
+      body: JSON.stringify({ en, sv }),
+    }),
+    "save translations",
+  );
+}
+
+export async function reloadCatalog(): Promise<{ ok: boolean; pantry: number }> {
+  return ok<{ ok: boolean; pantry: number }>(
+    await authFetch("/admin/reload-catalog", { method: "POST" }),
+    "reload catalog",
+  );
 }
 
 // ---- Profile (subset used by the onboarding wizard) ------------------------

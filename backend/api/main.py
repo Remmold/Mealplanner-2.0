@@ -20,6 +20,7 @@ from api.starter_seed import router as starter_seed_router
 from api.explore import router as explore_router
 from api.meals import router as meals_router
 from api.ingredient_images import router as ingredient_images_router
+from api.admin import router as admin_router
 from api.mcp_server import build_mcp_asgi, mcp_app, protected_resource_metadata
 from api.models import (
     AggregatedNutrition,
@@ -93,6 +94,7 @@ app.include_router(starter_seed_router)
 app.include_router(explore_router)
 app.include_router(meals_router)
 app.include_router(ingredient_images_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")
