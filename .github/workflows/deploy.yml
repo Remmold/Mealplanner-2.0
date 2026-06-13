@@ -1,0 +1,42 @@
+name: Deploy to VM
+
+# Push-to-deploy: on a push to main that touches the app or deploy config, SSH
+# into the Azure VM, pull, rebuild the two images, and restart. Builds run
+# sequentially so two memory-hungry builds can't OOM the 1GB box (which also
+# hosts darkfall — it must stay up).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 30m
+          script_stop: true
+          script: |
+            cd ~/mealplanner
+            git fetch origin main
+            git reset --hard origin/main
+            docker-compose build mealplanner-backend
+            docker-compose build mealplanner-frontend
+            docker-compose up -d
+            docker image prune -f

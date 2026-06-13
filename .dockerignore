@@ -1,0 +1,44 @@
+# Backend build context = repo root (backend/Dockerfile COPYs backend/api etc.).
+# Keep it lean: the VM is a 1GB box and a fat context times the build out. Most
+# of the giant files are gitignored (absent from the VM clone) but are excluded
+# here too so a local build stays fast.
+
+.git
+.github
+.claude
+docs
+*.md
+*.svg
+*.ps1
+frontend
+supabase
+
+# Offline data-pipeline artifacts — the runtime API is Postgres-only and never
+# reads these.
+backend/off_dump.jsonl.gz
+backend/off_dump.jsonl.meta.json
+backend/food_data.duckdb
+backend/recipes.db
+backend/usda_sr_legacy.zip
+backend/usda_data
+backend/.dlt
+backend/seeds
+backend/transform
+backend/scripts
+backend/ingredient_images
+backend/recipe_images
+backend/_*.py
+backend/_*.json
+backend/query_ing*.py
+backend/check_cuisines.py
+
+# Caches, venvs, secrets (env is supplied at runtime via compose env_file).
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/*.log
+**/.env
+**/.DS_Store
+**/node_modules

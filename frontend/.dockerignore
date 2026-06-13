@@ -1,0 +1,5 @@
+node_modules
+dist
+.git
+*.log
+# Do NOT ignore .env — Vite inlines VITE_* into the bundle at build time.

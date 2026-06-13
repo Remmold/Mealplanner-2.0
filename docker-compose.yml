@@ -1,0 +1,39 @@
+# Mealplanner 2.0 — deploys to the Azure VM alongside darkfall et al.
+#
+# Services are named mealplanner-* on purpose: the shared nginx-proxy joins this
+# project's default network to reach the API by name, and a generic `backend`
+# alias would collide with darkfall's `backend` on the proxy and break its /api.
+#
+# Edge routing (in ~/nginx-proxy/nginx.conf): /api/ -> mealplanner-backend:8000/
+# (trailing slash strips /api, since the API serves routes at root), and / ->
+# 172.17.0.1:8084 (this frontend, published below).
+services:
+  mealplanner-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: mealplanner-backend
+    restart: always
+    expose:
+      - "8000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      # Generated food images are written to disk and served via FileResponse;
+      # mount to the host so they survive `down/up --build`.
+      - ./data/ingredient_images:/app/ingredient_images
+      - ./data/recipe_images:/app/recipe_images
+
+  mealplanner-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mealplanner-frontend
+    restart: always
+    ports:
+      - "8084:80"
+    volumes:
+      # Webroot the edge proxy points ACME challenges at (read-only to nginx).
+      - ./data/certbot-www:/var/www/certbot:ro
+    depends_on:
+      - mealplanner-backend
