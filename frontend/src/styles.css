@@ -819,6 +819,9 @@ label.field {
 }
 .explore-card-top {
   cursor: grab;
+  /* Claim the gesture so a horizontal swipe drags the card instead of
+     scrolling/refreshing the page on touch devices. */
+  touch-action: none;
   transition: transform .28s cubic-bezier(.22, .61, .36, 1);
 }
 .explore-card-top.is-dragging {
@@ -2610,4 +2613,139 @@ input[type="checkbox"] {
 @keyframes feedSpin {
   from { transform: rotate(0); }
   to   { transform: rotate(360deg); }
+}
+
+/* ============================================================
+   Mobile bottom navigation
+   On phones/tablets the text top-nav is replaced by an icon tab-bar
+   pinned to the bottom of the viewport (thumb-reachable). Rendered
+   always in App.tsx; hidden above the breakpoint.
+   ============================================================ */
+.mobile-nav { display: none; }
+.mobile-nav-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 2px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--taupe-2);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.1;
+  transition: color .12s;
+}
+.mobile-nav-btn.active { color: var(--sage-dark); }
+.mobile-nav-btn span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Responsive — phones & small tablets (<= 768px)
+   The desktop layout is the default; everything below adapts it for
+   narrow, touch-first viewports.
+   ============================================================ */
+@media (max-width: 768px) {
+  body { font-size: 15px; }
+
+  h1 { font-size: 1.6rem; }
+  h2 { font-size: 1.35rem; }
+  h3 { font-size: 1.15rem; }
+
+  /* Header: compact, drop the desktop text-nav (bottom bar takes over). */
+  .app-header { padding: var(--space-3) var(--space-4); }
+  .app-header-row { gap: var(--space-3); }
+  .nav { display: none; }
+  .brand-mark { font-size: 1.35rem; }
+  .auth-header-tail { gap: var(--space-2); }
+
+  /* Reserve space at the bottom for the fixed tab-bar so nothing is hidden
+     behind it (footer, last list rows, etc.). */
+  .app-shell { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .content { padding: var(--space-4); }
+
+  /* Show the bottom tab-bar. */
+  .mobile-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 30;
+    justify-content: space-around;
+    align-items: stretch;
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
+    background: rgba(255, 254, 251, 0.96);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid var(--line);
+  }
+
+  /* Chat: full-width drawer; float its launcher above the tab-bar. */
+  .chat-launcher {
+    bottom: calc(72px + env(safe-area-inset-bottom));
+    right: 16px;
+  }
+  .chat-drawer { width: 100vw; }
+
+  /* Calendar: tighten cells and drop the per-day image/tags — a tap opens the
+     day detail. Day number + truncated name keep the month glanceable. */
+  .month-body { grid-auto-rows: minmax(58px, auto); }
+  .month-cell { padding: 4px 5px; gap: 3px; }
+  .month-cell-img,
+  .cell-tag,
+  .month-cell-more { display: none; }
+  .month-header-day { padding: 6px 2px; font-size: 11px; }
+  .plan-toolbar-week { min-width: 0; }
+
+  /* Cookbook: shed the wide print-style margins. */
+  .cookbook-page { padding: var(--space-5) var(--space-4); min-height: 0; }
+  .cookbook-cover-title { font-size: 32px; }
+  .cookbook-chapter-title-page { font-size: 30px; }
+  .cookbook-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+
+  /* Explore deck: fit the viewport instead of a fixed 560px stage. */
+  .explore-stage { height: min(560px, 72vh); max-width: 100%; }
+  .explore-card-image { height: 200px; }
+
+  /* Cook mode: smaller padding + type for narrow screens. */
+  .cook-shell { padding: var(--space-4); }
+  .cook-step-card { padding: var(--space-4); }
+  .cook-step-num { font-size: 36px; }
+  .cook-step-text { font-size: 18px; }
+  .cook-ingredients-toggle { left: var(--space-4); bottom: var(--space-4); }
+
+  .hero { padding: var(--space-4); }
+
+  /* Two-column form layouts (flex-1 + a min-width floor) are meant to wrap.
+     Force a full-width single-column stack so the floor can't overflow the
+     padded viewport. */
+  .min-w-300, .min-w-320, .min-w-340 { min-width: 100%; }
+
+  /* Day-detail slot blocks stack their label above content on narrow screens. */
+  .day-slot-block { flex-direction: column; gap: 6px; }
+  .day-slot-block-label { width: auto; padding-top: 0; }
+
+  /* Touch ergonomics. Inputs render at >=16px so iOS Safari doesn't zoom the
+     page on focus, and interactive controls get thumb-sized hit targets
+     (~44px) instead of the mouse-sized desktop defaults. */
+  .input, .select, .textarea {
+    font-size: 16px;
+    min-height: 44px;
+    padding: 11px 12px;
+  }
+  .btn-block { min-height: 46px; }
+  .icon-btn { width: 40px; height: 40px; }
+  .icon-btn-sm { width: 34px; height: 34px; }
+}
+
+/* Small phones (<= 480px): trim the last bits that still crowd. */
+@media (max-width: 480px) {
+  .brand-tag { display: none; }
+  .content { padding: var(--space-3); }
+  .cookbook-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 }
