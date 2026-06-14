@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } fr
 import { useTranslation } from "react-i18next";
 import { useEnumLabels } from "../i18n/enums";
 import {
-  Apple, ArrowLeft, Beef, Carrot, Check, ChefHat, Droplet, Drumstick, Fish,
+  Apple, ArrowLeft, Beef, Camera, Carrot, Check, ChefHat, Droplet, Drumstick, Fish,
   Milk, Minus, Nut, Pencil, Plus, RefreshCw, Soup, Sparkles, UtensilsCrossed, Wheat, X,
 } from "lucide-react";
 import CookMode from "./CookMode";
@@ -15,12 +15,14 @@ import {
   deleteRecipe,
   aggregateRecipe,
   generateRecipe,
+  generateRecipeFromImages,
   searchUsda,
   addToPantry,
   onDataChanged,
   regenerateRecipeImage,
   seedStarterRecipes,
   ensureIngredientImages,
+  type GeneratedRecipe,
   type Ingredient,
   type Recipe,
   type RecipeNutrition,
@@ -82,6 +84,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
   const [mealType, setMealType] = useState<"breakfast" | "lunch" | "dinner" | "">("");
   const [imagePath, setImagePath] = useState<string | null>(null);
   const [imageBust, setImageBust] = useState(0);    // force <img> reload after regenerate
+  const photoInputRef = useRef<HTMLInputElement>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
@@ -278,22 +281,41 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     finally { setRegenerating(false); }
   }
 
+  // Shared by the text-prompt generator and the photo extractor: drop a
+  // GeneratedRecipe into the builder for review/edit before saving.
+  function populateFromGenerated(gen: GeneratedRecipe) {
+    setActiveRecipeId(null);
+    setRecipeName(gen.name);
+    setInstructions(gen.instructions);
+    setItems(
+      gen.ingredients.map((gi) => ({
+        ingredient: resolveIngredient(allIngredients, gi.fdc_id, gi.name),
+        quantity_g: gi.quantity_g,
+      })),
+    );
+    setDirty(true);
+    setMode("edit");
+  }
+
   async function handleGenerate() {
     if (!genPrompt.trim()) return;
     setGenerating(true);
     setError("");
     try {
-      const gen = await generateRecipe(genPrompt.trim());
-      setActiveRecipeId(null);
-      setRecipeName(gen.name);
-      setInstructions(gen.instructions);
-      const loaded: RecipeItem[] = gen.ingredients.map((gi) => ({
-        ingredient: resolveIngredient(allIngredients, gi.fdc_id, gi.name),
-        quantity_g: gi.quantity_g,
-      }));
-      setItems(loaded);
-      setDirty(true);
-      setMode("edit");
+      populateFromGenerated(await generateRecipe(genPrompt.trim()));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function handlePhotos(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setGenerating(true);
+    setError("");
+    try {
+      populateFromGenerated(await generateRecipeFromImages(Array.from(files).slice(0, 4)));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -644,6 +666,21 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
             />
             <Button onClick={handleGenerate} disabled={generating || !genPrompt.trim()} variant="accent">
               {generating ? t("recipe.thinking") : t("common.generate")}
+            </Button>
+          </div>
+          <div className="row gap-2 mt-2 items-center">
+            <span className="small muted flex-1">{t("recipe.photosHint")}</span>
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              capture="environment"
+              className="hidden"
+              onChange={(e) => { void handlePhotos(e.target.files); e.currentTarget.value = ""; }}
+            />
+            <Button onClick={() => photoInputRef.current?.click()} disabled={generating}>
+              <Camera size={14} /> {t("recipe.fromPhotos")}
             </Button>
           </div>
         </Card>

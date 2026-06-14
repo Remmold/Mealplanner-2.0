@@ -244,6 +244,26 @@ export async function generateRecipe(prompt: string): Promise<GeneratedRecipe> {
   return res.json();
 }
 
+/** Extract a structured recipe from photo(s). Multipart upload — can't use
+ *  authFetch (which forces application/json); the browser sets the boundary. */
+export async function generateRecipeFromImages(files: File[]): Promise<GeneratedRecipe> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  const res = await fetch(`${BASE}/recipes/from-images?locale=${activeLocale()}`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { const b = await res.json(); if (b?.detail) msg = b.detail; } catch { /* keep status */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 /** Seed N profile-matched starter recipes into the current household.
  *  Idempotent: skips recipes the household already has by name.
  *  Returns the names that were actually created. */

@@ -43,6 +43,9 @@ export const recipeEn = {
   generateHint: 'Try "Thai red curry for 4" or "quick weeknight pasta with what\'s in season"',
   generatePlaceholder: "What are we cooking?",
   thinking: "Thinking...",
+  fromPhotos: "From photos",
+  photosHint: "…or snap a photo of a recipe",
+  readingPhotos: "Reading photos…",
 
   // Editor — top bar
   backToRecipes: "Back to recipes",
@@ -145,6 +148,9 @@ export const recipeSv: typeof recipeEn = {
   generateHint: 'Prova "Thailändsk röd curry för 4" eller "snabb vardagspasta med säsongens råvaror"',
   generatePlaceholder: "Vad ska vi laga?",
   thinking: "Tänker...",
+  fromPhotos: "Från foton",
+  photosHint: "…eller fota ett recept",
+  readingPhotos: "Läser foton…",
 
   // Editor — top bar
   backToRecipes: "Tillbaka till recept",

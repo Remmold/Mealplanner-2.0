@@ -1235,6 +1235,7 @@ table.table tr:last-child td { border-bottom: none; }
 .gap-4 { gap: var(--space-4); }
 .gap-5 { gap: var(--space-5); }
 .flex-1 { flex: 1; min-width: 0; }
+.hidden { display: none; }
 .center  { text-align: center; }
 .right   { text-align: right; }
 .mt-2 { margin-top: var(--space-2); }

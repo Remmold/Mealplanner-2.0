@@ -171,13 +171,8 @@ agent = Agent(
 )
 
 
-@agent.tool_plain
-async def search_ingredients(query: str) -> str:
-    """Search available ingredients by name or category.
-
-    Searches the curated pantry first (preferred); falls back to the full
-    USDA database (~8k items) when curated has no hits. Returns fdc_id,
-    name, category, and basic nutrition per 100g."""
+async def _do_search(query: str) -> str:
+    """Shared ingredient-search body used by both the text and vision agents."""
     all_ingredients = await _load_all_ingredients()
     query_lower = query.lower()
     matches = [
@@ -199,6 +194,16 @@ async def search_ingredients(query: str) -> str:
             f"{ing['carbs']}g carbs, {ing['fat']}g fat per 100g"
         )
     return "\n".join(lines)
+
+
+@agent.tool_plain
+async def search_ingredients(query: str) -> str:
+    """Search available ingredients by name or category.
+
+    Searches the curated pantry first (preferred); falls back to the full
+    USDA database (~8k items) when curated has no hits. Returns fdc_id,
+    name, category, and basic nutrition per 100g."""
+    return await _do_search(query)
 
 
 def _avoidance_directive(
@@ -244,4 +249,67 @@ async def generate_recipe(
     avoidance directive so the generated recipe never contains them, in any
     language. Callers that have the profile should always pass them."""
     result = await agent.run(prompt + _avoidance_directive(allergies, dislikes))
+    return result.output
+
+
+# ---- Recipe extraction from photos (vision) ---------------------------------
+
+_VISION_SYSTEM = (
+    "You transcribe a recipe from one or more PHOTOS (a cookbook page, a "
+    "handwritten card, a printout, or a phone screenshot) into structured form "
+    "for a meal-planning app. Reproduce the recipe FAITHFULLY — do not invent.\n"
+    "- Use the dish's name as written.\n"
+    "- List every ingredient shown, with its quantity converted to GRAMS "
+    "(convert cups / tbsp / tsp / pieces sensibly; estimate only when a quantity "
+    "is missing or illegible).\n"
+    "- You MUST call search_ingredients to map EVERY ingredient to a real fdc_id "
+    "— never invent fdc_id values. Search by the core ingredient word.\n"
+    "- Reproduce the method as the steps shown; you may lightly clean up grammar "
+    "and ordering, but DO NOT add steps or ingredients that aren't in the photos.\n"
+    "- If several photos show ONE recipe (an ingredients page + a method page), "
+    "merge them. If the photos are unreadable or aren't a recipe, return a recipe "
+    "named 'Unreadable' with no ingredients and one instruction saying so.\n"
+    "Write the name, ingredient names, and steps in the language requested."
+)
+
+vision_agent = Agent(_MODEL, output_type=GeneratedRecipe, system_prompt=_VISION_SYSTEM)
+
+
+@vision_agent.tool_plain
+async def vision_search_ingredients(query: str) -> str:
+    """Search available ingredients by name/category; returns fdc_id, name,
+    category, and basic nutrition per 100g (same source as the text agent)."""
+    return await _do_search(query)
+
+
+def _prep_image(raw: bytes, max_px: int = 1536) -> bytes:
+    """Downscale + re-encode an uploaded photo to JPEG so the vision call stays
+    cheap and the format is one OpenAI accepts. Falls back to the raw bytes."""
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(raw)).convert("RGB")
+        img.thumbnail((max_px, max_px))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception:
+        return raw
+
+
+async def generate_recipe_from_images(
+    images: list[bytes], *, locale: str = "en"
+) -> GeneratedRecipe:
+    """Read a recipe from photo(s) and return it in the SAME structure as
+    generate_recipe (ingredients mapped to fdc_ids via search_ingredients)."""
+    from pydantic_ai import BinaryContent
+
+    lang = "Swedish" if str(locale).startswith("sv") else "English"
+    parts: list = [
+        f"Transcribe the recipe shown in these photo(s). Write the name, "
+        f"ingredients, and steps in {lang}."
+    ]
+    for raw in images:
+        parts.append(BinaryContent(data=_prep_image(raw), media_type="image/jpeg"))
+    result = await vision_agent.run(parts)
     return result.output

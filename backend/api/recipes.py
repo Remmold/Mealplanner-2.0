@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 import asyncpg
 
@@ -247,6 +247,43 @@ async def generate_recipe_endpoint(
     except Exception as e:
         raise HTTPException(500, f"Recipe generation failed: {e}")
 
+    await debit(household_id, "recipe_gen")
+
+    return GeneratedRecipeOut(
+        name=result.name,
+        ingredients=[
+            {"fdc_id": ing.fdc_id, "name": ing.name, "quantity_g": ing.quantity_g}
+            for ing in result.ingredients
+        ],
+        instructions=result.instructions,
+    )
+
+
+@router.post("/from-images", response_model=GeneratedRecipeOut)
+async def recipe_from_images_endpoint(
+    files: list[UploadFile] = File(...),
+    locale: str = Query("en"),
+    household_id: str = Depends(get_current_household_id),
+):
+    """Extract a structured recipe from up to 4 photos (cookbook page, handwritten
+    card, screenshot). Returns the same shape as /generate so the frontend reviews
+    + saves it through the normal builder flow."""
+    from api.credits import debit, require_credits
+    from api.recipe_gen import generate_recipe_from_images
+
+    images: list[bytes] = []
+    for f in (files or [])[:4]:
+        data = await f.read()
+        if data:
+            images.append(data)
+    if not images:
+        raise HTTPException(400, "Upload at least one photo of a recipe.")
+
+    await require_credits(household_id, "recipe_gen")
+    try:
+        result = await generate_recipe_from_images(images, locale=locale)
+    except Exception as e:
+        raise HTTPException(500, f"Recipe extraction failed: {e}")
     await debit(household_id, "recipe_gen")
 
     return GeneratedRecipeOut(
