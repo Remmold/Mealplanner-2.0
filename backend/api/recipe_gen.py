@@ -1,5 +1,6 @@
 """LLM-powered recipe generation using PydanticAI + OpenAI (Postgres-backed)."""
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -237,6 +238,22 @@ def _avoidance_directive(
     return "\n".join(lines)
 
 
+async def _run_with_retry(agent_obj, user_input, *, retries: int = 4):
+    """Run a pydantic-ai agent, retrying on OpenAI 429 rate-limit errors — the
+    org's shared per-minute token bucket (TPM) refills within ~1s, so a short
+    backoff turns a transient 429 into a success."""
+    for attempt in range(retries):
+        try:
+            return await agent_obj.run(user_input)
+        except Exception as e:
+            msg = str(e).lower()
+            is_rate = "429" in msg or "rate limit" in msg or "rate_limit" in msg
+            if is_rate and attempt < retries - 1:
+                await asyncio.sleep(1.0 + 1.5 * attempt)
+                continue
+            raise
+
+
 async def generate_recipe(
     prompt: str,
     *,
@@ -248,7 +265,7 @@ async def generate_recipe(
     `allergies`/`dislikes` (from the household profile) are injected as a hard
     avoidance directive so the generated recipe never contains them, in any
     language. Callers that have the profile should always pass them."""
-    result = await agent.run(prompt + _avoidance_directive(allergies, dislikes))
+    result = await _run_with_retry(agent, prompt + _avoidance_directive(allergies, dislikes))
     return result.output
 
 
@@ -311,5 +328,5 @@ async def generate_recipe_from_images(
     ]
     for raw in images:
         parts.append(BinaryContent(data=_prep_image(raw), media_type="image/jpeg"))
-    result = await vision_agent.run(parts)
+    result = await _run_with_retry(vision_agent, parts)
     return result.output
