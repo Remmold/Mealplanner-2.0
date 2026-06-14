@@ -244,13 +244,38 @@ export async function generateRecipe(prompt: string): Promise<GeneratedRecipe> {
   return res.json();
 }
 
+/** Decode any browser-displayable image (incl. iPhone HEIC) and re-encode as a
+ *  downscaled JPEG. Fixes HEIC uploads the backend (PIL) can't read, and shrinks
+ *  the payload before it leaves the phone. */
+async function toJpeg(file: File, maxPx = 1600): Promise<Blob> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const scale = Math.min(1, maxPx / Math.max(img.naturalWidth, img.naturalHeight, 1));
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d")!.drawImage(img, 0, 0, w, h);
+    return await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("image encode failed"))), "image/jpeg", 0.9),
+    );
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /** Extract a structured recipe from photo(s). Multipart upload — can't use
- *  authFetch (which forces application/json); the browser sets the boundary. */
+ *  authFetch (which forces application/json); the browser sets the boundary.
+ *  Photos are converted to JPEG client-side so HEIC (iPhone) works too. */
 export async function generateRecipeFromImages(files: File[]): Promise<GeneratedRecipe> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   const fd = new FormData();
-  for (const f of files) fd.append("files", f);
+  for (const f of files) fd.append("files", await toJpeg(f), "page.jpg");
   const res = await fetch(`${BASE}/recipes/from-images?locale=${activeLocale()}`, {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -262,6 +287,25 @@ export async function generateRecipeFromImages(files: File[]): Promise<Generated
     throw new Error(msg);
   }
   return res.json();
+}
+
+/** Set a recipe's image from a photo. The backend crops it to a square and
+ *  enhances it to match the app's recipe-image format. */
+export async function uploadRecipeImage(recipeId: string, file: File): Promise<void> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  const fd = new FormData();
+  fd.append("file", await toJpeg(file), "dish.jpg");
+  const res = await fetch(`${BASE}/recipes/${encodeURIComponent(recipeId)}/image`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: fd,
+  });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { const b = await res.json(); if (b?.detail) msg = b.detail; } catch { /* keep status */ }
+    throw new Error(msg);
+  }
 }
 
 /** Seed N profile-matched starter recipes into the current household.

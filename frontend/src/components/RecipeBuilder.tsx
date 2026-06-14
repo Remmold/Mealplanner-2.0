@@ -16,6 +16,7 @@ import {
   aggregateRecipe,
   generateRecipe,
   generateRecipeFromImages,
+  uploadRecipeImage,
   searchUsda,
   addToPantry,
   onDataChanged,
@@ -85,6 +86,7 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
   const [imagePath, setImagePath] = useState<string | null>(null);
   const [imageBust, setImageBust] = useState(0);    // force <img> reload after regenerate
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const dishInputRef = useRef<HTMLInputElement>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
@@ -320,6 +322,22 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
       setError(String(e));
     } finally {
       setGenerating(false);
+    }
+  }
+
+  // Dish photo -> the recipe's image (backend crops to square + enhances).
+  async function handleDishPhoto(file: File | null) {
+    if (!file || !activeRecipeId) return;
+    setRegenerating(true);
+    setError("");
+    try {
+      await uploadRecipeImage(activeRecipeId, file);
+      setImageBust((b) => b + 1);
+      await loadRecipes();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRegenerating(false);
     }
   }
 
@@ -699,6 +717,23 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
                 <span className="tiny muted">{t("recipe.generatingImage")}</span>
               </div>
             )}
+            <input
+              ref={dishInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={(e) => { void handleDishPhoto(e.target.files?.[0] ?? null); e.currentTarget.value = ""; }}
+            />
+            <Button
+              onClick={() => dishInputRef.current?.click()}
+              disabled={regenerating}
+              size="xs"
+              className="recipe-hero-photo"
+              title={t("recipe.uploadPhotoTitle")}
+            >
+              <Camera size={12} /> {t("recipe.uploadPhoto")}
+            </Button>
             <Button
               onClick={handleRegenerateImage}
               disabled={regenerating}

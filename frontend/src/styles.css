@@ -1289,6 +1289,12 @@ table.table tr:last-child td { border-bottom: none; }
   backdrop-filter: blur(6px);
   box-shadow: var(--shadow-sm);
 }
+.recipe-hero-photo {
+  position: absolute; bottom: 10px; left: 10px;
+  background: rgba(255, 254, 251, 0.92);
+  backdrop-filter: blur(6px);
+  box-shadow: var(--shadow-sm);
+}
 
 /* Read-only recipe view */
 .ing-icon { color: var(--taupe); flex-shrink: 0; }

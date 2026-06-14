@@ -22,7 +22,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from api.db import get_current_household_id, service_tx
@@ -256,3 +256,52 @@ async def regenerate_image(
         raise HTTPException(404, "Recipe not found")
     await generate_recipe_image(recipe_id, row["name"], household_id)
     return {"status": "ok"}
+
+
+def _process_dish_photo(raw: bytes, size: int = 1024) -> bytes:
+    """Turn a user's dish photo into the app's recipe-image format: respect EXIF
+    orientation, center-crop to a square, light auto-enhance, encode as JPEG."""
+    from io import BytesIO
+    from PIL import Image, ImageEnhance, ImageOps
+
+    img = ImageOps.exif_transpose(Image.open(BytesIO(raw))).convert("RGB")
+    img = ImageOps.fit(img, (size, size), Image.LANCZOS)   # center-crop square + resize
+    img = ImageOps.autocontrast(img, cutoff=1)
+    img = ImageEnhance.Color(img).enhance(1.08)
+    img = ImageEnhance.Sharpness(img).enhance(1.15)
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=88, optimize=True)
+    return buf.getvalue()
+
+
+@router.post("/recipes/{recipe_id}/image")
+async def upload_recipe_image(
+    recipe_id: str,
+    file: UploadFile = File(...),
+    household_id: str = Depends(get_current_household_id),
+):
+    """Set a recipe's image from an uploaded photo, cropped + enhanced to the
+    app's square format. Replaces any generated/previous image."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Empty image")
+    try:
+        data = _process_dish_photo(raw)
+    except Exception as e:
+        raise HTTPException(400, f"Could not process image: {e}")
+
+    async with service_tx() as conn:
+        row = await conn.fetchrow(
+            "SELECT id FROM hearth.recipes WHERE id = $1::uuid AND household_id = $2::uuid",
+            recipe_id, household_id,
+        )
+        if row is None:
+            raise HTTPException(404, "Recipe not found")
+        out_path = IMAGES_DIR / f"{recipe_id}.jpg"
+        out_path.write_bytes(data)
+        await conn.execute(
+            "UPDATE hearth.recipes SET image_path = $1, updated_at = now() "
+            "WHERE id = $2::uuid AND household_id = $3::uuid",
+            out_path.name, recipe_id, household_id,
+        )
+    return {"status": "ok", "image_path": out_path.name}

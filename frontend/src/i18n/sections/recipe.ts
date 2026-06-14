@@ -46,6 +46,8 @@ export const recipeEn = {
   fromPhotos: "From photos",
   photosHint: "…or snap a photo of a recipe",
   readingPhotos: "Reading photos…",
+  uploadPhoto: "Photo",
+  uploadPhotoTitle: "Set the image from a photo (cropped + enhanced)",
 
   // Editor — top bar
   backToRecipes: "Back to recipes",
@@ -151,6 +153,8 @@ export const recipeSv: typeof recipeEn = {
   fromPhotos: "Från foton",
   photosHint: "…eller fota ett recept",
   readingPhotos: "Läser foton…",
+  uploadPhoto: "Foto",
+  uploadPhotoTitle: "Sätt bilden från ett foto (beskuret + förbättrat)",
 
   // Editor — top bar
   backToRecipes: "Tillbaka till recept",
