@@ -9,6 +9,10 @@
 # 172.17.0.1:8084 (this frontend, published below).
 services:
   mealplanner-backend:
+    # Pulled from GHCR (built by CI on GitHub's runners). `build:` stays for
+    # local dev / fallback; on the VM we `pull` + `up --no-build` so the 1GB
+    # box never runs a Docker build.
+    image: ghcr.io/remmold/mealplanner-backend:latest
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -25,6 +29,7 @@ services:
       - ./data/recipe_images:/app/recipe_images
 
   mealplanner-frontend:
+    image: ghcr.io/remmold/mealplanner-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
