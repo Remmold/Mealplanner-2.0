@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from api import catalog_cache
 from api.auth import CurrentUser, require_admin
-from api.db import get_current_household_id, get_pool, service_tx, user_tx
+from api.db import get_current_household_id, get_pool, user_tx
 
 # require_admin on the router → every endpoint below 403s for non-admins.
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -146,24 +146,26 @@ async def update_admin_ingredient(
     body: UpdateIngredient,
     user: CurrentUser = Depends(require_admin),
 ) -> dict:
-    async with service_tx() as conn:
-        res = await conn.execute(
-            "UPDATE hearth.pantry_ingredients "
-            "SET simple_name = $1, category = COALESCE($2, category), subcategory = $3 "
-            "WHERE fdc_id = $4",
-            body.simple_name.strip(), body.category, body.subcategory, fdc_id,
-        )
-        if res.endswith(" 0"):
-            raise HTTPException(status_code=404, detail="Ingredient not in pantry")
-        sv = (body.name_sv or "").strip()
-        if sv:
-            await conn.execute(
-                "INSERT INTO hearth.ingredient_sv_names (fdc_id, name_sv) VALUES ($1, $2) "
-                "ON CONFLICT (fdc_id) DO UPDATE SET name_sv = EXCLUDED.name_sv",
-                fdc_id, sv,
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            res = await conn.execute(
+                "UPDATE hearth.pantry_ingredients "
+                "SET simple_name = $1, category = COALESCE($2, category), subcategory = $3 "
+                "WHERE fdc_id = $4",
+                body.simple_name.strip(), body.category, body.subcategory, fdc_id,
             )
-        else:
-            await conn.execute("DELETE FROM hearth.ingredient_sv_names WHERE fdc_id = $1", fdc_id)
+            if res.endswith(" 0"):
+                raise HTTPException(status_code=404, detail="Ingredient not in pantry")
+            sv = (body.name_sv or "").strip()
+            if sv:
+                await conn.execute(
+                    "INSERT INTO hearth.ingredient_sv_names (fdc_id, name_sv) VALUES ($1, $2) "
+                    "ON CONFLICT (fdc_id) DO UPDATE SET name_sv = EXCLUDED.name_sv",
+                    fdc_id, sv,
+                )
+            else:
+                await conn.execute("DELETE FROM hearth.ingredient_sv_names WHERE fdc_id = $1", fdc_id)
     await catalog_cache.load_all()  # make the edit live without a backend restart
     return {"ok": True}
 
