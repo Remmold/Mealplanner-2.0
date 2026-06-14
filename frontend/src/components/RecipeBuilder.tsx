@@ -31,7 +31,7 @@ import {
 } from "../api";
 import {
   Button, Card, Divider, Empty, ErrorBanner, Field, IconButton,
-  Input, List, ListRow, Pill, Select, Textarea,
+  Input, List, ListRow, Modal, Pill, Select, Textarea,
 } from "./ui";
 
 interface RecipeItem {
@@ -85,8 +85,12 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
   const [mealType, setMealType] = useState<"breakfast" | "lunch" | "dinner" | "">("");
   const [imagePath, setImagePath] = useState<string | null>(null);
   const [imageBust, setImageBust] = useState(0);    // force <img> reload after regenerate
-  const photoInputRef = useRef<HTMLInputElement>(null);
   const dishInputRef = useRef<HTMLInputElement>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [ingPhoto, setIngPhoto] = useState<File | null>(null);
+  const [instrPhoto, setInstrPhoto] = useState<File | null>(null);
+  const [dishPhotoW, setDishPhotoW] = useState<File | null>(null);
+  const [pendingDishPhoto, setPendingDishPhoto] = useState<File | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [items, setItems] = useState<RecipeItem[]>([]);
   const [nutrition, setNutrition] = useState<RecipeNutrition | null>(null);
@@ -312,18 +316,47 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
     }
   }
 
-  async function handlePhotos(files: FileList | null) {
-    if (!files || files.length === 0) return;
+  async function handleWizardCreate() {
+    const pages = [ingPhoto, instrPhoto].filter((f): f is File => !!f);
+    if (pages.length === 0) return;
     setGenerating(true);
     setError("");
     try {
-      populateFromGenerated(await generateRecipeFromImages(Array.from(files).slice(0, 4)));
+      populateFromGenerated(await generateRecipeFromImages(pages));
+      setPendingDishPhoto(dishPhotoW);   // attached to the recipe image on save
+      setWizardOpen(false);
+      setIngPhoto(null);
+      setInstrPhoto(null);
+      setDishPhotoW(null);
     } catch (e) {
       setError(String(e));
     } finally {
       setGenerating(false);
     }
   }
+
+  // One wizard photo slot: a label-wrapped file input (native picker) with an
+  // inline thumbnail preview.
+  const photoSlot = (label: string, hint: string, file: File | null, set: (f: File | null) => void) => (
+    <div className="wizard-slot">
+      <div className="row gap-2 items-center">
+        <span className="small flex-1"><strong>{label}</strong>{hint ? ` · ${hint}` : ""}</span>
+        {file && <IconButton onClick={() => set(null)} aria-label="Remove"><X size={14} /></IconButton>}
+      </div>
+      <label className="wizard-slot-drop">
+        <input
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => { set(e.target.files?.[0] ?? null); e.currentTarget.value = ""; }}
+        />
+        {file
+          ? <img src={URL.createObjectURL(file)} alt={label} className="wizard-slot-thumb" />
+          : <span className="muted small row gap-1 items-center"><Camera size={16} /> {t("recipe.addPhoto")}</span>}
+      </label>
+    </div>
+  );
 
   // Dish photo -> the recipe's image (backend crops to square + enhances).
   async function handleDishPhoto(file: File | null) {
@@ -351,6 +384,13 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
       } else {
         const created = await createRecipe(recipeName, ingredients, instructions, servings, mt);
         setActiveRecipeId(created.id);
+        if (pendingDishPhoto) {
+          try {
+            await uploadRecipeImage(created.id, pendingDishPhoto);
+            setImageBust((b) => b + 1);
+          } catch { /* dish image is best-effort; the recipe still saved */ }
+          setPendingDishPhoto(null);
+        }
       }
       setDirty(false);
       void ensureIngredientImages(items.map((i) => i.ingredient.fdc_id));
@@ -688,21 +728,34 @@ export default function RecipeBuilder({ initialRecipeId, onInitialConsumed }: Re
           </div>
           <div className="row gap-2 mt-2 items-center">
             <span className="small muted flex-1">{t("recipe.photosHint")}</span>
-            <input
-              ref={photoInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              capture="environment"
-              className="hidden"
-              onChange={(e) => { void handlePhotos(e.target.files); e.currentTarget.value = ""; }}
-            />
-            <Button onClick={() => photoInputRef.current?.click()} disabled={generating}>
+            <Button onClick={() => setWizardOpen(true)} disabled={generating}>
               <Camera size={14} /> {t("recipe.fromPhotos")}
             </Button>
           </div>
         </Card>
       )}
+
+      {wizardOpen && (
+        <Modal open onClose={() => setWizardOpen(false)} title={t("recipe.photoWizardTitle")}>
+          <p className="small muted">{t("recipe.photoWizardHint")}</p>
+          <div className="col gap-4 mt-3">
+            {photoSlot(t("recipe.slotIngredients"), "", ingPhoto, setIngPhoto)}
+            {photoSlot(t("recipe.slotMethod"), "", instrPhoto, setInstrPhoto)}
+            {photoSlot(t("recipe.slotDish"), t("recipe.slotDishHint"), dishPhotoW, setDishPhotoW)}
+          </div>
+          {error && <div className="mt-3"><ErrorBanner>{error}</ErrorBanner></div>}
+          <Button
+            variant="accent"
+            block
+            className="mt-4"
+            onClick={handleWizardCreate}
+            disabled={generating || (!ingPhoto && !instrPhoto)}
+          >
+            {generating ? t("recipe.readingPhotos") : t("recipe.photoWizardCreate")}
+          </Button>
+        </Modal>
+      )}
+
       <Card>
         {activeRecipeId && (
           <div className="recipe-hero">

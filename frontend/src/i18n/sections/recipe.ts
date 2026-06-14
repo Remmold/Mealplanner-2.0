@@ -48,6 +48,14 @@ export const recipeEn = {
   readingPhotos: "Reading photos…",
   uploadPhoto: "Photo",
   uploadPhotoTitle: "Set the image from a photo (cropped + enhanced)",
+  photoWizardTitle: "Add a recipe from photos",
+  photoWizardHint: "Add a photo of each. The ingredients + method are read into a recipe; the dish photo becomes the image.",
+  photoWizardCreate: "Read recipe",
+  addPhoto: "Add photo",
+  slotIngredients: "Ingredients",
+  slotMethod: "Method / steps",
+  slotDish: "Dish photo",
+  slotDishHint: "optional — becomes the image",
 
   // Editor — top bar
   backToRecipes: "Back to recipes",
@@ -155,6 +163,14 @@ export const recipeSv: typeof recipeEn = {
   readingPhotos: "Läser foton…",
   uploadPhoto: "Foto",
   uploadPhotoTitle: "Sätt bilden från ett foto (beskuret + förbättrat)",
+  photoWizardTitle: "Lägg till ett recept från foton",
+  photoWizardHint: "Lägg till ett foto av varje. Ingredienser + metod läses in till ett recept; rättens foto blir bilden.",
+  photoWizardCreate: "Läs recept",
+  addPhoto: "Lägg till foto",
+  slotIngredients: "Ingredienser",
+  slotMethod: "Metod / steg",
+  slotDish: "Rättens foto",
+  slotDishHint: "valfritt — blir bilden",
 
   // Editor — top bar
   backToRecipes: "Tillbaka till recept",
