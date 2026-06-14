@@ -22,6 +22,13 @@ from api.db import get_pool
 router = APIRouter(tags=["ingredients"])
 
 
+@router.get("/ingredients/sv-names")
+async def ingredient_sv_names(user: CurrentUser = Depends(get_current_user)) -> dict[int, str]:
+    """fdc_id -> Swedish display name. The frontend loads this once to localize
+    ingredient names (replaces the old build-time ingredient-names.sv.ts)."""
+    return catalog_cache.sv_names()
+
+
 # ----------------------------------------------------------------------------
 # Category mapping kept for any code still consulting USDA food_group values
 # (e.g. the shopping-list generator's fallback grouping).

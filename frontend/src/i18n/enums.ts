@@ -6,7 +6,7 @@
 // typed t() accepts; unknown values (e.g. a user-renamed store category) fall
 // back to the raw string.
 import { useTranslation } from "react-i18next";
-import { ingredientNameSv } from "./ingredient-names.sv";
+import { ingredientNameSv } from "./ingredientNames";
 
 const SLOT = {
   breakfast: "enums.slot.breakfast",
@@ -99,7 +99,7 @@ export function useEnumLabels() {
     // English name passed in when the id isn't in the alias-derived map.
     ingredient: (fdcId?: number | null, fallback?: string | null) => {
       if (isSv && fdcId != null) {
-        const sv = ingredientNameSv[fdcId];
+        const sv = ingredientNameSv(fdcId);
         if (sv) return capitalize(sv);
       }
       return fallback ?? "";

@@ -3,6 +3,7 @@ import type { ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { BookOpen, CalendarDays, Compass, LogOut, ShoppingCart, Sparkles, Users, Wrench } from "lucide-react";
 import { onNavigate, dataChanged } from "./api";
+import { loadIngredientNamesSv } from "./i18n/ingredientNames";
 import { LANG_STORAGE_KEY } from "./i18n";
 import { useAuth } from "./auth/AuthProvider";
 import SignIn from "./auth/SignIn";
@@ -237,6 +238,13 @@ export default function App() {
       void i18n.changeLanguage(me.household.locale);
     }
   }, [me?.household, i18n]);
+
+  // Swedish ingredient names live in the DB now; load the map once after
+  // sign-in and broadcast a data change so views re-render with the names.
+  useEffect(() => {
+    if (!session) return;
+    void loadIngredientNamesSv().then(() => dataChanged("*"));
+  }, [session]);
 
   // Recipe text is fetched per-locale, so a language switch must re-fetch it.
   // Broadcasting a data change makes the recipe/calendar views reload.

@@ -3,9 +3,12 @@
 import { useEffect, useState } from "react";
 import { Button, Card, Empty, ErrorBanner, Input, Textarea } from "./ui";
 import {
+  fetchAdminIngredients,
   fetchAdminRecipes,
   reloadCatalog,
+  saveAdminIngredient,
   saveAdminRecipeTranslations,
+  type AdminIngredient,
   type AdminLocaleContent,
   type AdminRecipeTranslation,
 } from "../lib/auth-api";
@@ -64,6 +67,91 @@ export default function Admin() {
           ))}
         </div>
       </Card>
+
+      <IngredientsPanel onError={setError} />
+    </div>
+  );
+}
+
+function IngredientsPanel({ onError }: { onError: (s: string) => void }) {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<AdminIngredient[] | null>(null);
+
+  async function search(query: string) {
+    setItems(null);
+    try {
+      setItems(await fetchAdminIngredients(query));
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  useEffect(() => {
+    void search("");
+  }, []);
+
+  return (
+    <Card>
+      <h3>Ingredient names (EN / SV)</h3>
+      <p className="small muted">
+        Search the curated pantry and edit the English + Swedish display names.
+        Saving updates Supabase and reloads the catalog.
+      </p>
+      <div className="row gap-2 mt-2">
+        <Input
+          className="flex-1"
+          placeholder="Search ingredients…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && search(q)}
+        />
+        <Button size="sm" onClick={() => search(q)}>Search</Button>
+      </div>
+      {items === null && <p className="muted mt-3">Loading…</p>}
+      {items && items.length === 0 && <Empty>No matches.</Empty>}
+      <div className="col gap-2 mt-3">
+        {items?.map((it) => (
+          <IngredientRow key={it.fdc_id} item={it} onError={onError} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function IngredientRow({ item, onError }: { item: AdminIngredient; onError: (s: string) => void }) {
+  const [en, setEn] = useState(item.simple_name);
+  const [sv, setSv] = useState(item.name_sv ?? "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      await saveAdminIngredient(item.fdc_id, { simple_name: en, name_sv: sv.trim() || null });
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="row gap-2 wrap items-center inset">
+      <Input className="flex-1 min-w-100" value={en} onChange={(e) => setEn(e.target.value)} />
+      <Input
+        className="flex-1 min-w-100"
+        placeholder="(Swedish)"
+        value={sv}
+        onChange={(e) => setSv(e.target.value)}
+      />
+      <span className="tiny muted">{item.category}</span>
+      <Button size="sm" variant="primary" onClick={save} disabled={saving}>
+        {saving ? "…" : "Save"}
+      </Button>
+      {saved && <span className="tiny muted">Saved</span>}
     </div>
   );
 }

@@ -161,6 +161,34 @@ export async function reloadCatalog(): Promise<{ ok: boolean; pantry: number }> 
   );
 }
 
+// Ingredient names: the Swedish map (loaded once by every client) + the admin editor.
+export async function fetchIngredientSvNames(): Promise<Record<number, string>> {
+  return ok<Record<number, string>>(await authFetch("/ingredients/sv-names"), "sv names");
+}
+
+export interface AdminIngredient {
+  fdc_id: number;
+  simple_name: string;
+  name_sv: string | null;
+  category: string;
+  subcategory: string | null;
+}
+
+export async function fetchAdminIngredients(q: string): Promise<AdminIngredient[]> {
+  const qs = new URLSearchParams({ q, limit: "100" }).toString();
+  return ok<AdminIngredient[]>(await authFetch(`/admin/ingredients?${qs}`), "admin ingredients");
+}
+
+export async function saveAdminIngredient(
+  fdc_id: number,
+  body: { simple_name: string; name_sv: string | null },
+): Promise<void> {
+  await ok<unknown>(
+    await authFetch(`/admin/ingredients/${fdc_id}`, { method: "PUT", body: JSON.stringify(body) }),
+    "save ingredient",
+  );
+}
+
 // ---- Profile (subset used by the onboarding wizard) ------------------------
 
 export interface ProfilePatch {

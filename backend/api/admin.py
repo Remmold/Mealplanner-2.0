@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from api import catalog_cache
 from api.auth import CurrentUser, require_admin
-from api.db import get_current_household_id, user_tx
+from api.db import get_current_household_id, get_pool, service_tx, user_tx
 
 # require_admin on the router → every endpoint below 403s for non-admins.
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -89,6 +89,82 @@ async def update_recipe_translations(
         )
     if res.endswith(" 0"):
         raise HTTPException(status_code=404, detail="Recipe not found")
+    return {"ok": True}
+
+
+# ---- Ingredient names: EN (pantry.simple_name) + SV (ingredient_sv_names) ----
+
+class AdminIngredient(BaseModel):
+    fdc_id: int
+    simple_name: str
+    name_sv: str | None
+    category: str
+    subcategory: str | None
+
+
+@router.get("/ingredients", response_model=list[AdminIngredient])
+async def list_admin_ingredients(
+    q: str = "",
+    limit: int = 100,
+    user: CurrentUser = Depends(require_admin),
+) -> list[AdminIngredient]:
+    """Curated pantry items with English (simple_name) + Swedish (ingredient_sv_
+    names) display names, for side-by-side editing. `q` matches either name."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT p.fdc_id, p.simple_name, p.category, p.subcategory, s.name_sv
+            FROM hearth.pantry_ingredients p
+            LEFT JOIN hearth.ingredient_sv_names s ON s.fdc_id = p.fdc_id
+            WHERE $1 = '' OR p.simple_name ILIKE '%' || $1 || '%'
+                          OR s.name_sv ILIKE '%' || $1 || '%'
+            ORDER BY p.simple_name
+            LIMIT $2
+            """,
+            q.strip(), limit,
+        )
+    return [
+        AdminIngredient(
+            fdc_id=r["fdc_id"], simple_name=r["simple_name"], name_sv=r["name_sv"],
+            category=r["category"], subcategory=r["subcategory"],
+        )
+        for r in rows
+    ]
+
+
+class UpdateIngredient(BaseModel):
+    simple_name: str
+    name_sv: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+
+
+@router.put("/ingredients/{fdc_id}")
+async def update_admin_ingredient(
+    fdc_id: int,
+    body: UpdateIngredient,
+    user: CurrentUser = Depends(require_admin),
+) -> dict:
+    async with service_tx() as conn:
+        res = await conn.execute(
+            "UPDATE hearth.pantry_ingredients "
+            "SET simple_name = $1, category = COALESCE($2, category), subcategory = $3 "
+            "WHERE fdc_id = $4",
+            body.simple_name.strip(), body.category, body.subcategory, fdc_id,
+        )
+        if res.endswith(" 0"):
+            raise HTTPException(status_code=404, detail="Ingredient not in pantry")
+        sv = (body.name_sv or "").strip()
+        if sv:
+            await conn.execute(
+                "INSERT INTO hearth.ingredient_sv_names (fdc_id, name_sv) VALUES ($1, $2) "
+                "ON CONFLICT (fdc_id) DO UPDATE SET name_sv = EXCLUDED.name_sv",
+                fdc_id, sv,
+            )
+        else:
+            await conn.execute("DELETE FROM hearth.ingredient_sv_names WHERE fdc_id = $1", fdc_id)
+    await catalog_cache.load_all()  # make the edit live without a backend restart
     return {"ok": True}
 
 

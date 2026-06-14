@@ -18,11 +18,12 @@ from api.db import get_pool
 _pantry: dict[int, dict] = {}     # fdc_id -> {simple_name, category, subcategory}
 _aliases: dict[int, int] = {}     # alias_fdc_id -> canonical_fdc_id
 _units: dict[int, dict] = {}      # fdc_id -> {display_unit, grams_per_unit, round_step}
+_sv_names: dict[int, str] = {}    # fdc_id -> Swedish display name (admin-curated)
 
 
 async def load_all() -> None:
     """Load the global catalog from Postgres. Call once at app startup."""
-    global _pantry, _aliases, _units
+    global _pantry, _aliases, _units, _sv_names
 
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -36,6 +37,9 @@ async def load_all() -> None:
         unit_rows = await conn.fetch(
             "SELECT fdc_id, display_unit, grams_per_unit, round_step "
             "FROM hearth.ingredient_units"
+        )
+        sv_rows = await conn.fetch(
+            "SELECT fdc_id, name_sv FROM hearth.ingredient_sv_names"
         )
 
     _pantry = {
@@ -55,6 +59,7 @@ async def load_all() -> None:
         }
         for r in unit_rows
     }
+    _sv_names = {r["fdc_id"]: r["name_sv"] for r in sv_rows}
 
     # Aliased ids should never appear in the picker or search results -
     # the user sees only the canonical entry.
@@ -62,7 +67,8 @@ async def load_all() -> None:
         _pantry.pop(alias_id, None)
 
     print(
-        f"[catalog] loaded pantry={len(_pantry)} aliases={len(_aliases)} units={len(_units)}"
+        f"[catalog] loaded pantry={len(_pantry)} aliases={len(_aliases)} "
+        f"units={len(_units)} sv_names={len(_sv_names)}"
     )
 
 
@@ -76,6 +82,11 @@ def get_aliases() -> dict[int, int]:
 
 def get_units() -> dict[int, dict]:
     return _units
+
+
+def sv_names() -> dict[int, str]:
+    """fdc_id -> Swedish display name (admin-curated, served to the frontend)."""
+    return _sv_names
 
 
 def pantry_fdc_ids() -> set[int]:
